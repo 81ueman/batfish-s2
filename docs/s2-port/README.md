@@ -69,7 +69,7 @@ dataplane (FIBs are distributed, forwarding is not). The paper's fully distribut
 symbolic DPV (BDD port predicates forwarded across workers via InterWorkerTransition)
 is still future work.
 
-## M5 — distributed symbolic DPV (in progress)
+## M5 — distributed symbolic DPV
 
 Decomposed into slices:
 
@@ -101,11 +101,16 @@ the workers' backward-reachable BDDs and produces Batfish's reachability answer
 vanilla. Verified locally and on OrbStack Kubernetes for 1 and 3 Pods
 (`ribs=MATCH reachability=MATCH answer=MATCH`).
 
-Remaining for full parity with the paper: build only locally-owned transitions in
-`BDDReachabilityAnalysisFactory`. The paper and reference do this (each worker has
-a `PartialForwardingAnalysis` for its owned VRFs, filters remote edges, and pulls
-inter-worker edges); we currently build the full edge table per worker because M4
-distributes the full FIBs. That is a scalability gap, not a correctness one.
+- [x] **Slice 5** Per-worker-local graph generation (paper §3.1/§4.3). Each worker
+  builds its `BDDReachabilityAnalysis` with an `OwnedForwardingAnalysis` over its own
+  switches, keeps only edges into its own states, and pulls the boundary edges
+  (`PreOutEdgePostNat(src remote) -> PreInInterface(dst local)`) from the owner with a
+  portable transition codec (`TransitionTransfer`). Verified per-state against the
+  full graph for 1 and 3 workers (`ScaledReachabilityTest`) and on Kubernetes
+  (`ribs=MATCH reachability=MATCH answer=MATCH`). See `M5-SCALE.md`.
+
+This closes the scalability gap: the symbolic edge table per worker now shrinks with
+the number of workers, not just the fixpoint.
 
 ## Running the demos
 
@@ -115,6 +120,7 @@ Local multi-process (one JVM per worker):
 bazel build //projects/s2:s2_main_deploy.jar
 scripts/local-demo.sh 1
 scripts/local-demo.sh 3
+scripts/local-demo.sh 3 s2-line   # optional second arg selects the network
 ```
 
 OrbStack Kubernetes (controller + 1 or 3 worker Pods):
@@ -130,12 +136,16 @@ scripts/compare-answers.sh
 
 `networks/s2-triangle/configs/{r1,r2,r3}` is a static eBGP triangle (also copied
 under `projects/s2/src/test/resources/...`). A loop testrig is unsuitable: vanilla
-Batfish itself does not converge on it.
+Batfish itself does not converge on it. `networks/s2-line/configs/{r1..r6}` is a
+6-node static eBGP line used for the M5 symbolic scale evidence; its distributed
+control plane is flaky for multi-hop topologies (a pre-existing issue documented in
+`M5-SCALE.md`), so use the triangle for end-to-end correctness checks.
 
 ## Layout added by this work
 
 ```
 projects/s2/          # our implementation + tests
-networks/s2-triangle/ # demo snapshot
+networks/s2-triangle/ # 3-node demo snapshot
+networks/s2-line/     # 6-node scale snapshot
 docker/, k8s/, scripts/, docs/s2-port/
 ```

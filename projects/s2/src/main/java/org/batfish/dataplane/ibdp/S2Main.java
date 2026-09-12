@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicReference;
 import net.sf.javabdd.BDD;
 import net.sf.javabdd.BDDTransfer;
 import net.sf.javabdd.JFactory;
@@ -22,12 +23,14 @@ import org.batfish.bddreachability.BDDReachabilityAnalysis;
 import org.batfish.bddreachability.BDDReachabilityAnalysisFactory;
 import org.batfish.bddreachability.BDDReachabilityUtils;
 import org.batfish.bddreachability.IpsRoutedOutInterfacesFactory;
+import org.batfish.bddreachability.transition.TransitionTransfer;
 import org.batfish.common.bdd.BDDPacket;
 import org.batfish.datamodel.AbstractRoute;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.DataPlane;
 import org.batfish.datamodel.FinalMainRib;
 import org.batfish.datamodel.Flow;
+import org.batfish.datamodel.ForwardingAnalysis;
 import org.batfish.datamodel.Interface;
 import org.batfish.datamodel.Ip;
 import org.batfish.datamodel.IpProtocol;
@@ -51,7 +54,9 @@ import org.batfish.symbolic.state.StateExpr;
  */
 public final class S2Main {
 
-  /** Worker BDD sidecars listen at route sidecar port + this offset (kept out of the route range). */
+  /**
+   * Worker BDD sidecars listen at route sidecar port + this offset (kept out of the route range).
+   */
   private static final int BDD_PORT_OFFSET = 1000;
 
   private S2Main() {}
@@ -97,7 +102,8 @@ public final class S2Main {
 
     try (S2ControllerServer server = new S2ControllerServer(port, numWorkers, endpoints)) {
       server.start();
-      System.out.printf("S2 controller listening on %d, waiting for %d workers%n", port, numWorkers);
+      System.out.printf(
+          "S2 controller listening on %d, waiting for %d workers%n", port, numWorkers);
       Map<Integer, S2ControlMessages.Result> results = server.awaitResults(3600);
       Map<String, Map<String, List<AbstractRoute>>> merged = new TreeMap<>();
       for (S2ControlMessages.Result workerResult : results.values()) {
@@ -129,7 +135,8 @@ public final class S2Main {
               referenceAnalysis.getIngressLocationReachableBDDs(mergedReachable));
       Set<Flow> vanillaFlows =
           BDDReachabilityUtils.constructFlows(
-              referenceAnalysis.getBDDPacket(), referenceAnalysis.getIngressLocationReachableBDDs());
+              referenceAnalysis.getBDDPacket(),
+              referenceAnalysis.getIngressLocationReachableBDDs());
       boolean answerMatch = distributedFlows.equals(vanillaFlows);
 
       Path out = outputDir().resolve("result-" + numWorkers + "worker.txt");
@@ -173,6 +180,13 @@ public final class S2Main {
     S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
     Map<String, Integer> assignment =
         NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, 0L);
+    Set<String> ownedHosts = new HashSet<>();
+    assignment.forEach(
+        (host, owner) -> {
+          if (owner == workerId) {
+            ownedHosts.add(host);
+          }
+        });
 
     Map<String, DistributedNode> nodes = new HashMap<>();
     for (String host : snap.configs.keySet()) {
@@ -187,11 +201,16 @@ public final class S2Main {
     List<org.batfish.datamodel.BgpAdvertisement> adverts =
         new ArrayList<>(snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
 
+    AtomicReference<BDDReachabilityAnalysis> localAnalysisRef = new AtomicReference<>();
     try (S2SidecarServer sidecar =
         new S2SidecarServer(
             sidecarPort,
             S2SidecarHandlers.forWorker(
-                nodeMap, snap.bgpTopology, snap.networkConfigurations))) {
+                nodeMap,
+                snap.bgpTopology,
+                snap.networkConfigurations,
+                ownedHosts,
+                localAnalysisRef::get))) {
       sidecar.start();
 
       try (Socket socket = connectWithRetry(controllerHost, controllerPort)) {
@@ -215,15 +234,36 @@ public final class S2Main {
             new ShadowMainRibSync(nodes, assignment, workerId, start.endpoints, client);
         S2BdpEngine engine = new S2BdpEngine(snap.settings(), nodes, coordinator, shadowSync);
         DataPlane dp =
-            engine
-                .computeDataPlane(
-                    snap.configs, snap.topologyContext, new java.util.HashSet<>(adverts),
-                    snap.ipOwners, false)
+            engine.computeDataPlane(
+                    snap.configs,
+                    snap.topologyContext,
+                    new java.util.HashSet<>(adverts),
+                    snap.ipOwners,
+                    false)
                 ._dataPlane;
 
-        // Distributed symbolic reachability (M5) over the converged dataplane.
-        BDDReachabilityAnalysis analysis = buildReachabilityAnalysis(snap, dp);
+        // Distributed symbolic reachability (M5) over the converged dataplane. Each worker builds
+        // only its own switches' edges (OwnedForwardingAnalysis); the boundary edges into its
+        // states are pulled from the peers that own their sources.
+        BDDReachabilityAnalysis analysis = buildReachabilityAnalysis(snap, dp, ownedHosts);
+        localAnalysisRef.set(analysis);
         JFactory factory = (JFactory) analysis.getBDDPacket().getFactory();
+
+        // Make sure every worker has published its analysis before anyone pulls boundary edges.
+        coordinator.roundCheck(false);
+
+        List<S2Messages.SerializedEdge> pulledEdges = new ArrayList<>();
+        for (int t = 0; t < numWorkers; t++) {
+          if (t == workerId) {
+            continue;
+          }
+          S2Messages.BoundaryEdgesResponse response =
+              (S2Messages.BoundaryEdgesResponse)
+                  client.call(
+                      start.endpoints.get(t), new S2Messages.BoundaryEdgesRequest(ownedHosts));
+          pulledEdges.addAll(response.edges);
+        }
+
         S2BddSidecar.Client[] bddClients = new S2BddSidecar.Client[numWorkers];
         for (int t = 0; t < numWorkers; t++) {
           S2WorkerEndpoint routeEndpoint = start.endpoints.get(t);
@@ -234,19 +274,26 @@ public final class S2Main {
         }
         Map<StateExpr, String> symbolicSerialized = new HashMap<>();
         S2ReachabilityWorker[] holder = new S2ReachabilityWorker[1];
-        System.err.printf("worker %d starting BDD sidecar on %d%n", workerId, sidecarPort + BDD_PORT_OFFSET);
+        System.err.printf(
+            "worker %d starting BDD sidecar on %d%n", workerId, sidecarPort + BDD_PORT_OFFSET);
         try (S2BddSidecar bddSidecar =
             new S2BddSidecar(
                 sidecarPort + BDD_PORT_OFFSET,
-                factory,
-                (state, bdd) -> {
+                (state, payload) -> {
                   if (holder[0] != null) {
-                    holder[0].receive(state, bdd);
+                    holder[0].receive(state, payload);
                   }
                 })) {
           bddSidecar.start();
           holder[0] =
               new S2ReachabilityWorker(workerId, assignment, analysis, bddClients, coordinator);
+          for (S2Messages.SerializedEdge edge : pulledEdges) {
+            holder[0].addEdge(
+                edge.preState, edge.postState, TransitionTransfer.load(factory, edge.transition));
+          }
+          System.out.printf(
+              "S2 worker %d generated %d local symbolic edges, pulled %d boundary edges%n",
+              workerId, holder[0].edgeCount() - pulledEdges.size(), pulledEdges.size());
           Map<StateExpr, BDD> reachable = holder[0].run();
           for (Map.Entry<StateExpr, BDD> e : reachable.entrySet()) {
             symbolicSerialized.put(e.getKey(), new BDDTransfer().save(e.getValue()));
@@ -269,12 +316,26 @@ public final class S2Main {
 
   /** Build Batfish's BDD reachability analysis over the given dataplane (all interface sources). */
   private static BDDReachabilityAnalysis buildReachabilityAnalysis(S2Snapshot snap, DataPlane dp) {
+    return buildReachabilityAnalysis(snap, dp, null);
+  }
+
+  /**
+   * Like {@link #buildReachabilityAnalysis(S2Snapshot, DataPlane)}, but when {@code ownedHosts} is
+   * non-null the forwarding analysis is restricted to those switches so the worker generates only
+   * locally-owned edges. Cross-worker edges into owned states are pulled from their owners.
+   */
+  private static BDDReachabilityAnalysis buildReachabilityAnalysis(
+      S2Snapshot snap, DataPlane dp, Set<String> ownedHosts) {
     BDDPacket packet = new BDDPacket();
+    ForwardingAnalysis forwardingAnalysis =
+        ownedHosts == null
+            ? dp.getForwardingAnalysis()
+            : new OwnedForwardingAnalysis(dp.getForwardingAnalysis(), ownedHosts);
     BDDReachabilityAnalysisFactory factory =
         new BDDReachabilityAnalysisFactory(
             packet,
             snap.configs,
-            dp.getForwardingAnalysis(),
+            forwardingAnalysis,
             new IpsRoutedOutInterfacesFactory(dp.getFibs()),
             false,
             false);

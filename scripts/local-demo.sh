@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Run the multi-process S2 demo locally with N worker processes (JVM each).
-# Usage: scripts/local-demo.sh <1|3>
+# Usage: scripts/local-demo.sh <numWorkers> [network]
 set -euo pipefail
 
-W="${1:?usage: local-demo.sh <1|3>}"
+W="${1:?usage: local-demo.sh <numWorkers> [network]}"
+NETWORK="${2:-s2-triangle}"
 cd "$(git rev-parse --show-toplevel)"
 
 # Clean up workers from a previous (possibly interrupted) run that still hold ports.
@@ -14,7 +15,7 @@ JAR="bazel-bin/projects/s2/s2_main_deploy.jar"
 [[ -f "$JAR" ]] || { echo "build first: bazel build //projects/s2:s2_main_deploy.jar" >&2; exit 1; }
 
 export S2_INPUT_DIR="$PWD/networks"
-export S2_OUTPUT_DIR="$PWD/results/local-${W}"
+export S2_OUTPUT_DIR="$PWD/results/local-${NETWORK}-${W}"
 mkdir -p "$S2_OUTPUT_DIR"
 
 CTRL_PORT=14090
@@ -25,7 +26,7 @@ for i in $(seq 0 $((W - 1))); do
 done
 
 echo "== controller (port ${CTRL_PORT}) =="
-java -jar "$JAR" controller s2-triangle "$W" "$endpoints" "$CTRL_PORT" \
+java -jar "$JAR" controller "$NETWORK" "$W" "$endpoints" "$CTRL_PORT" \
   > "$S2_OUTPUT_DIR/controller.log" 2>&1 &
 ctrl_pid=$!
 sleep 3
@@ -34,7 +35,7 @@ echo "== starting ${W} worker(s) =="
 worker_pids=()
 for i in $(seq 0 $((W - 1))); do
   port=$((14091 + i))
-  java -jar "$JAR" worker s2-triangle "$i" "$W" 127.0.0.1 "$CTRL_PORT" "$port" \
+  java -jar "$JAR" worker "$NETWORK" "$i" "$W" 127.0.0.1 "$CTRL_PORT" "$port" \
     > "$S2_OUTPUT_DIR/worker-${i}.log" 2>&1 &
   worker_pids+=($!)
 done

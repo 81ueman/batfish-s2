@@ -10,18 +10,21 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import net.sf.javabdd.BDD;
 import net.sf.javabdd.BDDTransfer;
-import net.sf.javabdd.JFactory;
 import org.batfish.symbolic.state.StateExpr;
 
 /**
  * Sidecar for symbolic-packet (BDD) transfer between workers. A sender serializes a BDD at a state
- * expression; the receiver reconstructs it in its own {@link JFactory} and hands it to the handler,
- * which normally continues the reachability fixpoint for that state.
+ * expression; the receiver is handed the state and the raw payload, and is responsible for
+ * deserializing it on its own thread.
+ *
+ * <p>Deserialization is deliberately deferred: a {@code JFactory} is not thread-safe, so the
+ * receiver must not touch its factory from the sidecar thread while its worker thread is running
+ * the fixpoint.
  */
 public final class S2BddSidecar implements AutoCloseable {
 
   public interface Handler {
-    void transit(StateExpr state, BDD bdd);
+    void receive(StateExpr state, String payload);
   }
 
   private static final class TransitMessage implements Serializable {
@@ -40,14 +43,12 @@ public final class S2BddSidecar implements AutoCloseable {
   }
 
   private final ServerSocket _server;
-  private final JFactory _factory;
   private final Handler _handler;
   private final ExecutorService _pool = Executors.newCachedThreadPool();
   private volatile boolean _closed;
 
-  public S2BddSidecar(int port, JFactory factory, Handler handler) throws IOException {
+  public S2BddSidecar(int port, Handler handler) throws IOException {
     _server = new ServerSocket(port);
-    _factory = factory;
     _handler = handler;
   }
 
@@ -81,8 +82,7 @@ public final class S2BddSidecar implements AutoCloseable {
       out.flush();
       ObjectInputStream in = new ObjectInputStream(s.getInputStream());
       TransitMessage message = (TransitMessage) in.readObject();
-      BDD bdd = new BDDTransfer().load(_factory, message.payload);
-      _handler.transit(message.state, bdd);
+      _handler.receive(message.state, message.payload);
       out.writeObject(new Ack());
       out.flush();
     } catch (Exception e) {

@@ -7,6 +7,7 @@ import static org.hamcrest.Matchers.is;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import net.sf.javabdd.BDD;
+import net.sf.javabdd.BDDTransfer;
 import net.sf.javabdd.JFactory;
 import org.batfish.bddreachability.transition.Transition;
 import org.batfish.bddreachability.transition.TransitionVisitor;
@@ -27,7 +28,14 @@ public class InterWorkerTransitionTest {
     CompletableFuture<BDD> received = new CompletableFuture<>();
     S2BddSidecar server =
         new S2BddSidecar(
-            0, receiverFactory, (state, bdd) -> received.complete(bdd));
+            0,
+            (state, payload) -> {
+              try {
+                received.complete(new BDDTransfer().load(receiverFactory, payload));
+              } catch (Exception e) {
+                received.completeExceptionally(e);
+              }
+            });
     server.start();
     try {
       S2BddSidecar.Client client =
@@ -53,8 +61,7 @@ public class InterWorkerTransitionTest {
             }
           };
 
-      InterWorkerTransition transition =
-          new InterWorkerTransition(start, end, identity, client);
+      InterWorkerTransition transition = new InterWorkerTransition(start, end, identity, client);
 
       // A symbolic packet on the sending worker.
       BDD packet = senderFactory.ithVar(0).and(senderFactory.nithVar(1));

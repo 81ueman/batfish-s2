@@ -2,11 +2,13 @@ package org.batfish.dataplane.ibdp;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.Set;
 import org.batfish.datamodel.AbstractRoute;
 import org.batfish.datamodel.AnnotatedRoute;
 import org.batfish.datamodel.Bgpv4Route;
 import org.batfish.datamodel.bgp.BgpTopology;
 import org.batfish.dataplane.rib.RouteAdvertisement;
+import org.batfish.symbolic.state.StateExpr;
 
 /** Wire messages for the S2 sidecar. Kept deliberately small and Java-serializable. */
 final class S2Messages {
@@ -61,6 +63,47 @@ final class S2Messages {
 
     MainRibResponse(List<AnnotatedRoute<AbstractRoute>> routes) {
       this.routes = routes;
+    }
+  }
+
+  /**
+   * "Give me the cross-worker reachability edges whose destination (post) state lives on one of
+   * these hostnames." In the backward fixpoint a worker generates only edges whose source it owns;
+   * the missing edges into its own states are pulled from the peers that own their sources.
+   */
+  static final class BoundaryEdgesRequest implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    final Set<String> ownedHosts;
+
+    BoundaryEdgesRequest(Set<String> ownedHosts) {
+      this.ownedHosts = ownedHosts;
+    }
+  }
+
+  /** One cross-worker edge: its endpoint states plus a portable form of its transition. */
+  static final class SerializedEdge implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    final StateExpr preState;
+    final StateExpr postState;
+    final String transition;
+
+    SerializedEdge(StateExpr preState, StateExpr postState, String transition) {
+      this.preState = preState;
+      this.postState = postState;
+      this.transition = transition;
+    }
+  }
+
+  /** The requested cross-worker edges, transition BDDs serialized by {@code TransitionTransfer}. */
+  static final class BoundaryEdgesResponse implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    final List<SerializedEdge> edges;
+
+    BoundaryEdgesResponse(List<SerializedEdge> edges) {
+      this.edges = edges;
     }
   }
 }

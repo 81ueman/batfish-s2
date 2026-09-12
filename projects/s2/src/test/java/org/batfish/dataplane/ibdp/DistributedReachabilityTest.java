@@ -15,6 +15,7 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 import net.sf.javabdd.BDD;
 import net.sf.javabdd.BDDTransfer;
 import net.sf.javabdd.JFactory;
@@ -47,8 +48,8 @@ import org.junit.rules.TemporaryFolder;
 /**
  * Milestone 5: distributed symbolic reachability. Each worker runs the BDD forward fixpoint over
  * only the state expressions it owns; BDDs that cross a worker boundary are serialized and shipped
- * over {@link S2BddSidecar}. The per-state reachable BDDs must equal Batfish's local
- * ({@code computeForwardReachableStates}) result.
+ * over {@link S2BddSidecar}. The per-state reachable BDDs must equal Batfish's local ({@code
+ * computeForwardReachableStates}) result.
  */
 public class DistributedReachabilityTest {
 
@@ -135,8 +136,7 @@ public class DistributedReachabilityTest {
     for (int w = 0; w < workers; w++) {
       Worker worker = workerList.get(w);
       S2BddSidecar server =
-          new S2BddSidecar(
-              0, worker.factory, (state, bdd) -> worker.inbox.add(new Inbox(state, bdd)));
+          new S2BddSidecar(0, (state, payload) -> worker.inbox.add(new Inbox(state, payload)));
       server.start();
       servers.add(server);
       endpoints.add(new S2WorkerEndpoint("127.0.0.1", server.getPort()));
@@ -151,10 +151,10 @@ public class DistributedReachabilityTest {
 
     ExecutorService pool = Executors.newFixedThreadPool(workers);
     try {
-      CyclicBarrier barrier = new CyclicBarrier(workers);
+      S2Coordinator coordinator = new BarrierCoordinator(workers);
       List<Future<?>> futures = new ArrayList<>();
       for (Worker worker : workerList) {
-        futures.add(pool.submit(() -> worker.run(barrier)));
+        futures.add(pool.submit(() -> worker.run(coordinator)));
       }
       for (Future<?> future : futures) {
         future.get();
@@ -173,7 +173,7 @@ public class DistributedReachabilityTest {
     }
   }
 
-  private record Inbox(StateExpr state, BDD bdd) {}
+  private record Inbox(StateExpr state, String payload) {}
 
   private record Outbound(StateExpr state, BDD bdd) {}
 
@@ -184,7 +184,8 @@ public class DistributedReachabilityTest {
     final Table<StateExpr, StateExpr, Transition> edges;
     final Map<StateExpr, BDD> reachable = new HashMap<>();
     final Queue<StateExpr> worklist = new ArrayDeque<>();
-    final List<Inbox> inbox = new ArrayList<>();
+    final java.util.concurrent.ConcurrentLinkedQueue<Inbox> inbox =
+        new java.util.concurrent.ConcurrentLinkedQueue<>();
     final Map<Integer, List<Outbound>> pending = new HashMap<>();
     S2BddSidecar.Client[] clients;
 
@@ -261,30 +262,62 @@ public class DistributedReachabilityTest {
 
     boolean drainInbox() {
       boolean changed = false;
-      for (Inbox message : inbox) {
-        changed |= merge(message.state, message.bdd);
+      Inbox message;
+      while ((message = inbox.poll()) != null) {
+        try {
+          changed |= merge(message.state, new BDDTransfer().load(factory, message.payload));
+        } catch (java.io.IOException e) {
+          throw new RuntimeException(e);
+        }
       }
-      inbox.clear();
       processLocal();
       return changed;
     }
 
-    void run(CyclicBarrier barrier) {
-      try {
-        boolean done = false;
-        while (!done) {
-          processLocal();
-          barrier.await();
-          boolean sent = flushOutbox();
-          barrier.await();
-          boolean changed = drainInbox();
-          barrier.await();
-          done = !sent && !changed;
-          barrier.await();
-        }
-      } catch (Exception e) {
-        throw new RuntimeException(e);
+    void run(S2Coordinator coordinator) {
+      boolean done = false;
+      while (!done) {
+        processLocal();
+        coordinator.roundCheck(false);
+        boolean sent = flushOutbox();
+        boolean anySent = coordinator.roundCheck(sent);
+        boolean changed = drainInbox();
+        boolean anyChanged = coordinator.roundCheck(changed);
+        done = !anySent && !anyChanged;
       }
+    }
+  }
+
+  /**
+   * In-process {@link S2Coordinator}: global OR of the round's dirty flags, barrier-synchronized so
+   * every worker stops on the same round.
+   */
+  static final class BarrierCoordinator implements S2Coordinator {
+    private final CyclicBarrier _barrier;
+    private final AtomicBoolean _anyDirty = new AtomicBoolean();
+    private volatile boolean _result;
+
+    BarrierCoordinator(int workers) {
+      _barrier =
+          new CyclicBarrier(
+              workers,
+              () -> {
+                _result = _anyDirty.get();
+                _anyDirty.set(false);
+              });
+    }
+
+    @Override
+    public boolean roundCheck(boolean localDirty) {
+      if (localDirty) {
+        _anyDirty.set(true);
+      }
+      try {
+        _barrier.await(60, java.util.concurrent.TimeUnit.SECONDS);
+      } catch (Exception e) {
+        throw new RuntimeException("S2 worker synchronization failed", e);
+      }
+      return _result;
     }
   }
 
