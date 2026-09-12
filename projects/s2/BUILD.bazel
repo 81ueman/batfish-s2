@@ -16,7 +16,9 @@ java_library(
     ),
     deps = [
         "//projects/batfish",
+        "//projects/bdd",
         "//projects/common:common_lib",
+        "//projects/symbolic/src/main/java/org/batfish/symbolic/state:state",
         "@maven//:com_google_code_findbugs_jsr305",
         "@maven//:com_google_guava_guava",
         "@maven//:org_apache_logging_log4j_log4j_api",
@@ -67,6 +69,7 @@ junit_tests(
         "//projects/bdd",
         "//projects/common",
         "//projects/common/src/test:common_testlib",
+        "//projects/symbolic/src/main/java/org/batfish/symbolic/state:state",
         "@maven//:com_google_guava_guava",
         "@maven//:junit_junit",
         "@maven//:org_hamcrest_hamcrest",

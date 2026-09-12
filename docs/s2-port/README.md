@@ -76,13 +76,15 @@ Decomposed into slices:
 - [x] **Slice 1** BDD serialization primitive: `net.sf.javabdd.BDDTransfer` round-trips
   a BDD between two `JFactory` instances (`BddTransferTest`). This is what lets a
   symbolic packet cross a worker boundary.
-- [ ] **Slice 2** Cross-worker transition: wrap reachability-graph edges that leave
-  a node with an `InterWorkerTransition` that serializes the BDD and calls the
-  owning worker's sidecar (needs `BDDReachabilityAnalysisFactory`/`Transition`
-  exposure).
-- [ ] **Slice 3** Distributed fixpoint + answerer: run the BDD reachability
-  fixpoint per worker over its owned state expressions, exchanging in-flight BDDs,
-  and produce the reachability answer.
+- [x] **Slice 2** Cross-worker transition: `InterWorkerTransition` applies the
+  wrapped transition locally and ships a non-empty resulting BDD to the worker
+  owning the far state, returning zero so the local fixpoint does not consume it.
+  `S2BddSidecar` transfers it over a real socket. `InterWorkerTransitionTest`
+  verifies the symbolic packet crosses the boundary and round-trips exactly.
+- [ ] **Slice 3** Distributed fixpoint + answerer: partition the reachability
+  graph's state expressions by owner, run the forward fixpoint per worker over its
+  states, exchange in-flight BDDs via `S2BddSidecar`, and produce the reachability
+  answer.
 - [ ] **Slice 4** Verify 1/3 Pod reachability answer equals vanilla.
 
 ## Running the demos
