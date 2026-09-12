@@ -30,6 +30,7 @@ spec:
               value: "4091"
           ports:
             - containerPort: 4091
+            - containerPort: 5091
           resources:
             requests: {memory: "2Gi", cpu: "1"}
             limits: {memory: "8Gi"}
@@ -43,5 +44,9 @@ spec:
   clusterIP: None
   selector: {app: s2-worker}
   ports:
-    - port: 4091
+    - name: routes
+      port: 4091
       targetPort: 4091
+    - name: bdd
+      port: 5091
+      targetPort: 5091

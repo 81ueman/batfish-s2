@@ -88,10 +88,17 @@ Decomposed into slices:
   verifies that the per-state reachable BDDs for **1 and 3 workers equal Batfish's
   local `computeForwardReachableStates()`** (BDD equality via the codec + `biimp`).
 
-Remaining for full parity with the paper: wire this symbolic fixpoint into the
-multi-process/k8s runner (today the runner's data-plane check is the M4 traceroute
-digest; the symbolic distributed reachability is verified in-process with real
-sockets), and expose the reachability answer/traces through the question pipeline.
+The symbolic fixpoint is now wired into the multi-process/k8s runner: after the
+control plane converges and FIBs are distributed, each worker builds its
+`BDDReachabilityAnalysis`, runs its share of the distributed forward fixpoint with
+`S2BddSidecar` transfer, and the controller compares the per-state reachable BDDs
+against vanilla. Verified locally and on OrbStack Kubernetes for 1 and 3 Pods
+(`ribs=MATCH reachability=MATCH symbolic=MATCH`).
+
+Remaining for full parity with the paper: expose the reachability answer/traces
+through the Batfish question pipeline, and build only locally-owned transitions in
+`BDDReachabilityAnalysisFactory` (today every worker builds the full edge table,
+as the reference implementation also did).
 
 ## Running the demos
 

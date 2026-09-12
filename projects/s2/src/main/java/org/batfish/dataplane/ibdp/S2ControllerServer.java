@@ -6,13 +6,12 @@ import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -37,40 +36,38 @@ public final class S2ControllerServer implements AutoCloseable {
   private final RoundCoordinator _rounds;
   private int _registered;
 
-  /** Blocks each worker's round check until all workers reported, then returns the global dirty. */
+  /**
+   * Round barrier shared by all workers: every worker reports a boolean each round and the barrier
+   * action computes the OR for that round before any worker proceeds to the next round. Using a
+   * {@link CyclicBarrier} (not wait/notify) avoids the cross-round race where a fast worker starts
+   * round N+1 before a slow worker has left round N.
+   */
   private static final class RoundCoordinator {
-    private final int _numWorkers;
-    private int _currentRound = Integer.MIN_VALUE;
-    private final Set<Integer> _reported = new HashSet<>();
-    private boolean _anyDirty;
-    private boolean _ready;
+    private final java.util.concurrent.atomic.AtomicBoolean _anyDirty =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    private final CyclicBarrier _barrier;
+    private volatile boolean _result;
 
     RoundCoordinator(int numWorkers) {
-      _numWorkers = numWorkers;
+      _barrier =
+          new CyclicBarrier(
+              numWorkers,
+              () -> {
+                _result = _anyDirty.get();
+                _anyDirty.set(false);
+              });
     }
 
-    synchronized boolean check(int round, int workerId, boolean dirty) {
-      if (round != _currentRound) {
-        _currentRound = round;
-        _reported.clear();
-        _anyDirty = false;
-        _ready = false;
+    boolean check(boolean dirty) {
+      if (dirty) {
+        _anyDirty.set(true);
       }
-      _reported.add(workerId);
-      _anyDirty |= dirty;
-      if (_reported.size() == _numWorkers) {
-        _ready = true;
-        notifyAll();
+      try {
+        _barrier.await();
+      } catch (Exception e) {
+        throw new RuntimeException("S2 round synchronization failed", e);
       }
-      while (!_ready) {
-        try {
-          wait();
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          throw new RuntimeException(e);
-        }
-      }
-      return _anyDirty;
+      return _result;
     }
   }
 
@@ -129,7 +126,7 @@ public final class S2ControllerServer implements AutoCloseable {
         Object message = in.readObject();
         if (message instanceof S2ControlMessages.RoundRequest) {
           S2ControlMessages.RoundRequest request = (S2ControlMessages.RoundRequest) message;
-          boolean globalDirty = _rounds.check(request.round, workerId, request.localDirty);
+          boolean globalDirty = _rounds.check(request.localDirty);
           out.writeObject(new S2ControlMessages.RoundResponse(globalDirty));
           out.flush();
         } else if (message instanceof S2ControlMessages.Result) {

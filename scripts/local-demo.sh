@@ -6,6 +6,10 @@ set -euo pipefail
 W="${1:?usage: local-demo.sh <1|3>}"
 cd "$(git rev-parse --show-toplevel)"
 
+# Clean up workers from a previous (possibly interrupted) run that still hold ports.
+pkill -f "s2_main_deploy.jar" 2>/dev/null || true
+sleep 1
+
 JAR="bazel-bin/projects/s2/s2_main_deploy.jar"
 [[ -f "$JAR" ]] || { echo "build first: bazel build //projects/s2:s2_main_deploy.jar" >&2; exit 1; }
 

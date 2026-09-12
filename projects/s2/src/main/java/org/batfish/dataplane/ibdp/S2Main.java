@@ -15,6 +15,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import net.sf.javabdd.BDD;
+import net.sf.javabdd.BDDTransfer;
+import net.sf.javabdd.JFactory;
+import org.batfish.bddreachability.BDDReachabilityAnalysis;
+import org.batfish.bddreachability.BDDReachabilityAnalysisFactory;
+import org.batfish.bddreachability.IpsRoutedOutInterfacesFactory;
+import org.batfish.common.bdd.BDDPacket;
 import org.batfish.datamodel.AbstractRoute;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.DataPlane;
@@ -23,8 +30,12 @@ import org.batfish.datamodel.Flow;
 import org.batfish.datamodel.Interface;
 import org.batfish.datamodel.Ip;
 import org.batfish.datamodel.IpProtocol;
+import org.batfish.datamodel.UniverseIpSpace;
 import org.batfish.datamodel.flow.Trace;
 import org.batfish.dataplane.TracerouteEngineImpl;
+import org.batfish.specifier.InterfaceLocation;
+import org.batfish.specifier.IpSpaceAssignment;
+import org.batfish.symbolic.state.StateExpr;
 
 /**
  * Runnable entry point for the multi-process S2 demo.
@@ -38,6 +49,9 @@ import org.batfish.dataplane.TracerouteEngineImpl;
  * /s2/inputs}); results are written under {@code $S2_OUTPUT_DIR} (default {@code /s2/outputs}).
  */
 public final class S2Main {
+
+  /** Worker BDD sidecars listen at route sidecar port + this offset (kept out of the route range). */
+  private static final int BDD_PORT_OFFSET = 1000;
 
   private S2Main() {}
 
@@ -96,6 +110,25 @@ public final class S2Main {
       for (S2ControlMessages.Result workerResult : results.values()) {
         reachMatch &= workerResult.reachability.equals(vanillaReach);
       }
+
+      // Distributed symbolic reachability comparison (M5).
+      BDDReachabilityAnalysis referenceAnalysis = buildReachabilityAnalysis(snap, vanilla);
+      Map<StateExpr, BDD> localSymbolic = referenceAnalysis.computeForwardReachableStates();
+      JFactory referenceFactory = (JFactory) referenceAnalysis.getBDDPacket().getFactory();
+      boolean symbolicMatch = true;
+      for (S2ControlMessages.Result workerResult : results.values()) {
+        for (Map.Entry<StateExpr, String> e : workerResult.symbolicReachable.entrySet()) {
+          BDD localBdd = localSymbolic.get(e.getKey());
+          if (localBdd == null) {
+            continue;
+          }
+          BDD got = new BDDTransfer().load(referenceFactory, e.getValue());
+          if (!got.biimp(localBdd).isOne()) {
+            symbolicMatch = false;
+          }
+        }
+      }
+
       Path out = outputDir().resolve("result-" + numWorkers + "worker.txt");
       StringBuilder report = new StringBuilder();
       report.append("network=").append(network).append('\n');
@@ -103,15 +136,17 @@ public final class S2Main {
       report.append("hosts=").append(distributedRibs.size()).append('\n');
       report.append(match ? "RESULT=MATCH\n" : "RESULT=DIFF\n");
       report.append(reachMatch ? "REACHABILITY=MATCH\n" : "REACHABILITY=DIFF\n");
+      report.append(symbolicMatch ? "SYMBOLIC=MATCH\n" : "SYMBOLIC=DIFF\n");
       report.append("--- distributed ---\n").append(distributedRibs);
       Files.writeString(out, report.toString());
-      boolean allMatch = match && reachMatch;
+      boolean allMatch = match && reachMatch && symbolicMatch;
       System.out.printf(
-          "S2 %s (%d workers): ribs=%s reachability=%s, wrote %s%n",
+          "S2 %s (%d workers): ribs=%s reachability=%s symbolic=%s, wrote %s%n",
           allMatch ? "MATCH" : "DIFF",
           numWorkers,
           match ? "MATCH" : "DIFF",
           reachMatch ? "MATCH" : "DIFF",
+          symbolicMatch ? "MATCH" : "DIFF",
           out);
       if (!allMatch) {
         System.out.println("vanilla ribs: " + vanillaRibs);
@@ -172,20 +207,55 @@ public final class S2Main {
           }
         }
 
+        S2RemoteCoordinator coordinator = new S2RemoteCoordinator(out, in);
         ShadowMainRibSync shadowSync =
             new ShadowMainRibSync(nodes, assignment, workerId, start.endpoints, client);
-        S2BdpEngine engine =
-            new S2BdpEngine(
-                snap.settings(), nodes, new S2RemoteCoordinator(out, in), shadowSync);
+        S2BdpEngine engine = new S2BdpEngine(snap.settings(), nodes, coordinator, shadowSync);
         DataPlane dp =
             engine
                 .computeDataPlane(
                     snap.configs, snap.topologyContext, new java.util.HashSet<>(adverts),
                     snap.ipOwners, false)
                 ._dataPlane;
+
+        // Distributed symbolic reachability (M5) over the converged dataplane.
+        BDDReachabilityAnalysis analysis = buildReachabilityAnalysis(snap, dp);
+        JFactory factory = (JFactory) analysis.getBDDPacket().getFactory();
+        S2BddSidecar.Client[] bddClients = new S2BddSidecar.Client[numWorkers];
+        for (int t = 0; t < numWorkers; t++) {
+          S2WorkerEndpoint routeEndpoint = start.endpoints.get(t);
+          bddClients[t] =
+              new S2BddSidecar.Client(
+                  new S2WorkerEndpoint(
+                      routeEndpoint.getHost(), routeEndpoint.getPort() + BDD_PORT_OFFSET));
+        }
+        Map<StateExpr, String> symbolicSerialized = new HashMap<>();
+        S2ReachabilityWorker[] holder = new S2ReachabilityWorker[1];
+        System.err.printf("worker %d starting BDD sidecar on %d%n", workerId, sidecarPort + BDD_PORT_OFFSET);
+        try (S2BddSidecar bddSidecar =
+            new S2BddSidecar(
+                sidecarPort + BDD_PORT_OFFSET,
+                factory,
+                (state, bdd) -> {
+                  if (holder[0] != null) {
+                    holder[0].receive(state, bdd);
+                  }
+                })) {
+          bddSidecar.start();
+          holder[0] =
+              new S2ReachabilityWorker(workerId, assignment, analysis, bddClients, coordinator);
+          Map<StateExpr, BDD> reachable = holder[0].run();
+          for (Map.Entry<StateExpr, BDD> e : reachable.entrySet()) {
+            symbolicSerialized.put(e.getKey(), new BDDTransfer().save(e.getValue()));
+          }
+        }
+
         out.writeObject(
             new S2ControlMessages.Result(
-                workerId, ribsOf(dp, assignment, workerId), reachabilityDigest(dp, snap)));
+                workerId,
+                ribsOf(dp, assignment, workerId),
+                reachabilityDigest(dp, snap),
+                symbolicSerialized));
         out.flush();
         System.out.printf("S2 worker %d done%n", workerId);
       }
@@ -193,6 +263,29 @@ public final class S2Main {
   }
 
   // ------------------------------------------------------------------- helpers
+
+  /** Build Batfish's BDD reachability analysis over the given dataplane (all interface sources). */
+  private static BDDReachabilityAnalysis buildReachabilityAnalysis(S2Snapshot snap, DataPlane dp) {
+    BDDPacket packet = new BDDPacket();
+    BDDReachabilityAnalysisFactory factory =
+        new BDDReachabilityAnalysisFactory(
+            packet,
+            snap.configs,
+            dp.getForwardingAnalysis(),
+            new IpsRoutedOutInterfacesFactory(dp.getFibs()),
+            false,
+            false);
+    IpSpaceAssignment.Builder builder = IpSpaceAssignment.builder();
+    for (Configuration c : snap.configs.values()) {
+      for (Interface i : c.getAllInterfaces().values()) {
+        if (i.getActive()) {
+          builder.assign(
+              new InterfaceLocation(c.getHostname(), i.getName()), UniverseIpSpace.INSTANCE);
+        }
+      }
+    }
+    return factory.bddReachabilityAnalysis(builder.build());
+  }
 
   /** Data-plane check: traceroute between every pair of loopback addresses, as dispositions. */
   private static Map<String, String> reachabilityDigest(DataPlane dp, S2Snapshot snap) {

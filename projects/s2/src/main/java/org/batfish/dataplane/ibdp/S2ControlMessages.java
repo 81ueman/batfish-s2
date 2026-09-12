@@ -48,20 +48,23 @@ final class S2ControlMessages {
     }
   }
 
-  /** A worker's final main RIBs (hostname -&gt; vrf -&gt; routes) and data-plane digest. */
+  /** A worker's final main RIBs, traceroute digest, and symbolic reachable BDDs. */
   static final class Result implements Serializable {
     private static final long serialVersionUID = 1L;
     final int workerId;
     final Map<String, Map<String, List<AbstractRoute>>> ribs;
     final Map<String, String> reachability;
+    final Map<org.batfish.symbolic.state.StateExpr, String> symbolicReachable;
 
     Result(
         int workerId,
         Map<String, Map<String, List<AbstractRoute>>> ribs,
-        Map<String, String> reachability) {
+        Map<String, String> reachability,
+        Map<org.batfish.symbolic.state.StateExpr, String> symbolicReachable) {
       this.workerId = workerId;
       this.ribs = ribs;
       this.reachability = reachability;
+      this.symbolicReachable = symbolicReachable;
     }
   }
 }
