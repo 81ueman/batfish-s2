@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: s2-orchestrate
+  namespace: s2
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: orchestrate
+          image: s2:local
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/s2/orchestrate.sh"]
+          env:
+            - name: WORKERS
+              value: "1"
+            - name: NETWORK_NAME
+              value: "bgp-resolution-loop"
+            - name: PARTITION
+              value: "random"
+            - name: SHARDS
+              value: "1"
+            - name: REACHABILITY
+              value: "-1"

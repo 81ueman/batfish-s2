@@ -42,3 +42,7 @@ __pycache__
 /.claude/statsig/
 /.claude/todos/
 /CLAUDE.local.md
+
+# S2 port artifacts
+results/
+containers/

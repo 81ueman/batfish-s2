@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s2-controller
+  namespace: s2
+  labels: {app: s2-controller}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: s2-controller}
+  template:
+    metadata:
+      labels: {app: s2-controller}
+    spec:
+      containers:
+        - name: controller
+          image: s2:local
+          imagePullPolicy: IfNotPresent
+          args: ["port", "4090"]
+          ports:
+            - containerPort: 4090
+          resources:
+            requests: {memory: "1Gi", cpu: "500m"}
+            limits: {memory: "4Gi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s2-controller
+  namespace: s2
+spec:
+  selector: {app: s2-controller}
+  ports:
+    - port: 4090
+      targetPort: 4090

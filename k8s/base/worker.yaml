@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: s2-worker
+  namespace: s2
+spec:
+  serviceName: s2-worker
+  replicas: 1
+  selector:
+    matchLabels: {app: s2-worker}
+  template:
+    metadata:
+      labels: {app: s2-worker}
+    spec:
+      containers:
+        - name: worker
+          image: s2:local
+          imagePullPolicy: IfNotPresent
+          args: ["port", "4091"]
+          ports:
+            - containerPort: 4091
+          resources:
+            requests: {memory: "1Gi", cpu: "500m"}
+            limits: {memory: "4Gi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s2-worker
+  namespace: s2
+spec:
+  clusterIP: None
+  selector: {app: s2-worker}
+  ports:
+    - port: 4091
+      targetPort: 4091
