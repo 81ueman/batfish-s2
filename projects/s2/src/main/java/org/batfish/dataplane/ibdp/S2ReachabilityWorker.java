@@ -16,23 +16,25 @@ import org.batfish.symbolic.state.InterfaceStateExpr;
 import org.batfish.symbolic.state.NodeStateExpr;
 import org.batfish.symbolic.state.PacketPolicyAction;
 import org.batfish.symbolic.state.PacketPolicyStatement;
+import org.batfish.symbolic.state.Query;
 import org.batfish.symbolic.state.StateExpr;
 import org.batfish.symbolic.state.VrfStateExpr;
 
 /**
- * One worker's part of the distributed symbolic reachability fixpoint.
+ * One worker's part of the distributed symbolic reachability fixpoint (Batfish's backward
+ * reachability).
  *
- * <p>It owns a subset of the reachability graph's state expressions (those on switches assigned to
- * this worker). It runs the forward BDD fixpoint over its own states; when a transition leaves the
- * worker, the resulting BDD is serialized and shipped to the owner over {@link S2BddSidecar}. Rounds
- * are synchronized with the other workers through {@link S2Coordinator}.
+ * <p>Starts from the query header space at {@link Query} and propagates backward over the
+ * reachability graph. Each worker processes only states on switches assigned to it; when a
+ * predecessor state lives on another worker, the resulting BDD is serialized and shipped to that
+ * worker over {@link S2BddSidecar}. Rounds are synchronized through {@link S2Coordinator}.
  */
 public final class S2ReachabilityWorker {
 
   private final int _id;
   private final Map<String, Integer> _partition;
   private final JFactory _factory;
-  private final Table<StateExpr, StateExpr, Transition> _edges;
+  private final Map<StateExpr, List<PreEdge>> _reverseEdges = new HashMap<>();
   private final S2BddSidecar.Client[] _clients;
   private final S2Coordinator _coordinator;
 
@@ -40,6 +42,8 @@ public final class S2ReachabilityWorker {
   private final Queue<StateExpr> _worklist = new ArrayDeque<>();
   private final List<Inbox> _inbox = new ArrayList<>();
   private final Map<Integer, List<Outbound>> _pending = new HashMap<>();
+
+  private record PreEdge(StateExpr pre, Transition transition) {}
 
   private record Inbox(StateExpr state, BDD bdd) {}
 
@@ -54,14 +58,17 @@ public final class S2ReachabilityWorker {
     _id = id;
     _partition = partition;
     _factory = (JFactory) analysis.getBDDPacket().getFactory();
-    _edges = analysis.getForwardEdgeTable();
     _clients = clients;
     _coordinator = coordinator;
-    for (StateExpr state : analysis.getIngressLocationStates()) {
-      if (owner(state) == id) {
-        _reachable.put(state, _factory.one());
-        _worklist.add(state);
-      }
+    for (Table.Cell<StateExpr, StateExpr, Transition> cell : analysis.getForwardEdgeTable().cellSet()) {
+      _reverseEdges
+          .computeIfAbsent(cell.getColumnKey(), k -> new ArrayList<>())
+          .add(new PreEdge(cell.getRowKey(), cell.getValue()));
+    }
+    // Root: the query header space at Query.
+    if (owner(Query.INSTANCE) == id) {
+      _reachable.put(Query.INSTANCE, analysis.getQueryHeaderSpaceBdd().id());
+      _worklist.add(Query.INSTANCE);
     }
   }
 
@@ -77,7 +84,7 @@ public final class S2ReachabilityWorker {
     boolean done = false;
     while (!done) {
       processLocal();
-      _coordinator.roundCheck(false); // barrier: everyone finished local work
+      _coordinator.roundCheck(false);
       boolean sent = flushOutbox();
       boolean anySent = _coordinator.roundCheck(sent);
       boolean changed = drainInbox();
@@ -94,20 +101,18 @@ public final class S2ReachabilityWorker {
 
   private void processLocal() {
     while (!_worklist.isEmpty()) {
-      StateExpr state = _worklist.poll();
-      BDD in = _reachable.get(state);
-      for (Map.Entry<StateExpr, Transition> edge : _edges.row(state).entrySet()) {
-        StateExpr post = edge.getKey();
-        BDD out = edge.getValue().transitForward(in);
+      StateExpr post = _worklist.poll();
+      BDD postBdd = _reachable.get(post);
+      for (PreEdge edge : _reverseEdges.getOrDefault(post, List.of())) {
+        BDD out = edge.transition.transitBackward(postBdd);
         if (out.isZero()) {
           continue;
         }
-        if (owner(post) == _id) {
-          merge(post, out);
+        StateExpr pre = edge.pre;
+        if (owner(pre) == _id) {
+          merge(pre, out);
         } else {
-          _pending
-              .computeIfAbsent(owner(post), k -> new ArrayList<>())
-              .add(new Outbound(post, out));
+          _pending.computeIfAbsent(owner(pre), k -> new ArrayList<>()).add(new Outbound(pre, out));
         }
       }
     }

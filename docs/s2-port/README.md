@@ -95,10 +95,17 @@ control plane converges and FIBs are distributed, each worker builds its
 against vanilla. Verified locally and on OrbStack Kubernetes for 1 and 3 Pods
 (`ribs=MATCH reachability=MATCH symbolic=MATCH`).
 
-Remaining for full parity with the paper: expose the reachability answer/traces
-through the Batfish question pipeline, and build only locally-owned transitions in
-`BDDReachabilityAnalysisFactory` (today every worker builds the full edge table,
-as the reference implementation also did).
+The controller also evaluates the result at the **public API level**: it combines
+the workers' backward-reachable BDDs and produces Batfish's reachability answer
+(`BDDReachabilityUtils.constructFlows`), then compares the concrete flow set with
+vanilla. Verified locally and on OrbStack Kubernetes for 1 and 3 Pods
+(`ribs=MATCH reachability=MATCH answer=MATCH`).
+
+Remaining for full parity with the paper: build only locally-owned transitions in
+`BDDReachabilityAnalysisFactory`. The paper and reference do this (each worker has
+a `PartialForwardingAnalysis` for its owned VRFs, filters remote edges, and pulls
+inter-worker edges); we currently build the full edge table per worker because M4
+distributes the full FIBs. That is a scalability gap, not a correctness one.
 
 ## Running the demos
 

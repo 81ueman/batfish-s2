@@ -20,6 +20,7 @@ import net.sf.javabdd.BDDTransfer;
 import net.sf.javabdd.JFactory;
 import org.batfish.bddreachability.BDDReachabilityAnalysis;
 import org.batfish.bddreachability.BDDReachabilityAnalysisFactory;
+import org.batfish.bddreachability.BDDReachabilityUtils;
 import org.batfish.bddreachability.IpsRoutedOutInterfacesFactory;
 import org.batfish.common.bdd.BDDPacket;
 import org.batfish.datamodel.AbstractRoute;
@@ -111,23 +112,25 @@ public final class S2Main {
         reachMatch &= workerResult.reachability.equals(vanillaReach);
       }
 
-      // Distributed symbolic reachability comparison (M5).
+      // Distributed symbolic reachability (M5), evaluated at the public API level: combine the
+      // workers' reachable BDDs, turn them into the reachability answer (concrete flows), and
+      // compare with vanilla Batfish's answer.
       BDDReachabilityAnalysis referenceAnalysis = buildReachabilityAnalysis(snap, vanilla);
-      Map<StateExpr, BDD> localSymbolic = referenceAnalysis.computeForwardReachableStates();
       JFactory referenceFactory = (JFactory) referenceAnalysis.getBDDPacket().getFactory();
-      boolean symbolicMatch = true;
+      Map<StateExpr, BDD> mergedReachable = new HashMap<>();
       for (S2ControlMessages.Result workerResult : results.values()) {
         for (Map.Entry<StateExpr, String> e : workerResult.symbolicReachable.entrySet()) {
-          BDD localBdd = localSymbolic.get(e.getKey());
-          if (localBdd == null) {
-            continue;
-          }
-          BDD got = new BDDTransfer().load(referenceFactory, e.getValue());
-          if (!got.biimp(localBdd).isOne()) {
-            symbolicMatch = false;
-          }
+          mergedReachable.put(e.getKey(), new BDDTransfer().load(referenceFactory, e.getValue()));
         }
       }
+      Set<Flow> distributedFlows =
+          BDDReachabilityUtils.constructFlows(
+              referenceAnalysis.getBDDPacket(),
+              referenceAnalysis.getIngressLocationReachableBDDs(mergedReachable));
+      Set<Flow> vanillaFlows =
+          BDDReachabilityUtils.constructFlows(
+              referenceAnalysis.getBDDPacket(), referenceAnalysis.getIngressLocationReachableBDDs());
+      boolean answerMatch = distributedFlows.equals(vanillaFlows);
 
       Path out = outputDir().resolve("result-" + numWorkers + "worker.txt");
       StringBuilder report = new StringBuilder();
@@ -136,17 +139,17 @@ public final class S2Main {
       report.append("hosts=").append(distributedRibs.size()).append('\n');
       report.append(match ? "RESULT=MATCH\n" : "RESULT=DIFF\n");
       report.append(reachMatch ? "REACHABILITY=MATCH\n" : "REACHABILITY=DIFF\n");
-      report.append(symbolicMatch ? "SYMBOLIC=MATCH\n" : "SYMBOLIC=DIFF\n");
+      report.append(answerMatch ? "ANSWER=MATCH\n" : "ANSWER=DIFF\n");
       report.append("--- distributed ---\n").append(distributedRibs);
       Files.writeString(out, report.toString());
-      boolean allMatch = match && reachMatch && symbolicMatch;
+      boolean allMatch = match && reachMatch && answerMatch;
       System.out.printf(
-          "S2 %s (%d workers): ribs=%s reachability=%s symbolic=%s, wrote %s%n",
+          "S2 %s (%d workers): ribs=%s reachability=%s answer=%s, wrote %s%n",
           allMatch ? "MATCH" : "DIFF",
           numWorkers,
           match ? "MATCH" : "DIFF",
           reachMatch ? "MATCH" : "DIFF",
-          symbolicMatch ? "MATCH" : "DIFF",
+          answerMatch ? "MATCH" : "DIFF",
           out);
       if (!allMatch) {
         System.out.println("vanilla ribs: " + vanillaRibs);
