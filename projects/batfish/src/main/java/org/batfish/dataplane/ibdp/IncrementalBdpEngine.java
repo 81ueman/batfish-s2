@@ -620,6 +620,9 @@ public class IncrementalBdpEngine {
         converged = false;
         LOGGER.info("VXLAN autostate changed interface status in this iteration");
       }
+      // A distributed engine must agree on convergence: if any worker still sees a topology change,
+      // every worker has to run another topology iteration, or they desynchronize.
+      converged = hasReachedTopologyFixedPoint(converged);
       currentTopologyContext = nextTopologyContext;
       currentTrackReachabilityResults = nextTrackReachabilityResults;
       currentTrackRouteResults = nextTrackRouteResults;
@@ -869,7 +872,7 @@ public class IncrementalBdpEngine {
    * @param iterationLabel iteration label (for stats tracking)
    * @param allNodes all nodes in the network (for correct neighbor referencing)
    */
-  private static void computeDependentRoutesIteration(
+  private void computeDependentRoutesIteration(
       List<VirtualRouter> vrs,
       String iterationLabel,
       Map<String, Node> allNodes,
@@ -877,6 +880,10 @@ public class IncrementalBdpEngine {
       DataPlaneTrackMethodEvaluatorProvider provider,
       int iteration) {
     LOGGER.info("{}: Compute dependent routes", iterationLabel);
+
+    // No worker may start pulling this step's advertisements until every worker has finished the
+    // previous step's writes (endOfEgpInnerRound).
+    synchronizeWorkers();
 
     // Static nextHopIp routes
     LOGGER.info("{}: Recompute conditional static routes", iterationLabel);
@@ -925,8 +932,49 @@ public class IncrementalBdpEngine {
 
     leakAcrossVrfs(vrs, iterationLabel);
 
+    // Every node has finished pulling its neighbors' advertisements for this schedule step. A
+    // distributed worker must not overwrite its neighbor-visible BGP deltas (endOfEgpInnerRound)
+    // while a peer is still reading them, so synchronize all workers before this step's write.
+    synchronizeWorkers();
+
     // Tell each VR that a BGP route computation inner round (schedule) has ended.
     vrs.parallelStream().forEach(VirtualRouter::endOfEgpInnerRound);
+  }
+
+  /**
+   * Synchronization point between computation phases. The stock engine relies on each {@code
+   * parallelStream().forEach(...)} phase completing before the next begins, so that no node writes
+   * state another node reads. A distributed engine overriding this must make it a global barrier
+   * across workers. The default implementation is a no-op.
+   */
+  protected void synchronizeWorkers() {}
+
+  /**
+   * Exchange a locally computed iteration hashcode for a cluster-wide one. The stock engine uses
+   * the local hashcode for oscillation detection; a distributed engine must combine all workers'
+   * hashes so that schedule changes stay synchronized. The default implementation returns the local
+   * value.
+   */
+  protected int exchangeIterationHashCode(int localHashCode) {
+    return localHashCode;
+  }
+
+  /**
+   * Decide whether the topology fixed point has been reached. The stock engine uses the local
+   * result; a distributed engine must combine all workers' results (fixed point only if all agree)
+   * so that they run the same number of topology iterations.
+   */
+  protected boolean hasReachedTopologyFixedPoint(boolean localConverged) {
+    return localConverged;
+  }
+
+  /**
+   * The schedule to start the inner route-computation loop with. The stock engine uses the
+   * configured schedule; a distributed engine should pick one whose step count does not depend on
+   * per-worker state, or its phase barriers will not line up across workers.
+   */
+  protected Schedule initialSchedule() {
+    return _settings.getScheduleName();
   }
 
   private static void updateLayer3Vnis(List<VirtualRouter> vrs) {
@@ -1060,7 +1108,7 @@ public class IncrementalBdpEngine {
 
     Map<Integer, SortedSet<Integer>> iterationsByHashCode = new HashMap<>();
 
-    Schedule currentSchedule = _settings.getScheduleName();
+    Schedule currentSchedule = initialSchedule();
     // The node schedule depends on the nodes, the topology, and the schedule type. Within a round
     // only the type can change, on oscillation, so compute the schedule once per type.
     List<Map<String, Node>> scheduleSteps = null;
@@ -1110,6 +1158,12 @@ public class IncrementalBdpEngine {
         ++nodeSet;
       }
 
+      // All nodes have finished reading their neighbors' advertisements for this iteration. Let
+      // every worker reach this point before anyone runs endOfEgpRound, which clears the neighbor-
+      // visible main-RIB snapshots. Without this, a distributed worker could clear its snapshots
+      // while a peer is still pulling them.
+      synchronizeWorkers();
+
       // Tell each VR that a route computation round has ended.
       // This must be the last thing called on a VR in a routing round.
       vrs.parallelStream().forEach(VirtualRouter::endOfEgpRound);
@@ -1122,8 +1176,10 @@ public class IncrementalBdpEngine {
        */
       computeIterationStatistics(vrs, ae, _numIterations);
 
-      // This hashcode uniquely identifies the iteration (i.e., network state)
-      int iterationHashCode = computeIterationHashCode(vrs);
+      // This hashcode uniquely identifies the iteration (i.e., network state). A distributed engine
+      // must make it global so that every worker detects oscillation at the same iteration and
+      // therefore switches schedule together.
+      int iterationHashCode = exchangeIterationHashCode(computeIterationHashCode(vrs));
       SortedSet<Integer> iterationsWithThisHashCode =
           iterationsByHashCode.computeIfAbsent(iterationHashCode, h -> new TreeSet<>());
 

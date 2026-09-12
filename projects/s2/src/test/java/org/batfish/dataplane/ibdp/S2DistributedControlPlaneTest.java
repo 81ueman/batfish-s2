@@ -41,14 +41,31 @@ public class S2DistributedControlPlaneTest {
 
   private static final String TESTRIG = "org/batfish/dataplane/testrigs/s2-triangle";
   private static final List<String> CONFIGS = ImmutableList.of("r1", "r2", "r3");
+  private static final String LINE_TESTRIG = "org/batfish/dataplane/testrigs/s2-line";
+  private static final List<String> LINE_CONFIGS =
+      ImmutableList.of("r1", "r2", "r3", "r4", "r5", "r6");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
   @Test
   public void testOneAndThreeWorkersMatchVanilla() throws Exception {
+    assertDistributedMatchesVanilla(TESTRIG, CONFIGS, new int[] {1, 3});
+  }
+
+  /**
+   * Multi-hop static eBGP: regression test for the distributed phase barriers and the global
+   * convergence/oscillation checks. Before those, the 3- and 6-worker runs were flaky or hung.
+   */
+  @Test
+  public void testMultiHopLineMatchesVanilla() throws Exception {
+    assertDistributedMatchesVanilla(LINE_TESTRIG, LINE_CONFIGS, new int[] {1, 3, 6});
+  }
+
+  private void assertDistributedMatchesVanilla(
+      String testrig, List<String> testrigConfigs, int[] workerCounts) throws Exception {
     Batfish batfish =
         BatfishTestUtils.getBatfishFromTestrigText(
-            TestrigText.builder().setConfigurationFiles(TESTRIG, CONFIGS).build(), _folder);
+            TestrigText.builder().setConfigurationFiles(testrig, testrigConfigs).build(), _folder);
     NetworkSnapshot snapshot = batfish.getSnapshot();
     batfish.computeDataPlane(snapshot);
     DataPlane vanilla = batfish.loadDataPlane(snapshot);
@@ -71,7 +88,7 @@ public class S2DistributedControlPlaneTest {
     IncrementalDataPlaneSettings settings =
         new IncrementalDataPlaneSettings(batfish.getSettingsConfiguration());
 
-    for (int workers : new int[] {1, 3}) {
+    for (int workers : workerCounts) {
       Table<String, String, FinalMainRib> distributed =
           runDistributed(configs, adverts, tc, ipOwners, settings, workers);
       assertRibsEqual(vanilla, distributed, "workers=" + workers);
@@ -93,9 +110,7 @@ public class S2DistributedControlPlaneTest {
     for (String host : configs.keySet()) {
       realByHost.put(host, DistributedNode.real(configs.get(host)));
     }
-    List<VirtualRouter> allRealVrs =
-        realByHost.values().stream().flatMap(n -> n.getVirtualRouters().stream()).toList();
-    S2Cluster cluster = new S2Cluster(allRealVrs, workers);
+    S2Cluster cluster = new S2Cluster(workers);
 
     // Each worker gets a node for every switch: real if owned, shadow otherwise.
     List<S2BdpEngine> engines = new ArrayList<>();
@@ -118,16 +133,14 @@ public class S2DistributedControlPlaneTest {
       List<Future<ComputeDataPlaneResult>> futures = new ArrayList<>();
       for (S2BdpEngine engine : engines) {
         futures.add(
-            pool.submit(
-                () -> engine.computeDataPlane(configs, tc, adverts, ipOwners, false)));
+            pool.submit(() -> engine.computeDataPlane(configs, tc, adverts, ipOwners, false)));
       }
       Table<String, String, FinalMainRib> merged = HashBasedTable.create();
       for (Future<ComputeDataPlaneResult> future : futures) {
         DataPlane dp = future.get()._dataPlane;
         dp.getRibs()
             .cellSet()
-            .forEach(
-                cell -> merged.put(cell.getRowKey(), cell.getColumnKey(), cell.getValue()));
+            .forEach(cell -> merged.put(cell.getRowKey(), cell.getColumnKey(), cell.getValue()));
       }
       return merged;
     } finally {
@@ -142,9 +155,7 @@ public class S2DistributedControlPlaneTest {
       String vrf = cell.getColumnKey();
       FinalMainRib actual = distributed.get(host, vrf);
       assertThat(
-          String.format("%s: RIB missing for %s/%s", context, host, vrf),
-          actual,
-          notNullValue());
+          String.format("%s: RIB missing for %s/%s", context, host, vrf), actual, notNullValue());
       assertThat(
           String.format("%s: routes differ for %s/%s", context, host, vrf),
           actual.getRoutes(),

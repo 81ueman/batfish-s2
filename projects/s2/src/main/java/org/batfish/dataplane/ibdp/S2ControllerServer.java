@@ -19,8 +19,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * Controller for the multi-process S2 run (milestone 3, one Pod per worker).
  *
- * <p>It coordinates the global fixed point (each worker reports its local dirty flag every round and
- * the controller replies with the global result) and collects each worker's final RIBs.
+ * <p>It coordinates the global fixed point (each worker reports its local dirty flag every round
+ * and the controller replies with the global result) and collects each worker's final RIBs.
  */
 public final class S2ControllerServer implements AutoCloseable {
 
@@ -34,6 +34,7 @@ public final class S2ControllerServer implements AutoCloseable {
   private final Object _registrationLock = new Object();
   private final CountDownLatch _resultsDone = new CountDownLatch(1);
   private final RoundCoordinator _rounds;
+  private final SumCoordinator _sums;
   private int _registered;
 
   /**
@@ -71,12 +72,35 @@ public final class S2ControllerServer implements AutoCloseable {
     }
   }
 
+  /** Barrier that sums every worker's contribution for the round and returns the total. */
+  private static final class SumCoordinator {
+    private final java.util.concurrent.atomic.AtomicInteger _sum =
+        new java.util.concurrent.atomic.AtomicInteger();
+    private final CyclicBarrier _barrier;
+    private volatile int _result;
+
+    SumCoordinator(int numWorkers) {
+      _barrier = new CyclicBarrier(numWorkers, () -> _result = _sum.getAndSet(0));
+    }
+
+    int check(int value) {
+      _sum.addAndGet(value);
+      try {
+        _barrier.await();
+      } catch (Exception e) {
+        throw new RuntimeException("S2 sum synchronization failed", e);
+      }
+      return _result;
+    }
+  }
+
   public S2ControllerServer(int port, int numWorkers, List<S2WorkerEndpoint> endpoints)
       throws IOException {
     _numWorkers = numWorkers;
     _endpoints = endpoints;
     _server = new ServerSocket(port);
     _rounds = new RoundCoordinator(numWorkers);
+    _sums = new SumCoordinator(numWorkers);
   }
 
   public int getPort() {
@@ -128,6 +152,11 @@ public final class S2ControllerServer implements AutoCloseable {
           S2ControlMessages.RoundRequest request = (S2ControlMessages.RoundRequest) message;
           boolean globalDirty = _rounds.check(request.localDirty);
           out.writeObject(new S2ControlMessages.RoundResponse(globalDirty));
+          out.flush();
+        } else if (message instanceof S2ControlMessages.SumRequest) {
+          S2ControlMessages.SumRequest request = (S2ControlMessages.SumRequest) message;
+          int sum = _sums.check(request.value);
+          out.writeObject(new S2ControlMessages.SumResponse(sum));
           out.flush();
         } else if (message instanceof S2ControlMessages.Result) {
           S2ControlMessages.Result result = (S2ControlMessages.Result) message;

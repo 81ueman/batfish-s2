@@ -14,9 +14,8 @@ shrink with the number of workers (the fixpoint was already distributed).
   1 and 3 workers (`ScaledReachabilityTest`), on the `s2-triangle` snapshot.
 * Multi-process runner (`scripts/local-demo.sh`) matches for 1 and 3 workers (verified
   repeatedly on the 3-worker triangle: 5/5).
-* `networks/s2-line` (6-node static eBGP line) matches vanilla for 1 worker and gives
-  the per-worker edge counts below. Its 3-worker ribs/reachability check is flaky for a
-  pre-existing control-plane reason (see the limitation section), not an M5 reason.
+* `networks/s2-line` (6-node static eBGP line) matches vanilla for 1, 3, and 6 workers,
+  and is covered by `S2DistributedControlPlaneTest#testMultiHopLineMatchesVanilla`.
 
 ## Design (approved and implemented)
 
@@ -50,10 +49,8 @@ harnesses (and their inboxes were made thread-safe).
 
 ## Scale evidence
 
-`S2Main` prints, per worker, the number of locally generated and pulled edges. The
-symbolic graph generation depends only on the snapshot topology, not on the (possibly
-racy) control-plane outcome, so the counts below are stable. On the 6-node `s2-line`
-snapshot (static eBGP):
+`S2Main` prints, per worker, the number of locally generated and pulled edges. On the
+6-node `s2-line` snapshot (static eBGP):
 
 | workers | worker edge counts (local + pulled) |
 | --- | --- |
@@ -62,7 +59,8 @@ snapshot (static eBGP):
 
 The workers in the 3-worker run generate 128/68/55 local edges and pull only 3–4 each,
 i.e. each worker's table is a fraction of the 265-edge single-worker table — the M5
-scale property.
+scale property. The 6-worker `s2-line` run (1 node per worker) also matches vanilla and
+reports 93+1, 34+2, 34+2, 34+2, 34+2, 21+1.
 
 And on the 3-node `s2-triangle`:
 
@@ -74,25 +72,43 @@ And on the 3-node `s2-triangle`:
 Note: each worker additionally holds the few terminal-state edges (owner `""`, assigned
 to worker 0), which is why worker 0's count is larger.
 
-## Known, unrelated limitation
+## Distributed control-plane synchronization (found while verifying)
 
-The **distributed control plane** (M1–M4 — built before and untouched by the M5 symbolic
-work) does not scale to many workers on multi-hop eBGP topologies:
+Multi-hop topologies exposed three ordering bugs in the distributed control plane (all
+before any symbolic reachability), which are now fixed:
 
-* A cyclic ring (`r1-r2-…-r6-r1`) converges to a different RIB than vanilla at 3
-  workers and reports `BdpOscillationException` at 6 workers.
-* The acyclic 6-node `s2-line` is stable at 1 worker but at 3 workers gives
-  `ribs=MATCH` only intermittently (1/5 local runs); at 6 workers some workers report
-  `BdpOscillationException`.
+1. **Phase barriers.** The stock engine relies on `parallelStream().forEach(...)` phases
+   completing before the next begins, so no node writes state another node reads. In a
+   distributed run a worker could run `endOfEgpInnerRound` (which overwrites the
+   neighbor-visible BGP deltas) while a peer was still pulling them, making convergence
+   order-dependent. `IncrementalBdpEngine` now calls a `synchronizeWorkers()` hook at
+   each such boundary; `S2BdpEngine` makes it a global barrier.
+2. **Global topology convergence.** The outer topology fixed-point check was local, so
+   one worker could start another topology iteration while peers exited. The
+   `hasReachedTopologyFixedPoint(local)` hook makes it a global AND.
+3. **Global oscillation detection.** Each worker computed its own iteration hashcode for
+   schedule selection, so they could switch to `NODE_SERIALIZED` at different iterations
+   and desynchronize the barriers. The `exchangeIterationHashCode(local)` hook sums the
+   hashes across workers (`S2Coordinator.sumAll`), so the switch is cluster-wide. The
+   remote controller implements this with a `SumRequest`/`SumResponse` round.
+4. **Deterministic schedule.** The default `NODE_COLORED` schedule colors a worker's own
+   (partially shadowed) BGP topology, so different workers can get a different number of
+   color classes and therefore a different number of schedule steps — which breaks any
+   per-step phase barrier. `S2BdpEngine.initialSchedule` starts from `ALL` (one step);
+   the oscillation fallback `NODE_SERIALIZED` has one step per node. Both have a step
+   count that is identical across workers.
 
-These failures happen inside `IncrementalBdpEngine.computeDataPlane`, i.e. before any
-symbolic reachability, so they are a pre-existing distributed-BGP issue rather than a
-regression from this work. Likely cause: worker rounds are barrier-synchronized only
-between BGP iterations, so a worker can pull a neighbor's advertisements while the
-owning worker is concurrently mutating that neighbor's RIB, making convergence
-order-dependent. The fully-connected triangle does not expose it. The M5 scale evidence
-above is unaffected because edge generation is deterministic. Fixing the control plane
-is separate follow-up work.
+With these, `s2-line` matches vanilla at 1, 3, and 6 workers and multi-worker runs no
+longer hang.
+
+## Known residual
+
+On a **cyclic equal-cost** topology (e.g. a 6-node ring), the distributed BGP fixpoint
+can occasionally pick a different valid route than single-machine Batfish where two
+paths tie on AS-path length. That is BGP multiple-fixed-point / tie-break-order
+nondeterminism, not a hang or a scheduling bug; the handoff's acyclic topologies are
+unaffected. Matching Batfish's tie-breaking exactly in a distributed setting is
+follow-up work.
 
 ## Commands
 

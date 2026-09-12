@@ -81,7 +81,11 @@ final class S2SidecarHandlers {
       S2Messages.BoundaryEdgesRequest boundaryRequest = (S2Messages.BoundaryEdgesRequest) request;
       BDDReachabilityAnalysis analysis = localAnalysis.get();
       if (analysis == null) {
-        throw new IllegalStateException("Boundary edge request before local analysis was ready");
+        throw new IllegalStateException(
+            "Boundary edge request before local analysis was ready; server owns "
+                + ownedHosts
+                + " requester owns "
+                + boundaryRequest.ownedHosts);
       }
       List<S2Messages.SerializedEdge> edges = new ArrayList<>();
       try {

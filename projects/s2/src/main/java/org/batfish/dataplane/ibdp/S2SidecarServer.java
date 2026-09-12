@@ -59,7 +59,15 @@ final class S2SidecarServer implements AutoCloseable {
       out.flush();
       ObjectInputStream in = new ObjectInputStream(s.getInputStream());
       Object request = in.readObject();
-      Object response = _handler.handle(request);
+      Object response;
+      try {
+        response = _handler.handle(request);
+      } catch (RuntimeException e) {
+        // Otherwise the client only sees a bare EOF because this connection closes without a reply.
+        System.err.println("S2 sidecar handler failed for " + request.getClass() + ": " + e);
+        e.printStackTrace();
+        throw e;
+      }
       out.writeObject(response);
       out.flush();
     } catch (IOException | ClassNotFoundException e) {

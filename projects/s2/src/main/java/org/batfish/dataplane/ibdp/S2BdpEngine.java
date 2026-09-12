@@ -8,6 +8,7 @@ import java.util.SortedMap;
 import javax.annotation.Nullable;
 import org.batfish.common.topology.IpOwners;
 import org.batfish.datamodel.Configuration;
+import org.batfish.dataplane.ibdp.schedule.IbdpSchedule.Schedule;
 
 /**
  * {@link IncrementalBdpEngine} that builds {@link DistributedNode}s supplied by the S2 controller
@@ -17,8 +18,8 @@ public class S2BdpEngine extends IncrementalBdpEngine {
 
   /**
    * Serializes dataplane construction across engines running in the same JVM. Shadow nodes delegate
-   * to real routers owned by other engines, and {@link VirtualRouter#computeFib()} transiently nulls
-   * the FIB, so concurrent construction could observe a null FIB.
+   * to real routers owned by other engines, and {@link VirtualRouter#computeFib()} transiently
+   * nulls the FIB, so concurrent construction could observe a null FIB.
    */
   private static final Object DATAPLANE_LOCK = new Object();
 
@@ -59,6 +60,51 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   @Override
   protected boolean hasNotReachedRoutingFixedPoint(List<VirtualRouter> vrs) {
     return _coordinator.roundCheck(super.hasNotReachedRoutingFixedPoint(vrs));
+  }
+
+  /**
+   * The stock engine relies on phase boundaries (a {@code parallelStream} phase finishing before
+   * the next begins) to order reads of a neighbor's state against writes to it. In a distributed
+   * run a worker can otherwise, say, overwrite its neighbor-visible BGP deltas while a peer is
+   * still pulling them, which makes convergence order-dependent. Make every such boundary a global
+   * barrier.
+   */
+  @Override
+  protected void synchronizeWorkers() {
+    _coordinator.roundCheck(false);
+  }
+
+  /**
+   * Oscillation detection must be cluster-wide: each worker only sees its own routers, so a purely
+   * local hashcode would let one worker switch to a stricter schedule while others do not, which
+   * desynchronizes the phase barriers above. Sum the hashes across workers instead.
+   */
+  @Override
+  protected int exchangeIterationHashCode(int localHashCode) {
+    return _coordinator.sumAll(localHashCode);
+  }
+
+  /**
+   * Topology convergence is global too: a worker whose shadows look stale may want another topology
+   * iteration after a peer has already exited. Treat the topology as converged only when every
+   * worker says so.
+   */
+  @Override
+  protected boolean hasReachedTopologyFixedPoint(boolean localConverged) {
+    return !_coordinator.roundCheck(!localConverged);
+  }
+
+  /**
+   * Start with the {@link Schedule#ALL} schedule (one step) rather than the default {@code
+   * NODE_COLORED} schedule. A worker computes its coloring from its own (partially shadowed)
+   * topology, so different workers can get a different number of color classes; that would make the
+   * per-step phase barriers line up incorrectly and deadlock. {@code ALL} has a single step and the
+   * oscillation fallback {@code NODE_SERIALIZED} has one step per node, both of which are identical
+   * across workers.
+   */
+  @Override
+  protected Schedule initialSchedule() {
+    return Schedule.ALL;
   }
 
   @Override

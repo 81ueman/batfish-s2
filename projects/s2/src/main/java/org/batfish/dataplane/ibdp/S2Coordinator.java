@@ -1,7 +1,7 @@
 package org.batfish.dataplane.ibdp;
 
 /**
- * Decides whether the whole cluster has reached a routing fixed point. Implemented in-JVM by {@link
+ * Cluster-wide coordination for the distributed dataplane computation. Implemented in-JVM by {@link
  * S2Cluster} (milestone 1/2 tests) and remotely by the controller (milestone 3, separate Pods).
  */
 public interface S2Coordinator {
@@ -10,4 +10,11 @@ public interface S2Coordinator {
    * (true if any worker still has changes). Blocks until every worker has reported the same round.
    */
   boolean roundCheck(boolean localDirty);
+
+  /**
+   * Exchange a per-worker value for the current computation round and return the sum across all
+   * workers. Used to make oscillation detection and schedule selection global: workers that only
+   * see their own switches would otherwise pick different schedules and desynchronize.
+   */
+  int sumAll(int localValue);
 }

@@ -39,7 +39,7 @@ so distribution needs no RIB surgery:
 | File | Change |
 | --- | --- |
 | `Node` | drop `final` |
-| `IncrementalBdpEngine` | `public`; `newNode`, `iterationVirtualRouters`, `protected nextDataplane`, `protected hasNotReachedRoutingFixedPoint` |
+| `IncrementalBdpEngine` | `public`; `newNode`, `iterationVirtualRouters`, `protected nextDataplane`, `protected hasNotReachedRoutingFixedPoint`, and the synchronization hooks `synchronizeWorkers`, `exchangeIterationHashCode`, `hasReachedTopologyFixedPoint`, `initialSchedule` |
 | `BgpRoutingProcess` | `public`; `getOutgoingRoutesForEdge` protected |
 
 ### New module `//projects/s2`
@@ -137,9 +137,9 @@ scripts/compare-answers.sh
 `networks/s2-triangle/configs/{r1,r2,r3}` is a static eBGP triangle (also copied
 under `projects/s2/src/test/resources/...`). A loop testrig is unsuitable: vanilla
 Batfish itself does not converge on it. `networks/s2-line/configs/{r1..r6}` is a
-6-node static eBGP line used for the M5 symbolic scale evidence; its distributed
-control plane is flaky for multi-hop topologies (a pre-existing issue documented in
-`M5-SCALE.md`), so use the triangle for end-to-end correctness checks.
+6-node static eBGP line used for the M5 symbolic scale evidence and for the
+multi-hop distributed-control-plane regression test; it matches vanilla at 1, 3,
+and 6 workers.
 
 ## Layout added by this work
 

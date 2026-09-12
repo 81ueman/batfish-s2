@@ -1,0 +1,12 @@
+hostname r6
+
+interface Loopback0
+ ip address 6.6.6.6 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.0.56.2 255.255.255.252
+
+router bgp 65006
+ bgp router-id 6.6.6.6
+ network 6.6.6.6 mask 255.255.255.255
+ neighbor 10.0.56.1 remote-as 65005

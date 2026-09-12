@@ -48,6 +48,26 @@ final class S2ControlMessages {
     }
   }
 
+  /** Contribute this worker's value to the current round's global sum. */
+  static final class SumRequest implements Serializable {
+    private static final long serialVersionUID = 1L;
+    final int value;
+
+    SumRequest(int value) {
+      this.value = value;
+    }
+  }
+
+  /** The sum of every worker's contributed value for the round. */
+  static final class SumResponse implements Serializable {
+    private static final long serialVersionUID = 1L;
+    final int sum;
+
+    SumResponse(int sum) {
+      this.sum = sum;
+    }
+  }
+
   /** A worker's final main RIBs, traceroute digest, and symbolic reachable BDDs. */
   static final class Result implements Serializable {
     private static final long serialVersionUID = 1L;

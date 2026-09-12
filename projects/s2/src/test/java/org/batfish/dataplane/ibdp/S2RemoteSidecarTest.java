@@ -76,8 +76,7 @@ public class S2RemoteSidecarTest {
 
     for (int workers : new int[] {1, 3}) {
       Table<String, String, FinalMainRib> distributed =
-          runRemote(
-              configs, adverts, tc, ipOwners, bgpTopology, nc, settings, workers);
+          runRemote(configs, adverts, tc, ipOwners, bgpTopology, nc, settings, workers);
       assertRibsEqual(vanilla, distributed, "workers=" + workers);
     }
   }
@@ -96,23 +95,18 @@ public class S2RemoteSidecarTest {
 
     // 1. Build nodes (real for owned, M2 shadow otherwise) without providers yet.
     List<Map<String, DistributedNode>> workerNodes = new ArrayList<>();
-    List<DistributedNode> realNodes = new ArrayList<>();
     for (int w = 0; w < workers; w++) {
       Map<String, DistributedNode> nodes = new HashMap<>();
       for (String host : configs.keySet()) {
         if (assignment.get(host) == w) {
-          DistributedNode node = DistributedNode.real(configs.get(host));
-          realNodes.add(node);
-          nodes.put(host, node);
+          nodes.put(host, DistributedNode.real(configs.get(host)));
         } else {
           nodes.put(host, DistributedNode.shadow(configs.get(host)));
         }
       }
       workerNodes.add(nodes);
     }
-    List<VirtualRouter> allRealVrs =
-        realNodes.stream().flatMap(n -> n.getVirtualRouters().stream()).toList();
-    S2Cluster cluster = new S2Cluster(allRealVrs, workers);
+    S2Cluster cluster = new S2Cluster(workers);
 
     // 2. Start one sidecar per worker, serving that worker's real processes.
     S2SidecarClient client = new S2SidecarClient();
@@ -175,9 +169,7 @@ public class S2RemoteSidecarTest {
       String vrf = cell.getColumnKey();
       FinalMainRib actual = distributed.get(host, vrf);
       assertThat(
-          String.format("%s: RIB missing for %s/%s", context, host, vrf),
-          actual,
-          notNullValue());
+          String.format("%s: RIB missing for %s/%s", context, host, vrf), actual, notNullValue());
       assertThat(
           String.format("%s: routes differ for %s/%s", context, host, vrf),
           actual.getRoutes(),

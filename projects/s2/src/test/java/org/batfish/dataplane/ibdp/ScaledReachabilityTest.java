@@ -254,5 +254,10 @@ public class ScaledReachabilityTest {
       }
       return _result;
     }
+
+    @Override
+    public int sumAll(int localValue) {
+      return localValue;
+    }
   }
 }

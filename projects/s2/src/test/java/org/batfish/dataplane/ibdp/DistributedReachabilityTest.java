@@ -319,6 +319,11 @@ public class DistributedReachabilityTest {
       }
       return _result;
     }
+
+    @Override
+    public int sumAll(int localValue) {
+      return localValue;
+    }
   }
 
   private static String ownerHostname(StateExpr state) {
