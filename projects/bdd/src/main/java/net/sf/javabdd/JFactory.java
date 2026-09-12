@@ -141,7 +141,7 @@ public final class JFactory extends BDDFactory implements Serializable {
   }
 
   /** Private helper function to create BDD objects. */
-  private BDDImpl makeBDD(int id) {
+  BDDImpl makeBDD(int id) {
     madeBDDs++;
     if (_bddReuseSize > 0) {
       BDDImpl ret = _bddReuse[--_bddReuseSize];
@@ -165,6 +165,11 @@ public final class JFactory extends BDDFactory implements Serializable {
     @Override
     public BDDFactory getFactory() {
       return JFactory.this;
+    }
+
+    @Override
+    public int getIndex() {
+      return _index;
     }
 
     @Override
@@ -593,7 +598,7 @@ public final class JFactory extends BDDFactory implements Serializable {
     bddnodes[node * __node_size + offset__refcou_and_level] &= ~REF_MASK;
   }
 
-  private void INCREF(int node) {
+  void INCREF(int node) {
     if ((bddnodes[node * __node_size + offset__refcou_and_level] & REF_MASK) != REF_MASK) {
       bddnodes[node * __node_size + offset__refcou_and_level] += REF_INC;
     }
@@ -610,7 +615,7 @@ public final class JFactory extends BDDFactory implements Serializable {
     return bddnodes[node * __node_size + offset__refcou_and_level] >>> 22;
   }
 
-  private int LEVEL(int node) {
+  int LEVEL(int node) {
     return bddnodes[node * __node_size + offset__refcou_and_level] & LEV_MASK;
   }
 
@@ -646,7 +651,7 @@ public final class JFactory extends BDDFactory implements Serializable {
     return (bddnodes[n * __node_size + offset__refcou_and_level] & MARK_MASK) != 0;
   }
 
-  private int LOW(int r) {
+  int LOW(int r) {
     return bddnodes[r * __node_size + offset__low];
   }
 
@@ -654,7 +659,7 @@ public final class JFactory extends BDDFactory implements Serializable {
     bddnodes[r * __node_size + offset__low] = v;
   }
 
-  private int HIGH(int r) {
+  int HIGH(int r) {
     return bddnodes[r * __node_size + offset__high];
   }
 
@@ -4103,7 +4108,7 @@ public final class JFactory extends BDDFactory implements Serializable {
     bdd_unmark(HIGH(i));
   }
 
-  private int bdd_makenode(int level, int low, int high) {
+  int bdd_makenode(int level, int low, int high) {
     assert (ISCONST(low) || level < LEVEL(low)) && (ISCONST(high) || level < LEVEL(high));
 
     /* check whether childs are equal */

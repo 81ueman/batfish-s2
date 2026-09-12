@@ -68,6 +68,9 @@ public abstract class BDD implements Serializable {
    */
   public abstract BDDFactory getFactory();
 
+  /** Internal node index, for serialization by {@link BDDTransfer}. */
+  public abstract int getIndex();
+
   /**
    * Returns true if this BDD is a satisfiable assignment.
    *

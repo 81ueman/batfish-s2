@@ -69,6 +69,22 @@ dataplane (FIBs are distributed, forwarding is not). The paper's fully distribut
 symbolic DPV (BDD port predicates forwarded across workers via InterWorkerTransition)
 is still future work.
 
+## M5 — distributed symbolic DPV (in progress)
+
+Decomposed into slices:
+
+- [x] **Slice 1** BDD serialization primitive: `net.sf.javabdd.BDDTransfer` round-trips
+  a BDD between two `JFactory` instances (`BddTransferTest`). This is what lets a
+  symbolic packet cross a worker boundary.
+- [ ] **Slice 2** Cross-worker transition: wrap reachability-graph edges that leave
+  a node with an `InterWorkerTransition` that serializes the BDD and calls the
+  owning worker's sidecar (needs `BDDReachabilityAnalysisFactory`/`Transition`
+  exposure).
+- [ ] **Slice 3** Distributed fixpoint + answerer: run the BDD reachability
+  fixpoint per worker over its owned state expressions, exchanging in-flight BDDs,
+  and produce the reachability answer.
+- [ ] **Slice 4** Verify 1/3 Pod reachability answer equals vanilla.
+
 ## Running the demos
 
 Local multi-process (one JVM per worker):
