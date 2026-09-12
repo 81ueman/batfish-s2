@@ -125,7 +125,7 @@ import org.batfish.dataplane.rib.RouteAdvertisement.Reason;
  * for exchange of BGP routing messages.
  */
 @ParametersAreNonnullByDefault
-final class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?, ?>> {
+public class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?, ?>> {
   /** Configuration for this process */
   private final @Nonnull BgpProcess _process;
 
@@ -1156,7 +1156,7 @@ final class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?,
    *     The {@link EdgeId#head() head} is the remote {@link BgpPeerConfigId} and the {@link
    *     EdgeId#tail() tail} is our {@link BgpPeerConfigId}.
    */
-  private Stream<RouteAdvertisement<Bgpv4Route>> getOutgoingRoutesForEdge(
+  protected Stream<RouteAdvertisement<Bgpv4Route>> getOutgoingRoutesForEdge(
       EdgeId edge,
       Map<String, Node> allNodes,
       BgpTopology bgpTopology,

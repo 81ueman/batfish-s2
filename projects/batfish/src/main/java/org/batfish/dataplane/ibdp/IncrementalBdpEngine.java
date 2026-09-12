@@ -94,7 +94,7 @@ import org.batfish.dataplane.rib.RibDelta;
 import org.batfish.version.BatfishVersion;
 
 /** Computes the entire dataplane by executing a fixed-point computation. */
-final class IncrementalBdpEngine {
+public class IncrementalBdpEngine {
 
   private static final Logger LOGGER = LogManager.getLogger(IncrementalBdpEngine.class);
 
@@ -427,6 +427,14 @@ final class IncrementalBdpEngine {
             lost.size() > 3 ? lost.subList(0, 3) : lost));
   }
 
+  /**
+   * Factory for the {@link Node} model backing a configuration. Overridable so the S2 distributed
+   * engine can substitute {@code DistributedNode}s without duplicating engine logic.
+   */
+  Node newNode(Configuration configuration) {
+    return new Node(configuration);
+  }
+
   ComputeDataPlaneResult computeDataPlane(
       Map<String, Configuration> configurations,
       TopologyContext initialTopologyContext,
@@ -448,7 +456,7 @@ final class IncrementalBdpEngine {
 
     // Generate our nodes, keyed by name, sorted for determinism
     SortedMap<String, Node> nodes =
-        toImmutableSortedMap(configurations.values(), Configuration::getHostname, Node::new);
+        toImmutableSortedMap(configurations.values(), Configuration::getHostname, this::newNode);
     // A collection of all the virtual routers in random order enables parallelization across all
     // VRs, and likely spreads nodes with similar hostnames across different cores. In contrast,
     // nodes.values().parallelStream().flatMap(get vrs stream) is only node-parallel and clusters
