@@ -1,92 +1,46 @@
-# S2 port — remaining work (checkpoint)
+# S2 — remaining work after M1
 
-`bazel build //projects/distributed:distributed` → 76 errors across ~17 files.
+## Done (M1)
 
-## Already applied to upstream Batfish (core)
+`//projects/s2:s2_tests` proves the distributed control plane:
 
-* `final` → non-final: `Node`, `VirtualRouter`, `BgpRoutingProcess`,
-  `OspfRoutingProcess`, `IncrementalBdpEngine`, `IncrementalDataPlanePlugin`,
-  `Bgpv4Rib`, `TracerouteAnswerer`, plus `RouteAdvertisement`.
-* `public` on `BgpRoutingProcess`, `OspfRoutingProcess`, `IncrementalBdpEngine`.
-* Visibility `private` → `protected`: `BgpRoutingProcess` RIB/field set,
-  `VirtualRouter` (`_name`, `_node`, `_ospfProcesses`, `_vrf`),
-  `PartialDataplane` (fields + constructor).
-* `Serializable`: `RouteAdvertisement` (+ Jackson annotations and
-  `PROP_ROUTE`/`PROP_REASON`), `TraceDagImpl`, `BgpSessionProperties`,
-  `IngressLocation` (via symbolic), and many `datamodel.flow.*` classes.
-* Symbolic BUILD visibility made public.
-* BDD serialization support: `BDD.getIndex()`, `JFactory.makeBDD`/`BDDImpl`
-  public, `BDDImpl.getIndex()`, `JFactory.bdd_nodecount` public, new
-  `net.sf.javabdd.BDDTransfer`.
-* New `org.batfish.bddreachability.BDDReachabilityAnswerElement`.
+* partition 3 switches across 1 and 3 logical workers
+* one Batfish engine per worker; shadows delegate to the owning worker's real
+  node
+* global (controller-level) convergence check via `S2Cluster`
+* assert each real node's main RIB equals vanilla Batfish's RIB
 
-## Remaining error groups
+Both `workers=1` and `workers=3` match. Core hooks are limited to `Node`,
+`IncrementalBdpEngine`, `BgpRoutingProcess` (see `README.md`).
 
-1. **`DistributedBdpEngine` (18) / `CentralizedBdpEngine` (12)**
-   Upstream rewrote the iteration loop of `IncrementalBdpEngine`. The reference
-   subclasses it and overrides internals (`_settings`, `_numIterations`,
-   `getScheduleName()`, `IbdpSchedule`, `computeIterationStatistics`,
-   `MAX_TOPOLOGY_ITERATIONS`). Need to re-subclass against the current
-   `IncrementalBdpEngine` iteration API (see upstream
-   `projects/batfish/src/main/java/org/batfish/dataplane/ibdp/IncrementalBdpEngine.java`).
+## Next: M2 — separate processes + gRPC sidecar
 
-2. **`DbfCombinedBgpv4Rib` (14) / `DbfBgpv4Rib` (2)**
-   Upstream changed `BgpRib`: `_logicalClock` is now `long[]`, `_bestRibs`
-   element type, `bestPathComparator` visibility, `Bgpv4Rib` constructor now
-   takes a `ResolutionRestriction`, and `_allRoutes` was renamed. The custom
-   S2 RIB (used for memory-efficient prefix sharding) must be reworked against
-   the new `Bgpv4Rib`/`BgpRib`.
+Currently a shadow node delegates by holding the real node's `VirtualRouter` in
+the same JVM. M2 replaces that delegation with an RPC:
 
-3. **`TopologyIterator` (6)**
-   `IncrementalBdpEngine.collectTrackRoutes`,
-   `nextTrackReachabilityResultsByHostname`, `nextTrackRoutesByHostname`,
-   `nextTrackMethodEvaluatorProvider` were renamed/moved upstream. Update the
-   calls or the visibility.
+1. Controller parses configs, partitions, and sends each worker its assignment.
+2. Worker builds `DistributedNode`s; shadow nodes get an RPC-backed
+   `BgpRoutingProcess` that implements `getOutgoingRoutesForEdge` by calling the
+   owning worker's sidecar.
+3. Cross-worker gRPC channel (Batfish already added `grpc_maven` in
+   `MODULE.bazel`). Serialize the edge id + hostname/vrf request; return the
+   advertisement stream (Java serialization initially).
+4. Global convergence stays barrier-based but crosses processes (controller
+   coordinates rounds).
 
-4. **`TracerouteWorkerSidecar` (3), `DistributedFlowTracer` (1)**
-   `org.batfish.question.traceroute.TracerouteAnswererHelper` no longer exists
-   and `FlowTracer` methods changed. Traceroute is **not** needed for the
-   minimal reachability milestone — consider excluding
-   `DistributedTraceroute*`/`TracerouteWorkerSidecar`/`DistributedFlowTracer`
-   from the first milestone build.
+Open questions: serialization format for `RouteAdvertisement<Bgpv4Route>`
+(Java serialization vs JSON), and how the controller learns "all workers
+converged" (a round RPC is the simplest).
 
-5. **`BatfishUtils` (2)**
-   Upstream `makeTestrigCache()` returns Guava `Cache`; reference expected
-   Caffeine. Switch the distributed `BatfishUtils` field/param type to Guava
-   `com.google.common.cache.Cache`.
+## After M2: M3 — Kubernetes
 
-6. **`ArpReplies` (3) / `PartialForwardingAnalysis` (2)**
-   `ForwardingAnalysisImpl.computeMatchingIps`, `computeRoutesWithNextHop`,
-   `computeIpsRoutedOutInterfaces` changed visibility/signature. Check the
-   current `ForwardingAnalysisImpl` and adapt (the reference had copied an
-   `ArpReplies` helper).
+* `docker/Dockerfile.s2` builds controller/worker image from the runner jar.
+* `k8s/overlays/{1pod,3pod}` run the same snapshot with 1 vs 3 worker Pods.
+* `scripts/k8s-demo.sh N` + `scripts/compare-answers.sh` diff controller output.
 
-7. **`Worker` (3)**
-   `VirtualRouter._independentRib` no longer exists and
-   `ospfIteration`/`bgpIteration` signatures changed. Adapt the worker's
-   iteration dispatch.
+## Not yet implemented (later milestones)
 
-8. **`CentralizedDataPlanePlugin` / `DistributedDataPlanePlugin` /
-   `DistributedDataPlane` / `NodeWrapper` / `CentralizedNode` (8)**
-   Constructor/visibility drift on `IncrementalDataPlanePlugin` and `Node`;
-   low-risk once the larger items land.
-
-## Suggested next steps
-
-1. Reduce scope: build a first milestone without traceroute/multipath/loop/OSPF
-   files, so only the BGP + reachability path must compile. Keep the excluded
-   files for later.
-2. Port `IncrementalBdpEngine` subclassing first (blocks 30 errors).
-3. Port/adjust the RIB (blocks 16 errors).
-4. Fix `BatfishUtils` cache type (2 errors) and the engine/worker casts.
-5. Get a single-JVM equivalence run working with `TestRunner` on a tiny
-   snapshot (vanilla Batfish vs S2 same result).
-6. Only then build images and run the 1-vs-3 Pod comparison.
-
-## Why results should be identical
-
-S2 keeps a *real* node for each locally-hosted switch and a *shadow* node for
-every remote switch. A shadow node relays route exchange to the real node on
-another worker via the sidecar, so switch models remain unaware of placement.
-The distributed fixpoint therefore computes the same RIBs/FIBs as Batfish; the
-1-vs-3 Pod check is exactly this invariant.
+* Distributed data-plane verification (BDD forwarding across shadow ports):
+  M1/M2 compare control-plane RIBs/FIBs, which is S2's core invariant. Full
+  reachability across partitions is a later step.
+* OSPF / EVPN / prefix sharding / METIS partitioner / oscillation handling.

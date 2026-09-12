@@ -1,3 +1,4 @@
+load("@batfish//skylark:junit.bzl", "junit_tests")
 load("@rules_java//java:defs.bzl", "java_library")
 
 package(default_visibility = ["//visibility:public"])
@@ -10,7 +11,24 @@ java_library(
     deps = [
         "//projects/batfish",
         "//projects/common:common_lib",
+        "@maven//:com_google_code_findbugs_jsr305",
         "@maven//:com_google_guava_guava",
         "@maven//:org_apache_logging_log4j_log4j_api",
+    ],
+)
+
+junit_tests(
+    name = "s2_tests",
+    srcs = glob(["src/test/java/**/*Test.java"]),
+    resources = glob(["src/test/resources/**"]),
+    deps = [
+        ":s2",
+        "//projects/batfish",
+        "//projects/batfish:batfish_testlib",
+        "//projects/common",
+        "//projects/common/src/test:common_testlib",
+        "@maven//:com_google_guava_guava",
+        "@maven//:junit_junit",
+        "@maven//:org_hamcrest_hamcrest",
     ],
 )

@@ -1,53 +1,60 @@
 package org.batfish.dataplane.ibdp;
 
-import com.google.common.collect.ImmutableList;
 import java.util.Collection;
+import java.util.Optional;
+import javax.annotation.Nullable;
 import org.batfish.datamodel.Configuration;
 
 /**
  * A {@link Node} that participates in S2's distributed computation.
  *
- * <p>Exactly one worker "owns" a given switch and simulates it as a <b>real</b> node. Every other
- * worker builds the same node as a <b>shadow</b>. A shadow node still exposes its virtual routers
- * to neighbor lookup ({@link #getVirtualRouterOrThrow}), but returns an empty collection from {@link
- * #getVirtualRouters()}, so Batfish's engine never simulates it. Its BGP process is patched (see
- * {@link #wireShadowBgpProcessesFrom}) to delegate route lookups to the real process on the owning
- * worker.
+ * <p>Exactly one worker "owns" a switch and simulates it as a <b>real</b> node. Every other worker
+ * holds a <b>shadow</b> node for the same switch. A shadow node delegates its virtual routers to
+ * the owning worker's real node, so:
+ *
+ * <ul>
+ *   <li>route lookups by neighbors ({@link #getVirtualRouterOrThrow}) return the real BGP process;
+ *   <li>dataplane construction (FIBs, forwarding analysis) sees the real forwarding state;
+ *   <li>but the data-plane engine must not <i>iterate</i> a shadow. That is decided by {@link
+ *       S2BdpEngine#iterationVirtualRouters}, which returns no routers for shadows.
+ * </ul>
  */
 public class DistributedNode extends Node {
 
-  private final boolean _shadow;
+  /** Non-null iff this node is a shadow; points at the real node on the owning worker. */
+  private final @Nullable DistributedNode _real;
 
-  public DistributedNode(Configuration configuration, boolean shadow) {
+  private DistributedNode(Configuration configuration, @Nullable DistributedNode real) {
     super(configuration);
-    _shadow = shadow;
+    _real = real;
+  }
+
+  /** A node this worker owns and simulates. */
+  public static DistributedNode real(Configuration configuration) {
+    return new DistributedNode(configuration, null);
+  }
+
+  /** A node owned by another worker; delegates to {@code real}. */
+  public static DistributedNode shadowOf(DistributedNode real) {
+    return new DistributedNode(real.getConfiguration(), real);
   }
 
   public boolean isShadow() {
-    return _shadow;
+    return _real != null;
   }
 
-  /** Only real nodes are iterated by the data-plane engine; shadow nodes are inert. */
   @Override
   Collection<VirtualRouter> getVirtualRouters() {
-    return _shadow ? ImmutableList.of() : super.getVirtualRouters();
+    return isShadow() ? _real.getVirtualRouters() : super.getVirtualRouters();
   }
 
-  /**
-   * Replace this (shadow) node's BGP processes with the corresponding real processes from the owning
-   * worker, so a neighbor lookup ({@code getOutgoingRoutesForEdge}) yields the real advertisements.
-   *
-   * <p>In milestone 1 (single JVM) the real process object is shared directly. Milestone 2 replaces
-   * this with a sidecar RPC, which is why the call boundary is isolated here.
-   */
-  public void wireShadowBgpProcessesFrom(DistributedNode realNode) {
-    if (!_shadow) {
-      throw new IllegalStateException("wireShadowBgpProcessesFrom called on a real node");
-    }
-    for (String vrf : realNode.getConfiguration().getVrfs().keySet()) {
-      VirtualRouter realVr = realNode.getVirtualRouterOrThrow(vrf);
-      VirtualRouter shadowVr = getVirtualRouterOrThrow(vrf);
-      shadowVr._bgpRoutingProcess = realVr.getBgpRoutingProcess();
-    }
+  @Override
+  Optional<VirtualRouter> getVirtualRouter(String vrfName) {
+    return isShadow() ? _real.getVirtualRouter(vrfName) : super.getVirtualRouter(vrfName);
+  }
+
+  @Override
+  VirtualRouter getVirtualRouterOrThrow(String vrfName) {
+    return isShadow() ? _real.getVirtualRouterOrThrow(vrfName) : super.getVirtualRouterOrThrow(vrfName);
   }
 }

@@ -6,14 +6,14 @@
 #
 # Environment:
 #   WORKERS         number of worker pods (1 or 3)
-#   NETWORK_NAME    snapshot name under /s2/inputs (default bgp-resolution-loop)
+#   NETWORK_NAME    snapshot name under /s2/inputs (default s2-triangle)
 #   SHARDS          number of prefix shards (default 1)
 #   PARTITION       random | expert | metis (default random)
 #   REACHABILITY    -1 for all-pairs, N for sampled pairs (default -1)
 set -euo pipefail
 
 WORKERS="${WORKERS:-1}"
-NETWORK_NAME="${NETWORK_NAME:-bgp-resolution-loop}"
+NETWORK_NAME="${NETWORK_NAME:-s2-triangle}"
 SHARDS="${SHARDS:-1}"
 PARTITION="${PARTITION:-random}"
 REACHABILITY="${REACHABILITY:--1}"

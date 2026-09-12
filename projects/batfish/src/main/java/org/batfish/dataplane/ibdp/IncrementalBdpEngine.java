@@ -116,7 +116,7 @@ public class IncrementalBdpEngine {
    * ForwardingAnalysis, and other internals are recomputed based on the updated state in the {@code
    * nodes} and {@code vrs}.
    */
-  private PartialDataplane nextDataplane(
+  protected PartialDataplane nextDataplane(
       TopologyContext currentTopologyContext,
       SortedMap<String, Node> nodes,
       List<VirtualRouter> vrs,
@@ -435,6 +435,15 @@ public class IncrementalBdpEngine {
     return new Node(configuration);
   }
 
+  /**
+   * Virtual routers that this engine should iterate (route computation). Defaults to all routers on
+   * the node. The S2 distributed engine overrides this so shadow nodes are visible to dataplane
+   * construction (FIBs/forwarding analysis) but are not simulated locally.
+   */
+  Collection<VirtualRouter> iterationVirtualRouters(Node node) {
+    return node.getVirtualRouters();
+  }
+
   ComputeDataPlaneResult computeDataPlane(
       Map<String, Configuration> configurations,
       TopologyContext initialTopologyContext,
@@ -462,7 +471,7 @@ public class IncrementalBdpEngine {
     // nodes.values().parallelStream().flatMap(get vrs stream) is only node-parallel and clusters
     // nodes by hostname. See https://github.com/batfish/batfish/pull/7054 description.
     List<VirtualRouter> vrs =
-        toListInRandomOrder(nodes.values().stream().flatMap(n -> n.getVirtualRouters().stream()));
+        toListInRandomOrder(nodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
     NetworkConfigurations networkConfigurations = NetworkConfigurations.of(configurations);
 
     /*
@@ -1085,7 +1094,7 @@ public class IncrementalBdpEngine {
       for (Map<String, Node> iterationNodes : scheduleSteps) {
         List<VirtualRouter> iterationVrs =
             toListInRandomOrder(
-                iterationNodes.values().stream().flatMap(n -> n.getVirtualRouters().stream()));
+                iterationNodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
         String iterationlabel = String.format("Iteration %d Schedule %d", _numIterations, nodeSet);
         computeDependentRoutesIteration(
             iterationVrs, iterationlabel, nodes, networkConfigurations, provider, _numIterations);
@@ -1130,7 +1139,7 @@ public class IncrementalBdpEngine {
   }
 
   /** Check if we have reached a routing fixed point */
-  private boolean hasNotReachedRoutingFixedPoint(List<VirtualRouter> vrs) {
+  protected boolean hasNotReachedRoutingFixedPoint(List<VirtualRouter> vrs) {
     LOGGER.info("Iteration {}: Check if fixed point reached", _numIterations);
     return vrs.parallelStream().anyMatch(VirtualRouter::isDirty);
   }
@@ -1208,14 +1217,14 @@ public class IncrementalBdpEngine {
         Map<String, Node> scheduleNodes = schedule.next();
         List<VirtualRouter> scheduleVrs =
             toListInRandomOrder(
-                scheduleNodes.values().stream().flatMap(n -> n.getVirtualRouters().stream()));
+                scheduleNodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
         scheduleVrs.parallelStream()
             .forEach(virtualRouter -> virtualRouter.ospfIteration(allNodes, nc));
         scheduleVrs.parallelStream().forEach(VirtualRouter::mergeOspfRoutesToMainRib);
       }
       dirty =
           allNodes.values().parallelStream()
-              .flatMap(n -> n.getVirtualRouters().stream())
+              .flatMap(n -> iterationVirtualRouters(n).stream())
               .flatMap(vr -> vr.getOspfProcesses().values().stream())
               .anyMatch(OspfRoutingProcess::isDirty);
       if (ospfInternalIterations > MAX_OSPF_INTERNAL_ITERATIONS) {

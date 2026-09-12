@@ -36,7 +36,7 @@ count and the `WORKERS` value passed to the orchestrator.
 
 ## Notes
 
-* The bundled snapshot is `networks/bgp-resolution-loop` (a 3-router NX-OS eBGP
+* The bundled snapshot is `networks/s2-triangle` (a 3-router NX-OS eBGP
   topology) baked into the image at `/s2/inputs/`.
 * `shard 1` is used initially; prefix sharding is an orthogonal memory
   optimization and is not required for the equality check on a tiny network.

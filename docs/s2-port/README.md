@@ -1,84 +1,72 @@
-# S2 port onto latest upstream Batfish
+# S2 re-implementation on latest upstream Batfish
 
-This directory tracks our effort to re-implement **S2: A Distributed Configuration
-Verifier for Hyper-Scale Networks** (SIGCOMM'25) on top of **current upstream
-Batfish**, then validate that distributing verification across several
-Kubernetes Pods does not change the verification result compared to a single Pod.
+Clean, from-scratch implementation of **S2: A Distributed Configuration Verifier
+for Hyper-Scale Networks** (SIGCOMM'25) on top of current upstream Batfish.
 
-## Repos involved
+The old copy-based port is preserved on branch `s2-copied-old` and the reference
+repo `~/ghq/github.com/81ueman/s2-reference` is used as a design reference only.
 
-| Repo | Path | Role |
-| --- | --- | --- |
-| upstream Batfish | `batfish-s2/` (this repo, branch `s2`) | Base we modify |
-| S2 reference | `~/ghq/github.com/81ueman/s2-reference` | Old fork of Batfish (base commit `0ee9162`, 2023-06-13) |
-| S2 paper | `nv-papers/papers/s2-2025.pdf` | Design reference |
+## Repos / branches
 
-The S2 reference adds `projects/distributed` (89 Java files) and touches 98
-files across Batfish core (~1,286 insertions). Its base is ~3 years older than
-upstream `master`, so the port is a mixture of *applying S2's intent* and
-*adapting to renamed/moved APIs*.
+| Thing | Where |
+| --- | --- |
+| Upstream Batfish base | `batfish/batfish` master `2a513d0` |
+| This work | branch `s2` |
+| Old copy-based port | branch `s2-copied-old` |
+| Reference implementation | `~/ghq/github.com/81ueman/s2-reference` |
+| Paper | `nv-papers/papers/s2-2025.pdf` |
 
-## Approach
+## Design (see `DESIGN.md`)
 
-Compile-driven port:
+Batfish's BGP iteration pulls a neighbor's advertisements with
 
-1. Copy `projects/distributed` into this repo.
-2. Wire it into the current build: `projects/common` (renamed from
-   `projects/batfish-common-protocol`), gRPC added as an isolated Maven repo
-   (`grpc_maven`) so the main Batfish lockfile is untouched.
-3. Apply the "core" part of the S2 patch (visibility `private`→`protected`/
-   `public`, `final`→non-final, `Serializable`), rewriting
-   `projects/batfish-common-protocol/` → `projects/common/`.
-4. Iterate `bazel build //projects/distributed:distributed` until it compiles,
-   adapting where Batfish APIs changed. Newer upstream is the source of truth.
-5. Containerize controller/worker and run on local Kubernetes (OrbStack).
-6. Compare 1-worker vs 3-worker output for the same snapshot.
+```java
+remoteProcess.getOutgoingRoutesForEdge(edgeId, nodes, bgpTopology, nc, isNewSession);
+```
 
-A reconstructed full patch is saved at
-`/private/var/folders/.../opencode/s2-full.patch` (regenerate with
-`scripts/make-s2-patch.sh`).
+so distribution needs no RIB surgery:
 
-## Status (checkpoint)
+* Each worker builds a `Node` for every switch.
+* Owned switches are **real**; the rest are **shadow** nodes that delegate their
+  virtual routers to the owning worker's real node.
+* The engine iterates only real routers (`iterationVirtualRouters` hook) but sees
+  shadows for neighbor lookups and dataplane construction.
+* Convergence is decided **globally** (`S2Cluster` + barrier), matching S2's
+  controller-level fixpoint.
 
-* ✅ Upstream Batfish builds on this machine (`bazel build
-  //projects/allinone:allinone_main`, ~70s warm).
-* ✅ `projects/distributed` copied and wired; gRPC deps resolve.
-* ✅ Core visibility/serialization patch largely applied.
-* ✅ BDD-layer additions (`BDD.getIndex()`, `JFactory.makeBDD`/`BDDImpl`
-  visibility, `getIndex`, `bdd_nodecount`) applied.
-* 🔄 `//projects/distributed:distributed` **does not compile yet**: 76 errors in
-  ~17 files, concentrated in:
-  * `DistributedBdpEngine` / `CentralizedBdpEngine` (upstream reworked the
-    engine iteration API),
-  * `DbfCombinedBgpv4Rib` / `DbfBgpv4Rib` (upstream RIB internals changed),
-  * `TopologyIterator` (upstream moved/renamed `IncrementalBdpEngine` track
-    helpers),
-  * `TracerouteWorkerSidecar` (`TracerouteAnswererHelper` no longer exists),
-  * `BatfishUtils` (upstream now uses Guava `Cache`, reference used Caffeine),
-  * assorted `ForwardingAnalysisImpl`/`Ospf`/`VirtualRouter` method visibility.
-* ⏳ Kubernetes manifests and equivalence harness are scaffolded (see
-  `k8s/`, `scripts/`) but not yet runnable until the module compiles.
+### Minimal core hooks (3 files)
 
-See `docs/s2-port/PORTING.md` for the per-file remaining work.
+| File | Change |
+| --- | --- |
+| `Node` | drop `final` |
+| `IncrementalBdpEngine` | `public`; `newNode`, `iterationVirtualRouters`, `protected nextDataplane`, `protected hasNotReachedRoutingFixedPoint` |
+| `BgpRoutingProcess` | `public`; `getOutgoingRoutesForEdge` protected |
 
-## Kubernetes validation plan
+### New module `//projects/s2`
 
-* One controller Pod + N worker Pods (N = 1 and N = 3).
-* The verified network model is partitioned across workers (`random`/`expert`
-  partition scheme initially; METIS later), i.e. "splitting the network" means
-  **splitting the network being verified**, not isolating Pods with
-  NetworkPolicy.
-* Controller and workers are separate Pods; cross-Pod route/packet exchange goes
-  through S2 sidecars over gRPC.
-* Same snapshot is verified in both configurations; the controller's RIB/FIB and
-  reachability answer are diffed. Expect: identical results.
+* `DistributedNode` — real/shadow node
+* `NetworkPartitioner` — balanced hostname→worker assignment
+* `S2BdpEngine` — engine over `DistributedNode`s, real-only iteration, global convergence
+* `S2Cluster` — shared global convergence check
+
+## Milestones
+
+- [x] **M1** single JVM, in-process: 1 and 3 logical workers produce main RIBs
+  **identical** to vanilla Batfish (`//projects/s2:s2_tests`, static 3-node eBGP
+  triangle).
+- [ ] **M2** split controller/workers into processes, sidecar over gRPC.
+- [ ] **M3** Kubernetes 1 Pod vs 3 Pods, compare controller output.
+
+## Test snapshot
+
+`networks/s2-triangle/configs/{r1,r2,r3}` is a static eBGP triangle (also copied
+under `projects/s2/src/test/resources/...`). A loop testrig is unsuitable: vanilla
+Batfish itself does not converge on it.
 
 ## Layout added by this work
 
 ```
-projects/distributed/     # ported S2 module
-docker/Dockerfile.s2      # controller/worker image
-k8s/                      # namespace, controller, worker StatefulSet, jobs
-scripts/                  # patch regeneration, build, k8s apply/compare
-docs/s2-port/             # this documentation
+projects/s2/          # our implementation + tests
+networks/s2-triangle/ # demo snapshot
+docker/, k8s/, scripts/, docs/s2-port/
 ```

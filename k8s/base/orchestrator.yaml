@@ -17,7 +17,7 @@ spec:
             - name: WORKERS
               value: "1"
             - name: NETWORK_NAME
-              value: "bgp-resolution-loop"
+              value: "s2-triangle"
             - name: PARTITION
               value: "random"
             - name: SHARDS
