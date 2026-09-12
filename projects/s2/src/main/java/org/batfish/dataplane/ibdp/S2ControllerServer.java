@@ -16,7 +16,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import org.batfish.datamodel.AbstractRoute;
 
 /**
  * Controller for the multi-process S2 run (milestone 3, one Pod per worker).
@@ -32,8 +31,7 @@ public final class S2ControllerServer implements AutoCloseable {
   private final ExecutorService _pool = Executors.newCachedThreadPool();
 
   private final Map<Integer, ObjectOutputStream> _streams = new ConcurrentHashMap<>();
-  private final Map<Integer, Map<String, Map<String, List<AbstractRoute>>>> _results =
-      new ConcurrentHashMap<>();
+  private final Map<Integer, S2ControlMessages.Result> _results = new ConcurrentHashMap<>();
   private final Object _registrationLock = new Object();
   private final CountDownLatch _resultsDone = new CountDownLatch(1);
   private final RoundCoordinator _rounds;
@@ -136,7 +134,7 @@ public final class S2ControllerServer implements AutoCloseable {
           out.flush();
         } else if (message instanceof S2ControlMessages.Result) {
           S2ControlMessages.Result result = (S2ControlMessages.Result) message;
-          _results.put(result.workerId, result.ribs);
+          _results.put(result.workerId, result);
           if (_results.size() == _numWorkers) {
             _resultsDone.countDown();
           }
@@ -149,8 +147,7 @@ public final class S2ControllerServer implements AutoCloseable {
   }
 
   /** Wait for all workers' results and return them keyed by worker id. */
-  public Map<Integer, Map<String, Map<String, List<AbstractRoute>>>> awaitResults(
-      long timeoutSeconds) {
+  public Map<Integer, S2ControlMessages.Result> awaitResults(long timeoutSeconds) {
     try {
       if (!_resultsDone.await(timeoutSeconds, TimeUnit.SECONDS)) {
         throw new RuntimeException("Timed out waiting for S2 workers");

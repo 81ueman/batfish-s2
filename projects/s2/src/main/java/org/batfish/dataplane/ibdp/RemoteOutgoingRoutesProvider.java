@@ -24,6 +24,7 @@ final class RemoteOutgoingRoutesProvider implements OutgoingRoutesProvider {
   }
 
   @Override
+  @SuppressWarnings("unchecked")
   public Stream<RouteAdvertisement<Bgpv4Route>> getOutgoingRoutesForEdge(
       BgpRoutingProcess process,
       BgpTopology.EdgeId edge,
@@ -31,8 +32,10 @@ final class RemoteOutgoingRoutesProvider implements OutgoingRoutesProvider {
       BgpTopology bgpTopology,
       NetworkConfigurations networkConfigurations,
       boolean isNewSession) {
-    return _client
-        .fetch(_owner, new S2Messages.RoutesRequest(_hostname, _vrf, edge, isNewSession))
-        .stream();
+    S2Messages.RoutesResponse response =
+        (S2Messages.RoutesResponse)
+            _client.call(
+                _owner, new S2Messages.RoutesRequest(_hostname, _vrf, edge, isNewSession));
+    return response.routes.stream();
   }
 }

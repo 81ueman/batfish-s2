@@ -121,20 +121,7 @@ public class S2RemoteSidecarTest {
     for (int w = 0; w < workers; w++) {
       Map<String, Node> nodeMap = new HashMap<>(workerNodes.get(w));
       S2SidecarServer server =
-          new S2SidecarServer(
-              0,
-              request -> {
-                BgpRoutingProcess process =
-                    nodeMap
-                        .get(request.hostname)
-                        .getVirtualRouterOrThrow(request.vrf)
-                        .getBgpRoutingProcess();
-                return new S2Messages.RoutesResponse(
-                    process
-                        .getOutgoingRoutesForEdge(
-                            request.edgeId, nodeMap, bgpTopology, nc, request.isNewSession)
-                        .toList());
-              });
+          new S2SidecarServer(0, S2SidecarHandlers.forWorker(nodeMap, bgpTopology, nc));
       server.start();
       servers.add(server);
       endpoints.add(new S2WorkerEndpoint("127.0.0.1", server.getPort()));
@@ -153,7 +140,9 @@ public class S2RemoteSidecarTest {
     // 4. Run engines concurrently with global convergence.
     List<S2BdpEngine> engines = new ArrayList<>();
     for (int w = 0; w < workers; w++) {
-      engines.add(new S2BdpEngine(settings, workerNodes.get(w), cluster));
+      ShadowMainRibSync shadowSync =
+          new ShadowMainRibSync(workerNodes.get(w), assignment, w, endpoints, client);
+      engines.add(new S2BdpEngine(settings, workerNodes.get(w), cluster, shadowSync));
     }
     ExecutorService pool = Executors.newFixedThreadPool(workers);
     try {

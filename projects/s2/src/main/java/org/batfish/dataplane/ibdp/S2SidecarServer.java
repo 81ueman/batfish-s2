@@ -9,13 +9,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Worker-side sidecar: serves {@link S2Messages.RoutesRequest}s from other workers by running the
- * owning worker's real BGP process.
+ * Worker-side sidecar: serves requests from other workers by running the owning worker's real
+ * processes. Handles both route exchange (control plane) and main-RIB retrieval (FIB distribution).
  */
 final class S2SidecarServer implements AutoCloseable {
 
   interface Handler {
-    S2Messages.RoutesResponse handle(S2Messages.RoutesRequest request);
+    Object handle(Object request);
   }
 
   private final ServerSocket _server;
@@ -58,8 +58,8 @@ final class S2SidecarServer implements AutoCloseable {
       ObjectOutputStream out = new ObjectOutputStream(s.getOutputStream());
       out.flush();
       ObjectInputStream in = new ObjectInputStream(s.getInputStream());
-      S2Messages.RoutesRequest request = (S2Messages.RoutesRequest) in.readObject();
-      S2Messages.RoutesResponse response = _handler.handle(request);
+      Object request = in.readObject();
+      Object response = _handler.handle(request);
       out.writeObject(response);
       out.flush();
     } catch (IOException | ClassNotFoundException e) {

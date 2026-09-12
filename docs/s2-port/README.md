@@ -58,12 +58,16 @@ so distribution needs no RIB surgery:
 - [x] **M3** Kubernetes 1 Pod vs 3 Pods. Controller Job + worker StatefulSet;
   both runs report `S2 MATCH` vs vanilla and `scripts/compare-answers.sh`
   confirms they are identical.
+- [x] **M4** FIB distribution + data-plane check. Each worker fetches the owning
+  workers' main RIBs over the sidecar into its shadows, so every worker builds a
+  complete forwarding analysis; dataplane-level BGP reachability is re-enabled and
+  a traceroute-based reachability digest is computed on the distributed
+  dataplane. Both ribs and reachability match vanilla for 1 and 3 workers/Pods.
 
-M2 limitation: shadow nodes do not yet receive remote FIBs, so dataplane-level
-BGP reachability checks are disabled in the S2 engine and sessions are established
-from configuration + L3 adjacency (fine for directly connected peering). The
-correct fix is distributing FIBs/port predicates, a later milestone. M1/M2/M3 thus
-compare control-plane RIBs, which is S2's core invariant.
+M4 limitation: the reachability digest is computed per worker over the assembled
+dataplane (FIBs are distributed, forwarding is not). The paper's fully distributed
+symbolic DPV (BDD port predicates forwarded across workers via InterWorkerTransition)
+is still future work.
 
 ## Running the demos
 

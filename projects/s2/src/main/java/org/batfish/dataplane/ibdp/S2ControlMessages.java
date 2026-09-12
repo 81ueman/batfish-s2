@@ -48,15 +48,20 @@ final class S2ControlMessages {
     }
   }
 
-  /** A worker's final main RIBs, hostname -&gt; vrf -&gt; routes. */
+  /** A worker's final main RIBs (hostname -&gt; vrf -&gt; routes) and data-plane digest. */
   static final class Result implements Serializable {
     private static final long serialVersionUID = 1L;
     final int workerId;
     final Map<String, Map<String, List<AbstractRoute>>> ribs;
+    final Map<String, String> reachability;
 
-    Result(int workerId, Map<String, Map<String, List<AbstractRoute>>> ribs) {
+    Result(
+        int workerId,
+        Map<String, Map<String, List<AbstractRoute>>> ribs,
+        Map<String, String> reachability) {
       this.workerId = workerId;
       this.ribs = ribs;
+      this.reachability = reachability;
     }
   }
 }

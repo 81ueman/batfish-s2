@@ -5,6 +5,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
+import javax.annotation.Nullable;
 import org.batfish.common.topology.IpOwners;
 import org.batfish.datamodel.Configuration;
 
@@ -23,23 +24,17 @@ public class S2BdpEngine extends IncrementalBdpEngine {
 
   private final Map<String, DistributedNode> _nodes;
   private final S2Coordinator _coordinator;
+  private final @Nullable Runnable _shadowSync;
 
   public S2BdpEngine(
       IncrementalDataPlaneSettings settings,
       Map<String, DistributedNode> nodes,
-      S2Coordinator coordinator) {
+      S2Coordinator coordinator,
+      @Nullable Runnable shadowSync) {
     super(settings);
     _nodes = nodes;
     _coordinator = coordinator;
-  }
-
-  /**
-   * S2 convergence is global: a worker must keep computing until no real router anywhere is dirty,
-   * otherwise it may stop before a remote worker has finished propagating its routes.
-   */
-  @Override
-  protected boolean hasNotReachedRoutingFixedPoint(List<VirtualRouter> vrs) {
-    return _coordinator.roundCheck(super.hasNotReachedRoutingFixedPoint(vrs));
+    _shadowSync = shadowSync;
   }
 
   @Override
@@ -57,11 +52,13 @@ public class S2BdpEngine extends IncrementalBdpEngine {
     return ((DistributedNode) node).isShadow() ? ImmutableList.of() : node.getVirtualRouters();
   }
 
+  /**
+   * S2 convergence is global: a worker must keep computing until no real router anywhere is dirty,
+   * otherwise it may stop before a remote worker has finished propagating its routes.
+   */
   @Override
-  protected boolean checkBgpSessionReachability() {
-    // Shadow nodes do not yet receive remote FIBs, so dataplane-level reachability checks would
-    // wrongly prune sessions. Sessions are established from configuration + L3 adjacency.
-    return false;
+  protected boolean hasNotReachedRoutingFixedPoint(List<VirtualRouter> vrs) {
+    return _coordinator.roundCheck(super.hasNotReachedRoutingFixedPoint(vrs));
   }
 
   @Override
@@ -71,8 +68,12 @@ public class S2BdpEngine extends IncrementalBdpEngine {
       List<VirtualRouter> vrs,
       IpOwners currentIpOwners) {
     synchronized (DATAPLANE_LOCK) {
-      // Ensure every visible router (including those delegated through shadows) has a FIB before the
-      // forwarding analysis is built over all nodes.
+      // Pull the owning workers' main RIBs into shadows so the forwarding analysis is complete.
+      if (_shadowSync != null) {
+        _shadowSync.run();
+      }
+      // Ensure every visible router has a FIB before the forwarding analysis is built over all
+      // nodes.
       nodes.values().stream()
           .flatMap(n -> n.getVirtualRouters().stream())
           .forEach(VirtualRouter::computeFib);

@@ -108,7 +108,7 @@ public class S2DistributedControlPlaneTest {
           nodes.put(host, DistributedNode.shadowOf(realByHost.get(host)));
         }
       }
-      engines.add(new S2BdpEngine(settings, nodes, cluster));
+      engines.add(new S2BdpEngine(settings, nodes, cluster, null));
     }
 
     // Run the workers concurrently. Each engine mutates only its own real nodes; shadow lookups
