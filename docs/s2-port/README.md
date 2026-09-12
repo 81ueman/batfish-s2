@@ -55,13 +55,34 @@ so distribution needs no RIB surgery:
   **identical** to vanilla Batfish (`S2DistributedControlPlaneTest`).
 - [x] **M2** remote route exchange over a real sidecar socket with Java
   serialization; 1 and 3 workers still match (`S2RemoteSidecarTest`, 18 RPCs).
-- [ ] **M3** Kubernetes 1 Pod vs 3 Pods, compare controller output.
+- [x] **M3** Kubernetes 1 Pod vs 3 Pods. Controller Job + worker StatefulSet;
+  both runs report `S2 MATCH` vs vanilla and `scripts/compare-answers.sh`
+  confirms they are identical.
 
 M2 limitation: shadow nodes do not yet receive remote FIBs, so dataplane-level
 BGP reachability checks are disabled in the S2 engine and sessions are established
 from configuration + L3 adjacency (fine for directly connected peering). The
-correct fix is distributing FIBs/port predicates, a later milestone. M1/M2 thus
+correct fix is distributing FIBs/port predicates, a later milestone. M1/M2/M3 thus
 compare control-plane RIBs, which is S2's core invariant.
+
+## Running the demos
+
+Local multi-process (one JVM per worker):
+
+```sh
+bazel build //projects/s2:s2_main_deploy.jar
+scripts/local-demo.sh 1
+scripts/local-demo.sh 3
+```
+
+OrbStack Kubernetes (controller + 1 or 3 worker Pods):
+
+```sh
+scripts/build-s2.sh --image        # builds s2:local
+scripts/k8s-demo.sh 1
+scripts/k8s-demo.sh 3
+scripts/compare-answers.sh
+```
 
 ## Test snapshot
 

@@ -16,12 +16,23 @@ spec:
         - name: worker
           image: s2:local
           imagePullPolicy: IfNotPresent
-          args: ["port", "4091"]
+          command: ["/bin/bash", "/s2/entrypoint-worker.sh"]
+          env:
+            - name: WORKERS
+              value: "1"
+            - name: NETWORK_NAME
+              value: "s2-triangle"
+            - name: CONTROLLER_HOST
+              value: "s2-controller.s2.svc.cluster.local"
+            - name: CONTROLLER_PORT
+              value: "4090"
+            - name: SIDECAR_PORT
+              value: "4091"
           ports:
             - containerPort: 4091
           resources:
-            requests: {memory: "1Gi", cpu: "500m"}
-            limits: {memory: "4Gi"}
+            requests: {memory: "2Gi", cpu: "1"}
+            limits: {memory: "8Gi"}
 ---
 apiVersion: v1
 kind: Service

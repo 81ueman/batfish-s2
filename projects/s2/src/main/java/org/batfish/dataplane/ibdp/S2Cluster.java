@@ -9,7 +9,7 @@ import java.util.concurrent.CyclicBarrier;
  * <p>In S2 the controller decides convergence for the whole network, not per worker. Engines run
  * their route-computation rounds in lockstep and only stop when no real router anywhere is dirty.
  */
-public final class S2Cluster {
+public final class S2Cluster implements S2Coordinator {
 
   private final List<VirtualRouter> _realVirtualRouters;
   private final CyclicBarrier _iterationBarrier;
@@ -19,17 +19,18 @@ public final class S2Cluster {
     _iterationBarrier = new CyclicBarrier(workers);
   }
 
-  /** Block until every worker has finished the current routing round. */
-  void awaitIteration() {
+  @Override
+  public boolean roundCheck(boolean localDirty) {
     try {
       _iterationBarrier.await();
     } catch (Exception e) {
       throw new RuntimeException("S2 worker synchronization failed", e);
     }
+    return anyDirty();
   }
 
   /** Global fixed-point check: is any real router still dirty? */
-  boolean anyDirty() {
+  private boolean anyDirty() {
     return _realVirtualRouters.parallelStream().anyMatch(VirtualRouter::isDirty);
   }
 }

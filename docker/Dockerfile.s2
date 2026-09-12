@@ -1,25 +1,22 @@
 # S2 (distributed Batfish) controller/worker image.
 #
-# Build requires the S2 runner jar first:
-#   bazel build //projects/distributed:distributed_runner_deploy.jar
+# Build the runner jar first, then the image:
+#   bazel build //projects/s2:s2_main_deploy.jar
 #   docker build -f docker/Dockerfile.s2 -t s2:local .
 #
-# The tiny test snapshot under ./networks is baked in as <s2.root>/inputs so the
-# demo does not need a ConfigMap/PVC. s2.root is set to /s2.
+# The triangle snapshot is baked in as <s2.root>/inputs, so no volumes are
+# needed for the demo.
 FROM eclipse-temurin:25-jre
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends netcat-openbsd ca-certificates \
+ && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /s2
 
-COPY bazel-bin/projects/distributed/distributed_runner_deploy.jar /s2/distributed_runner_deploy.jar
-COPY projects/distributed/log4j2.yaml /s2/log4j2.yaml
-COPY scripts/orchestrate.sh /s2/orchestrate.sh
+COPY docker/s2_main_deploy.jar /s2/s2_main.jar
+COPY scripts/entrypoint-controller.sh /s2/entrypoint-controller.sh
+COPY scripts/entrypoint-worker.sh /s2/entrypoint-worker.sh
 COPY networks/ /s2/inputs/
 
-# Default to a worker port; the controller overrides with `port 4090`.
 EXPOSE 4090 4091
-ENTRYPOINT ["/bin/sh", "-c", "exec java -XX:-UseCompressedOops -Dlog4j.configurationFile=/s2/log4j2.yaml -Ds2.root=/s2 -jar /s2/distributed_runner_deploy.jar \"$@\"", "--"]
-CMD ["port", "4091"]

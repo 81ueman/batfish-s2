@@ -6,7 +6,12 @@ replicas:
   - name: s2-worker
     count: 1
 patches:
-  - target: {kind: Job, name: s2-orchestrate}
+  - target: {kind: Job, name: s2-controller}
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: "1"
+  - target: {kind: StatefulSet, name: s2-worker}
     patch: |-
       - op: replace
         path: /spec/template/spec/containers/0/env/0/value

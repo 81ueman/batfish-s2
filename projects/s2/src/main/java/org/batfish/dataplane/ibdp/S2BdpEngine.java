@@ -22,15 +22,15 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   private static final Object DATAPLANE_LOCK = new Object();
 
   private final Map<String, DistributedNode> _nodes;
-  private final S2Cluster _cluster;
+  private final S2Coordinator _coordinator;
 
   public S2BdpEngine(
       IncrementalDataPlaneSettings settings,
       Map<String, DistributedNode> nodes,
-      S2Cluster cluster) {
+      S2Coordinator coordinator) {
     super(settings);
     _nodes = nodes;
-    _cluster = cluster;
+    _coordinator = coordinator;
   }
 
   /**
@@ -39,8 +39,7 @@ public class S2BdpEngine extends IncrementalBdpEngine {
    */
   @Override
   protected boolean hasNotReachedRoutingFixedPoint(List<VirtualRouter> vrs) {
-    _cluster.awaitIteration();
-    return _cluster.anyDirty();
+    return _coordinator.roundCheck(super.hasNotReachedRoutingFixedPoint(vrs));
   }
 
   @Override

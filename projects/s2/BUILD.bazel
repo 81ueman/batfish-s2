@@ -1,19 +1,58 @@
 load("@batfish//skylark:junit.bzl", "junit_tests")
-load("@rules_java//java:defs.bzl", "java_library")
+load("@rules_java//java:defs.bzl", "java_binary", "java_library")
 
 package(default_visibility = ["//visibility:public"])
 
-# Our own S2 implementation. Classes live in org.batfish.dataplane.ibdp so they
-# can use package-private engine members, mirroring how the reference did it.
+# Core S2 implementation. Classes live in org.batfish.dataplane.ibdp so they can
+# use package-private engine members.
 java_library(
     name = "s2",
-    srcs = glob(["src/main/java/**/*.java"]),
+    srcs = glob(
+        ["src/main/java/**/*.java"],
+        exclude = [
+            "src/main/java/org/batfish/dataplane/ibdp/S2Main.java",
+            "src/main/java/org/batfish/dataplane/ibdp/S2Snapshot.java",
+        ],
+    ),
     deps = [
         "//projects/batfish",
         "//projects/common:common_lib",
         "@maven//:com_google_code_findbugs_jsr305",
         "@maven//:com_google_guava_guava",
         "@maven//:org_apache_logging_log4j_log4j_api",
+    ],
+)
+
+# Snapshot loading reuses Batfish's test parsing utilities, so the runtime runner
+# is testonly; `bazel build //projects/s2:s2_main` still produces the jar for the
+# container image.
+java_library(
+    name = "s2_runtime",
+    testonly = True,
+    srcs = [
+        "src/main/java/org/batfish/dataplane/ibdp/S2Main.java",
+        "src/main/java/org/batfish/dataplane/ibdp/S2Snapshot.java",
+    ],
+    deps = [
+        ":s2",
+        "//projects/batfish",
+        "//projects/batfish:batfish_testlib",
+        "//projects/common",
+        "//projects/common:common_lib",
+        "@maven//:com_google_guava_guava",
+        "@maven//:junit_junit",
+        "@maven//:org_apache_logging_log4j_log4j_api",
+    ],
+)
+
+java_binary(
+    name = "s2_main",
+    testonly = True,
+    main_class = "org.batfish.dataplane.ibdp.S2Main",
+    runtime_deps = [
+        ":s2_runtime",
+        "@maven//:org_apache_logging_log4j_log4j_core",
+        "@maven//:org_apache_logging_log4j_log4j_slf4j_impl",
     ],
 )
 
