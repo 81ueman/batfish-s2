@@ -81,11 +81,17 @@ Decomposed into slices:
   owning the far state, returning zero so the local fixpoint does not consume it.
   `S2BddSidecar` transfers it over a real socket. `InterWorkerTransitionTest`
   verifies the symbolic packet crosses the boundary and round-trips exactly.
-- [ ] **Slice 3** Distributed fixpoint + answerer: partition the reachability
-  graph's state expressions by owner, run the forward fixpoint per worker over its
-  states, exchange in-flight BDDs via `S2BddSidecar`, and produce the reachability
-  answer.
-- [ ] **Slice 4** Verify 1/3 Pod reachability answer equals vanilla.
+- [x] **Slice 3/4** Distributed BDD reachability fixpoint. State expressions are
+  partitioned by owning hostname; each worker runs the forward fixpoint over its
+  own states and ships crossing BDDs to the owner over `S2BddSidecar`, in
+  barrier-synchronized rounds until global quiescence. `DistributedReachabilityTest`
+  verifies that the per-state reachable BDDs for **1 and 3 workers equal Batfish's
+  local `computeForwardReachableStates()`** (BDD equality via the codec + `biimp`).
+
+Remaining for full parity with the paper: wire this symbolic fixpoint into the
+multi-process/k8s runner (today the runner's data-plane check is the M4 traceroute
+digest; the symbolic distributed reachability is verified in-process with real
+sockets), and expose the reachability answer/traces through the question pipeline.
 
 ## Running the demos
 
