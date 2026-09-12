@@ -52,10 +52,16 @@ so distribution needs no RIB surgery:
 ## Milestones
 
 - [x] **M1** single JVM, in-process: 1 and 3 logical workers produce main RIBs
-  **identical** to vanilla Batfish (`//projects/s2:s2_tests`, static 3-node eBGP
-  triangle).
-- [ ] **M2** split controller/workers into processes, sidecar over gRPC.
+  **identical** to vanilla Batfish (`S2DistributedControlPlaneTest`).
+- [x] **M2** remote route exchange over a real sidecar socket with Java
+  serialization; 1 and 3 workers still match (`S2RemoteSidecarTest`, 18 RPCs).
 - [ ] **M3** Kubernetes 1 Pod vs 3 Pods, compare controller output.
+
+M2 limitation: shadow nodes do not yet receive remote FIBs, so dataplane-level
+BGP reachability checks are disabled in the S2 engine and sessions are established
+from configuration + L3 adjacency (fine for directly connected peering). The
+correct fix is distributing FIBs/port predicates, a later milestone. M1/M2 thus
+compare control-plane RIBs, which is S2's core invariant.
 
 ## Test snapshot
 

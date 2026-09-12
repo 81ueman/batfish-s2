@@ -144,7 +144,7 @@ public class IncrementalBdpEngine {
    * can be established given the current L3 topology and dataplane state. The resulting {@code
    * TopologyContext} for the next iteration of dataplane is returned.
    */
-  private static TopologyContext nextTopologyContext(
+  protected TopologyContext nextTopologyContext(
       TopologyContext currentTopologyContext,
       PartialDataplane currentDataplane,
       TopologyContext initialTopologyContext,
@@ -196,7 +196,7 @@ public class IncrementalBdpEngine {
             configurations,
             ipVrfOwners,
             false,
-            true,
+            checkBgpSessionReachability(),
             trEngCurrentL3Topology,
             currentDataplane.getFibs(),
             currentTopologyContext.getL3Adjacencies());
@@ -442,6 +442,15 @@ public class IncrementalBdpEngine {
    */
   Collection<VirtualRouter> iterationVirtualRouters(Node node) {
     return node.getVirtualRouters();
+  }
+
+  /**
+   * Whether BGP session establishment verifies dataplane reachability. The S2 engine disables this
+   * while shadow FIBs are not yet distributed; sessions are then established from configuration +
+   * L3 adjacency (sufficient for directly-connected peering).
+   */
+  protected boolean checkBgpSessionReachability() {
+    return true;
   }
 
   ComputeDataPlaneResult computeDataPlane(

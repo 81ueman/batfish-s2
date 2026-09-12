@@ -59,6 +59,13 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   }
 
   @Override
+  protected boolean checkBgpSessionReachability() {
+    // Shadow nodes do not yet receive remote FIBs, so dataplane-level reachability checks would
+    // wrongly prune sessions. Sessions are established from configuration + L3 adjacency.
+    return false;
+  }
+
+  @Override
   protected PartialDataplane nextDataplane(
       TopologyContext currentTopologyContext,
       SortedMap<String, Node> nodes,

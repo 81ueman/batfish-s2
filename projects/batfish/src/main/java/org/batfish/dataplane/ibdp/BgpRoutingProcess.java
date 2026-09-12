@@ -185,6 +185,12 @@ public class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?
   /** Metadata about propagated prefixes to/from neighbors */
   private @Nonnull PrefixTracer _prefixTracer;
 
+  /**
+   * If non-null, deferred to instead of computing outgoing routes locally. Used by S2 shadow
+   * processes to fetch advertisements from the owning worker.
+   */
+  private @Nullable OutgoingRoutesProvider _outgoingRoutesProvider;
+
   /** Route dependency tracker for BGP IPv4 aggregate routes */
   @Nonnull
   BgpRouteDependencyTracker<Bgpv4Route, AbstractRoute> _bgpAggDeps =
@@ -503,6 +509,11 @@ public class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?
     _bgpv4PrevBestPath = ImmutableSet.of();
     _ebgpv4Prev = ImmutableSet.of();
     _ebgpv4PrevBestPath = ImmutableSet.of();
+  }
+
+  /** Install a strategy for producing this process's outgoing advertisements (S2 shadow support). */
+  public void setOutgoingRoutesProvider(@Nullable OutgoingRoutesProvider provider) {
+    _outgoingRoutesProvider = provider;
   }
 
   @Override
@@ -1162,6 +1173,10 @@ public class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?
       BgpTopology bgpTopology,
       NetworkConfigurations networkConfigurations,
       boolean isNewSession) {
+    if (_outgoingRoutesProvider != null) {
+      return _outgoingRoutesProvider.getOutgoingRoutesForEdge(
+          this, edge, allNodes, bgpTopology, networkConfigurations, isNewSession);
+    }
     BgpPeerConfigId remoteConfigId = edge.head();
     BgpPeerConfigId ourConfigId = edge.tail();
     // Confirm edge directionality.

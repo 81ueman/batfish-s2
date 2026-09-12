@@ -8,53 +8,83 @@ import org.batfish.datamodel.Configuration;
 /**
  * A {@link Node} that participates in S2's distributed computation.
  *
- * <p>Exactly one worker "owns" a switch and simulates it as a <b>real</b> node. Every other worker
- * holds a <b>shadow</b> node for the same switch. A shadow node delegates its virtual routers to
- * the owning worker's real node, so:
+ * <p>Exactly one worker "owns" a switch and simulates it (a <b>real</b> node). Other workers hold a
+ * <b>shadow</b> node representing it. Shadow nodes are never iterated ({@link
+ * S2BdpEngine#iterationVirtualRouters}), but must still answer neighbor lookups and appear in the
+ * dataplane.
+ *
+ * <p>Two shadow flavors exist:
  *
  * <ul>
- *   <li>route lookups by neighbors ({@link #getVirtualRouterOrThrow}) return the real BGP process;
- *   <li>dataplane construction (FIBs, forwarding analysis) sees the real forwarding state;
- *   <li>but the data-plane engine must not <i>iterate</i> a shadow. That is decided by {@link
- *       S2BdpEngine#iterationVirtualRouters}, which returns no routers for shadows.
+ *   <li>{@link #shadowOf} (milestone 1, single JVM): delegate directly to the owning worker's real
+ *       node object.
+ *   <li>{@link #shadow} (milestone 2, separate processes): keep local (empty) routers and install a
+ *       {@link RemoteOutgoingRoutesProvider} that fetches advertisements over the sidecar.
  * </ul>
  */
 public class DistributedNode extends Node {
 
-  /** Non-null iff this node is a shadow; points at the real node on the owning worker. */
-  private final @Nullable DistributedNode _real;
+  private final boolean _owns;
+  /** Non-null only for the in-JVM (milestone 1) shadow that delegates to a real node object. */
+  private final @Nullable DistributedNode _delegate;
 
-  private DistributedNode(Configuration configuration, @Nullable DistributedNode real) {
+  private DistributedNode(
+      Configuration configuration, boolean owns, @Nullable DistributedNode delegate) {
     super(configuration);
-    _real = real;
+    _owns = owns;
+    _delegate = delegate;
   }
 
   /** A node this worker owns and simulates. */
   public static DistributedNode real(Configuration configuration) {
-    return new DistributedNode(configuration, null);
+    return new DistributedNode(configuration, true, null);
   }
 
-  /** A node owned by another worker; delegates to {@code real}. */
+  /** Milestone-1 shadow: delegate to the real node in the same JVM. */
   public static DistributedNode shadowOf(DistributedNode real) {
-    return new DistributedNode(real.getConfiguration(), real);
+    return new DistributedNode(real.getConfiguration(), false, real);
+  }
+
+  /** Milestone-2 shadow: local empty routers, advertisements fetched over the sidecar. */
+  public static DistributedNode shadow(Configuration configuration) {
+    return new DistributedNode(configuration, false, null);
   }
 
   public boolean isShadow() {
-    return _real != null;
+    return !_owns;
+  }
+
+  /** Install sidecar-backed providers on this shadow's BGP processes. */
+  public void installRemoteBgpProviders(S2SidecarClient client, S2WorkerEndpoint owner) {
+    if (!isShadow() || _delegate != null) {
+      throw new IllegalStateException("installRemoteBgpProviders requires a remote shadow node");
+    }
+    String hostname = getConfiguration().getHostname();
+    for (String vrf : getConfiguration().getVrfs().keySet()) {
+      BgpRoutingProcess process = getVirtualRouterOrThrow(vrf).getBgpRoutingProcess();
+      if (process != null) {
+        process.setOutgoingRoutesProvider(
+            new RemoteOutgoingRoutesProvider(client, owner, hostname, vrf));
+      }
+    }
   }
 
   @Override
   Collection<VirtualRouter> getVirtualRouters() {
-    return isShadow() ? _real.getVirtualRouters() : super.getVirtualRouters();
+    return _delegate != null ? _delegate.getVirtualRouters() : super.getVirtualRouters();
   }
 
   @Override
   Optional<VirtualRouter> getVirtualRouter(String vrfName) {
-    return isShadow() ? _real.getVirtualRouter(vrfName) : super.getVirtualRouter(vrfName);
+    return _delegate != null
+        ? _delegate.getVirtualRouter(vrfName)
+        : super.getVirtualRouter(vrfName);
   }
 
   @Override
   VirtualRouter getVirtualRouterOrThrow(String vrfName) {
-    return isShadow() ? _real.getVirtualRouterOrThrow(vrfName) : super.getVirtualRouterOrThrow(vrfName);
+    return _delegate != null
+        ? _delegate.getVirtualRouterOrThrow(vrfName)
+        : super.getVirtualRouterOrThrow(vrfName);
   }
 }
