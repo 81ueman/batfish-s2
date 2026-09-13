@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: s2-engine-query
+  namespace: s2-pool
+  labels: {app: s2-engine-query}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {app: s2-engine-query}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: engine-query
+          image: s2-engine:local
+          imagePullPolicy: IfNotPresent
+          # One-off end-to-end check: allinone with the s2 engine drives the persistent pool via the
+          # controller Service and serves from the shared slices. The batch command file parses a
+          # baked snapshot and generates the dataplane.
+          command:
+            - /bin/bash
+            - -lc
+            - >-
+              java -jar /s2/allinone.jar -runclient true -cmdfile /s2/query.txt
+              -batfishargs "-dataplaneengine=s2
+              -s2controllerhost=s2-controller.s2-pool.svc.cluster.local
+              -s2controllerport=4090 -s2storedataplane=false -s2slicedir=/s2/shared/slices"
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx4g"
+          volumeMounts:
+            - name: slices
+              mountPath: /s2/shared
+          resources:
+            requests: {memory: "1Gi", cpu: "0.5"}
+            limits: {memory: "8Gi"}
+      volumes:
+        - name: slices
+          persistentVolumeClaim:
+            claimName: s2-slices

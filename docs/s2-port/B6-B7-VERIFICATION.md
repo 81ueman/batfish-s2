@@ -32,10 +32,25 @@ Observed:
 So the full chain works: **allinone engine → S2 plugin → controller-service → worker-services →
 per-host slices → engine serves lazily** (the engine deletes its per-snapshot slice dir on JVM exit).
 
-Script: `scripts/s2-engine-query.sh` (process-level). The Kubernetes counterpart is `k8s/pool/`
-(engine Deployment + controller + worker StatefulSet + shared PVC), brought up on OrbStack: the
-controller registered all 3 workers via the headless Service and the engine came up healthy; driving
-a question there needs a client (pybatfish or a command-file Job) against the `s2-engine` Service.
+Script: `scripts/s2-engine-query.sh` (process-level).
+
+**Kubernetes (single-node OrbStack), validated 2026-09-14.** `k8s/pool/` (engine + controller +
+worker StatefulSet + shared PVC) was brought up, then `k8s/pool/engine-query.yaml` — a one-off Job
+running the engine image (allinone) with `-runclient true -cmdfile /s2/query.txt` and
+`-dataplaneengine=s2 -s2controllerhost=s2-controller.s2-pool.svc.cluster.local -s2controllerport=4090
+-s2storedataplane=false -s2slicedir=/s2/shared/slices`. The image bakes the snapshot (`networks/`) and
+the command file.
+
+Observed:
+- controller-service: `snapshot <id> partition scheme=WEIGHTED_LPT_FM workers=3 nodes=3` →
+  `descriptor shadows on (3 full configs + 3 descriptors)` →
+  `snapshot <id> done (3 workers, 486.4 MiB total peak heap)`.
+- worker-0: `wrote slices for 1 owned hosts to /s2/shared/slices/snapshot-<id>` (shared PVC).
+- the Job: `Complete`, log ends with `IncrementalBdpAnswerElement ... status=SUCCESS`.
+
+So the same chain works **in-cluster**: engine Job → S2 plugin → controller Service → worker pods →
+per-host slices on the PVC → engine serves lazily. (Single-node clusters with only the RWO
+`local-path` provisioner need the PVC as `ReadWriteOnce`; multi-node needs `ReadWriteMany`.)
 
 ## B.6 — memory
 
