@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.batfish.dataplane.ibdp;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
+import java.util.function.ToIntFunction;
 import org.batfish.datamodel.BgpProcess;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.Interface;
@@ -27,9 +27,16 @@ import org.batfish.datamodel.Vrf;
  * BGP routes are materialized at a time.
  *
  * <p>The shards partition the prefixes that can be originated (interface addresses, BGP origination
- * networks, unconditional network statements and BGP aggregate networks). Prefixes that depend on
- * one another -- an aggregate and the prefixes it covers -- stay in the same shard, because an
- * aggregate is only generated while one of its more-specifics is present.
+ * networks, unconditional network statements, BGP aggregate networks, static and kernel route
+ * networks, and external BGP announcements). Prefixes that depend on one another are modeled by a
+ * {@link PrefixDependencyGraph}; each weakly connected component of that graph is assigned as a
+ * unit to a shard, so an aggregate always stays with the prefixes it covers and with nested
+ * aggregates.
+ *
+ * <p>Components are assigned to the shards by weighted LPT: largest estimated route/memory
+ * contribution first to the currently lightest shard. The weight is an estimate of the propagation
+ * closure (see {@link PrefixDependencyGraph#componentWeight}), not the raw prefix count, so a small
+ * component that is originated by many routers is not underestimated.
  */
 final class PrefixSharder {
 
@@ -76,9 +83,9 @@ final class PrefixSharder {
   }
 
   /**
-   * Partition the snapshot's prefixes into at most {@code n} shards. An aggregate and the prefixes
-   * it covers stay in the same shard; groups are assigned largest-first (LPT) to the lightest
-   * shard.
+   * Partition the snapshot's prefixes into at most {@code n} shards. Every weakly connected
+   * component of the prefix dependency graph is assigned as a unit (largest estimated weight first)
+   * to the currently lightest shard.
    */
   static List<PrefixSpace> shards(Map<String, Configuration> configs, int n) {
     return shards(configs, ImmutableList.of(), n);
@@ -87,103 +94,69 @@ final class PrefixSharder {
   /** As {@link #shards(Map, int)}, additionally including {@code extraPrefixes} in the universe. */
   static List<PrefixSpace> shards(
       Map<String, Configuration> configs, Collection<Prefix> extraPrefixes, int n) {
-    List<Prefix> prefixes = queryPrefixes(configs, extraPrefixes);
-    List<List<Prefix>> groups = dependencyGroups(prefixes, aggregatePrefixes(configs));
-    return assignGroups(groups, n);
+    return shards(PrefixDependencyGraph.build(configs, extraPrefixes), n);
   }
 
-  /** The networks of all BGP aggregates across the snapshot. */
-  private static List<Prefix> aggregatePrefixes(Map<String, Configuration> configs) {
-    Set<Prefix> aggregates = new LinkedHashSet<>();
-    for (Configuration c : configs.values()) {
-      for (Vrf vrf : c.getVrfs().values()) {
-        if (vrf.getBgpProcess() != null) {
-          aggregates.addAll(vrf.getBgpProcess().getAggregates().keySet());
-        }
-      }
+  /** Assigns the components of {@code graph} to at most {@code n} shards. */
+  @VisibleForTesting
+  static List<PrefixSpace> shards(PrefixDependencyGraph graph, int n) {
+    List<Set<Prefix>> components = graph.weaklyConnectedComponents();
+    Set<Prefix> allPrefixes = graph.nodes();
+    if (components.size() == 1 && allPrefixes.size() > 1) {
+      // Degenerate DPDG: a single dependency closure (e.g. a 0.0.0.0/0 aggregate) covers the whole
+      // universe, so no split is possible without dropping routes. Fall back to one shard; the
+      // caller treats a single-element list as sharding disabled.
+      System.err.printf(
+          "S2 prefix sharding: degenerate prefix dependency graph (one component over all %d"
+              + " prefixes); falling back to a single shard%n",
+          allPrefixes.size());
+      return ImmutableList.of(prefixSpace(allPrefixes));
     }
-    return new ArrayList<>(aggregates);
-  }
-
-  /** Union-find grouping: each aggregate is unioned with every prefix it covers. */
-  private static List<List<Prefix>> dependencyGroups(
-      List<Prefix> prefixes, List<Prefix> aggregates) {
-    List<Prefix> sorted = new ArrayList<>(prefixes);
-    sorted.sort(Comparator.comparing(Prefix::toString));
-    Map<Prefix, Integer> index = new HashMap<>();
-    for (int i = 0; i < sorted.size(); i++) {
-      index.put(sorted.get(i), i);
-    }
-    int[] parent = new int[sorted.size()];
-    for (int i = 0; i < parent.length; i++) {
-      parent[i] = i;
-    }
-    for (Prefix aggregate : aggregates) {
-      Integer root = index.get(aggregate);
-      if (root == null) {
-        continue;
-      }
-      for (int j = 0; j < sorted.size(); j++) {
-        Prefix p = sorted.get(j);
-        if (!p.equals(aggregate) && aggregate.containsPrefix(p)) {
-          union(parent, root, j);
-        }
-      }
-    }
-    Map<Integer, List<Prefix>> byRoot = new TreeMap<>();
-    for (int i = 0; i < sorted.size(); i++) {
-      byRoot.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(sorted.get(i));
-    }
-    return new ArrayList<>(byRoot.values());
-  }
-
-  private static int find(int[] parent, int x) {
-    while (parent[x] != x) {
-      parent[x] = parent[parent[x]];
-      x = parent[x];
-    }
-    return x;
-  }
-
-  private static void union(int[] parent, int a, int b) {
-    int ra = find(parent, a);
-    int rb = find(parent, b);
-    if (ra != rb) {
-      parent[rb] = ra;
-    }
+    return assignComponents(components, graph::componentWeight, n);
   }
 
   /**
-   * Assign whole groups to at most {@code n} shards, largest group first to the currently-lightest
-   * shard (list scheduling). Deterministic for a fixed input.
+   * Assign whole components to at most {@code n} shards, largest estimated weight first to the
+   * currently-lightest shard (list scheduling / LPT). Ties are broken by the component's smallest
+   * prefix, so the result is deterministic without a random shuffle. A component's weight is its
+   * estimated route/memory contribution, not its prefix count.
    */
-  private static List<PrefixSpace> assignGroups(List<List<Prefix>> groups, int n) {
+  @VisibleForTesting
+  static List<PrefixSpace> assignComponents(
+      List<Set<Prefix>> components, ToIntFunction<Set<Prefix>> weigher, int n) {
     List<PrefixSpace> shards = new ArrayList<>();
-    if (n <= 1 || groups.isEmpty()) {
+    if (n <= 1 || components.isEmpty()) {
       PrefixSpace all = new PrefixSpace();
-      groups.forEach(g -> g.forEach(all::addPrefix));
+      components.forEach(c -> c.forEach(all::addPrefix));
       shards.add(all);
       return shards;
     }
-    int k = Math.min(n, groups.size());
+    int k = Math.min(n, components.size());
     for (int i = 0; i < k; i++) {
       shards.add(new PrefixSpace());
     }
-    int[] sizes = new int[k];
-    List<List<Prefix>> sortedGroups = new ArrayList<>(groups);
-    sortedGroups.sort(
-        Comparator.<List<Prefix>>comparingInt(g -> -g.size())
-            .thenComparing(g -> g.get(0).toString()));
-    for (List<Prefix> group : sortedGroups) {
+    long[] loads = new long[k];
+    List<Set<Prefix>> sortedComponents = new ArrayList<>(components);
+    sortedComponents.sort(
+        Comparator.<Set<Prefix>>comparingInt(weigher::applyAsInt)
+            .reversed()
+            .thenComparing(c -> c.iterator().next(), Comparator.naturalOrder()));
+    for (Set<Prefix> component : sortedComponents) {
       int best = 0;
       for (int i = 1; i < k; i++) {
-        if (sizes[i] < sizes[best]) {
+        if (loads[i] < loads[best]) {
           best = i;
         }
       }
-      group.forEach(shards.get(best)::addPrefix);
-      sizes[best] += group.size();
+      component.forEach(shards.get(best)::addPrefix);
+      loads[best] += weigher.applyAsInt(component);
     }
     return shards;
+  }
+
+  private static PrefixSpace prefixSpace(Collection<Prefix> prefixes) {
+    PrefixSpace space = new PrefixSpace();
+    prefixes.forEach(space::addPrefix);
+    return space;
   }
 }
