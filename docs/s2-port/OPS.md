@@ -267,6 +267,10 @@ Current status: `gpmetis` (METIS 5.1.0) **is installed** in the evaluation envir
 passes `-ptype=rb -ufactor=1` and still falls back to a pure-Java scheme when the binary is absent,
 so no build or stock run depends on it. `scripts/partition-metrics.py` itself has no METIS
 dependency. Where METIS cannot be installed, use `WEIGHTED_LPT_FM`/`GREEDY_REGION` (pure Java) for
-the comparison and record the substitution in the evaluation write-up. The container image does
-**not** currently bake in METIS; if the evaluation is to run on Kubernetes, add `metis` to
-`docker/Dockerfile.s2`.
+the comparison and record the substitution in the evaluation write-up. The container image now
+**bakes in METIS** (`docker/Dockerfile.s2` installs `metis`), so `auto`/`METIS` runs real `gpmetis`
+in pods. Pin a scheme per k8s run with `S2_PARTITION=<scheme> scripts/k8s-demo.sh <1|3> [network]`.
+Verified on OrbStack: `s2-triangle` 1 Pod plus 3 Pods for
+`RANDOM`/`NAME_ORDERED`/`WEIGHTED_LPT_FM`/`GREEDY_REGION`/`METIS`/`auto`, and `s2-fat4` 3 Pods
+`auto` (DCN→METIS) / `METIS` / `WEIGHTED_LPT_FM` — all `MATCH`; `scripts/compare-answers.sh
+s2-triangle` → IDENTICAL.

@@ -58,6 +58,19 @@ phase peaks are `building nodes` 413 MiB, `EGP iteration 1` 1595 MiB, `nextDatap
 The remaining cost is the held configurations and the BGP control-plane transient. The FIB axis is
 considered done for now.
 
+**Default (O1) vs full** (`scripts/bench-table.sh`, 3 workers, `-Xmx4g`; default = owned +
+descriptor + runner positive-cache + `partition=auto`; full = owned/descriptor off):
+
+| network | prefixes | default | full |
+| --- | --- | --- | --- |
+| `s2-big2` | 640 | 152.4 MiB | 173.3 MiB |
+| `s2-mega` | 4096 | 319.4 MiB | 412.3 MiB |
+| `s2-giga` | 32768 | **1309.6 MiB** | (not run) |
+
+The default pipeline brings `s2-giga` down to 1309.6 MiB (engine 22 s), well below the earlier
+shipped 2226.1 MiB and owned-only 1938.1 MiB. Note the *controller* peak grows with the vanilla
+dataplane + reference analysis (2637.0 MiB at `s2-giga`) and can become the limiting process.
+
 Descriptor mode (`-Ds2.descriptorShadows`, default on) further trims remote policy bodies. On the
 ACL-heavy `networks/s2-acl` (3000-line ACLs), owned+descriptor drops the `after building nodes`
 phase from 125.7 to 81.4 MiB and the max worker peak from 183.9 to 154.7 MiB; on `s2-mega` it is
