@@ -45,9 +45,6 @@ public final class S2ReachabilityWorker {
   private final List<Inbox> _inbox = new ArrayList<>();
   private final Map<Integer, List<Outbound>> _pending = new HashMap<>();
 
-  /** The full query header space; shards further restrict this via {@link #run(BDD)}. */
-  private final BDD _queryRoot;
-
   private int _edgeCount;
 
   private record PreEdge(StateExpr pre, Transition transition) {}
@@ -81,7 +78,11 @@ public final class S2ReachabilityWorker {
           .add(new PreEdge(cell.getRowKey(), cell.getValue()));
       _edgeCount++;
     }
-    _queryRoot = analysis.getQueryHeaderSpaceBdd().id();
+    // Root: the query header space at Query.
+    if (owner(Query.INSTANCE) == id) {
+      _reachable.put(Query.INSTANCE, analysis.getQueryHeaderSpaceBdd().id());
+      _worklist.add(Query.INSTANCE);
+    }
   }
 
   /**
@@ -111,28 +112,9 @@ public final class S2ReachabilityWorker {
   }
 
   /**
-   * Runs the barrier-synchronized distributed fixpoint for the full query header space and returns
-   * this worker's reachable BDDs.
+   * Runs the barrier-synchronized distributed fixpoint and returns this worker's reachable BDDs.
    */
   public Map<StateExpr, BDD> run() {
-    return run(_queryRoot);
-  }
-
-  /**
-   * Runs the fixpoint for one query shard (a subset of the query header space), starting from
-   * {@code queryRoot}. The caller is expected to serialize the result and drop it before the next
-   * shard so that only one shard's BDDs are live at a time (the peak-memory saving of prefix
-   * sharding).
-   *
-   * <p>Every worker must call this the same number of times in the same order, since each shard
-   * runs its own barrier-synchronized fixpoint.
-   */
-  public Map<StateExpr, BDD> run(BDD queryRoot) {
-    reset();
-    if (owner(Query.INSTANCE) == _id) {
-      _reachable.put(Query.INSTANCE, queryRoot.id());
-      _worklist.add(Query.INSTANCE);
-    }
     boolean done = false;
     while (!done) {
       processLocal();
@@ -143,21 +125,7 @@ public final class S2ReachabilityWorker {
       boolean anyChanged = _coordinator.roundCheck(changed);
       done = !anySent && !anyChanged;
     }
-    return new HashMap<>(_reachable);
-  }
-
-  private void reset() {
-    _reachable.clear();
-    _worklist.clear();
-    _pending.clear();
-    synchronized (_inbox) {
-      _inbox.clear();
-    }
-  }
-
-  /** Reclaim BDD nodes no longer referenced by the current shard's result. */
-  public void collectGarbage() {
-    _factory.runGC();
+    return _reachable;
   }
 
   private int owner(StateExpr state) {

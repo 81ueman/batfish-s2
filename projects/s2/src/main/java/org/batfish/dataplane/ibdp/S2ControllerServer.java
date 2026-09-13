@@ -6,7 +6,6 @@ import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,7 +15,6 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import org.batfish.datamodel.IpSpace;
 
 /**
  * Controller for the multi-process S2 run (milestone 3, one Pod per worker).
@@ -28,14 +26,11 @@ public final class S2ControllerServer implements AutoCloseable {
 
   private final int _numWorkers;
   private final List<S2WorkerEndpoint> _endpoints;
-  private final List<IpSpace> _queryShards;
   private final ServerSocket _server;
   private final ExecutorService _pool = Executors.newCachedThreadPool();
 
   private final Map<Integer, ObjectOutputStream> _streams = new ConcurrentHashMap<>();
   private final Map<Integer, S2ControlMessages.Result> _results = new ConcurrentHashMap<>();
-  private final List<Map<org.batfish.symbolic.state.StateExpr, String>> _shardResults =
-      Collections.synchronizedList(new ArrayList<>());
   private final Object _registrationLock = new Object();
   private final CountDownLatch _resultsDone = new CountDownLatch(1);
   private final RoundCoordinator _rounds;
@@ -99,12 +94,10 @@ public final class S2ControllerServer implements AutoCloseable {
     }
   }
 
-  public S2ControllerServer(
-      int port, int numWorkers, List<S2WorkerEndpoint> endpoints, List<IpSpace> queryShards)
+  public S2ControllerServer(int port, int numWorkers, List<S2WorkerEndpoint> endpoints)
       throws IOException {
     _numWorkers = numWorkers;
     _endpoints = endpoints;
-    _queryShards = queryShards;
     _server = new ServerSocket(port);
     _rounds = new RoundCoordinator(numWorkers);
     _sums = new SumCoordinator(numWorkers);
@@ -149,7 +142,7 @@ public final class S2ControllerServer implements AutoCloseable {
       }
       if (allRegistered) {
         for (ObjectOutputStream workerOut : _streams.values()) {
-          workerOut.writeObject(new S2ControlMessages.Start(_endpoints, _queryShards));
+          workerOut.writeObject(new S2ControlMessages.Start(_endpoints));
           workerOut.flush();
         }
       }
@@ -165,9 +158,6 @@ public final class S2ControllerServer implements AutoCloseable {
           int sum = _sums.check(request.value);
           out.writeObject(new S2ControlMessages.SumResponse(sum));
           out.flush();
-        } else if (message instanceof S2ControlMessages.ShardResult) {
-          S2ControlMessages.ShardResult shardResult = (S2ControlMessages.ShardResult) message;
-          _shardResults.add(shardResult.symbolicReachable);
         } else if (message instanceof S2ControlMessages.Result) {
           S2ControlMessages.Result result = (S2ControlMessages.Result) message;
           _results.put(result.workerId, result);
@@ -193,11 +183,6 @@ public final class S2ControllerServer implements AutoCloseable {
       throw new RuntimeException(e);
     }
     return new LinkedHashMap<>(_results);
-  }
-
-  /** Per-shard symbolic results received from the workers (prefix sharding). */
-  public List<Map<org.batfish.symbolic.state.StateExpr, String>> getShardResults() {
-    return new ArrayList<>(_shardResults);
   }
 
   public List<S2WorkerEndpoint> getEndpoints() {
