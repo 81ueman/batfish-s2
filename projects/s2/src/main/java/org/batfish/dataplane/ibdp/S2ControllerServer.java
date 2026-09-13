@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -40,66 +39,9 @@ public final class S2ControllerServer implements AutoCloseable {
   private final Map<Integer, S2ControlMessages.Result> _results = new ConcurrentHashMap<>();
   private final Object _registrationLock = new Object();
   private final CountDownLatch _resultsDone = new CountDownLatch(1);
-  private final RoundCoordinator _rounds;
-  private final SumCoordinator _sums;
+  private final S2RoundBarrier _rounds;
+  private final S2SumBarrier _sums;
   private int _registered;
-
-  /**
-   * Round barrier shared by all workers: every worker reports a boolean each round and the barrier
-   * action computes the OR for that round before any worker proceeds to the next round. Using a
-   * {@link CyclicBarrier} (not wait/notify) avoids the cross-round race where a fast worker starts
-   * round N+1 before a slow worker has left round N.
-   */
-  private static final class RoundCoordinator {
-    private final java.util.concurrent.atomic.AtomicBoolean _anyDirty =
-        new java.util.concurrent.atomic.AtomicBoolean();
-    private final CyclicBarrier _barrier;
-    private volatile boolean _result;
-
-    RoundCoordinator(int numWorkers) {
-      _barrier =
-          new CyclicBarrier(
-              numWorkers,
-              () -> {
-                _result = _anyDirty.get();
-                _anyDirty.set(false);
-              });
-    }
-
-    boolean check(boolean dirty) {
-      if (dirty) {
-        _anyDirty.set(true);
-      }
-      try {
-        _barrier.await();
-      } catch (Exception e) {
-        throw new RuntimeException("S2 round synchronization failed", e);
-      }
-      return _result;
-    }
-  }
-
-  /** Barrier that sums every worker's contribution for the round and returns the total. */
-  private static final class SumCoordinator {
-    private final java.util.concurrent.atomic.AtomicInteger _sum =
-        new java.util.concurrent.atomic.AtomicInteger();
-    private final CyclicBarrier _barrier;
-    private volatile int _result;
-
-    SumCoordinator(int numWorkers) {
-      _barrier = new CyclicBarrier(numWorkers, () -> _result = _sum.getAndSet(0));
-    }
-
-    int check(int value) {
-      _sum.addAndGet(value);
-      try {
-        _barrier.await();
-      } catch (Exception e) {
-        throw new RuntimeException("S2 sum synchronization failed", e);
-      }
-      return _result;
-    }
-  }
 
   /**
    * @param configs full snapshot configs for the stock path, or null in descriptor-shadow mode
@@ -124,8 +66,8 @@ public final class S2ControllerServer implements AutoCloseable {
     _ownedConfigsByWorker = ownedConfigsByWorker;
     _descriptors = descriptors;
     _server = new ServerSocket(port);
-    _rounds = new RoundCoordinator(numWorkers);
-    _sums = new SumCoordinator(numWorkers);
+    _rounds = new S2RoundBarrier(numWorkers);
+    _sums = new S2SumBarrier(numWorkers);
   }
 
   public int getPort() {

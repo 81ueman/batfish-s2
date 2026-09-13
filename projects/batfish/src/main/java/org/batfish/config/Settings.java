@@ -32,6 +32,10 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
   public static final String ARG_S2_SLICE_DIR = "s2slicedir";
 
+  public static final String ARG_S2_CONTROLLER_HOST = "s2controllerhost";
+
+  public static final String ARG_S2_CONTROLLER_PORT = "s2controllerport";
+
   private static final String ARG_DEBUG_FLAGS = "debugflags";
 
   private static final String ARG_PARSE_REUSE = "parsereuse";
@@ -384,6 +388,20 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     return _config.getString(ARG_S2_SLICE_DIR, "");
   }
 
+  /**
+   * Host of the persistent S2 controller service. When set, the {@code s2} engine ships each
+   * snapshot's compute request to that controller (which fans it out to the worker pool, whose
+   * workers write per-host slices to {@link #getS2SliceDir()}) instead of computing in-process.
+   */
+  public String getS2ControllerHost() {
+    return _config.getString(ARG_S2_CONTROLLER_HOST, "");
+  }
+
+  /** Port of the persistent S2 controller service (see {@link #getS2ControllerHost()}). */
+  public int getS2ControllerPort() {
+    return _config.getInt(ARG_S2_CONTROLLER_PORT, 0);
+  }
+
   private void initConfigDefaults() {
     setDefaultProperty(BfConsts.ARG_ALWAYS_INCLUDE_ANSWER_IN_WORK_JSON_LOG, false);
     setDefaultProperty(BfConsts.ARG_BDP_DETAIL, false);
@@ -441,6 +459,8 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     setDefaultProperty(ARG_S2_WORKERS, 0);
     setDefaultProperty(ARG_S2_STORE_DATA_PLANE, true);
     setDefaultProperty(ARG_S2_SLICE_DIR, "");
+    setDefaultProperty(ARG_S2_CONTROLLER_HOST, "");
+    setDefaultProperty(ARG_S2_CONTROLLER_PORT, 0);
   }
 
   private void initOptions() {
@@ -631,6 +651,16 @@ public final class Settings extends BaseSettings implements GrammarSettings {
         "directory of per-host data-plane slices produced by an out-of-process S2 pool",
         "s2 slice dir");
 
+    addOption(
+        ARG_S2_CONTROLLER_HOST,
+        "host of the persistent S2 controller service (empty = compute in-process)",
+        "s2 controller host");
+
+    addOption(
+        ARG_S2_CONTROLLER_PORT,
+        "port of the persistent S2 controller service",
+        "s2 controller port");
+
     // deprecated and ignored
     for (String deprecatedStringArg :
         new String[] {
@@ -751,6 +781,8 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     getIntOptionValue(ARG_S2_WORKERS);
     getBooleanOptionValue(ARG_S2_STORE_DATA_PLANE);
     getStringOptionValue(ARG_S2_SLICE_DIR);
+    getStringOptionValue(ARG_S2_CONTROLLER_HOST);
+    getIntOptionValue(ARG_S2_CONTROLLER_PORT);
   }
 
   public void setCanExecute(boolean canExecute) {
@@ -868,6 +900,14 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
   public void setS2SliceDir(String sliceDir) {
     _config.setProperty(ARG_S2_SLICE_DIR, sliceDir);
+  }
+
+  public void setS2ControllerHost(String host) {
+    _config.setProperty(ARG_S2_CONTROLLER_HOST, host);
+  }
+
+  public void setS2ControllerPort(int port) {
+    _config.setProperty(ARG_S2_CONTROLLER_PORT, port);
   }
 
   public void setQuestionName(QuestionId questionName) {

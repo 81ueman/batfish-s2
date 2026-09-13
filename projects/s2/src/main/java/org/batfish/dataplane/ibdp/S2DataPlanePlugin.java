@@ -5,6 +5,7 @@ package org.batfish.dataplane.ibdp;
 import com.google.auto.service.AutoService;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -12,11 +13,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
+import org.apache.commons.configuration2.ImmutableConfiguration;
 import org.batfish.common.NetworkSnapshot;
 import org.batfish.common.plugin.DataPlanePlugin;
 import org.batfish.common.plugin.Plugin;
@@ -57,18 +61,39 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
 
   @Override
   public ComputeDataPlaneResult computeDataPlane(NetworkSnapshot snapshot) {
-    String sliceDir = _batfish.getSettingsConfiguration().getString(Settings.ARG_S2_SLICE_DIR, "");
+    ImmutableConfiguration settings = _batfish.getSettingsConfiguration();
+    String sliceDir = settings.getString(Settings.ARG_S2_SLICE_DIR, "");
+    String controllerHost = settings.getString(Settings.ARG_S2_CONTROLLER_HOST, "");
+    int controllerPort = settings.getInt(Settings.ARG_S2_CONTROLLER_PORT, 0);
     Map<String, Configuration> configurations = _batfish.loadConfigurations(snapshot);
     TopologyProvider topologyProvider = _batfish.getTopologyProvider();
     TopologyContext topologyContext =
         buildTopologyContext(snapshot, configurations, topologyProvider);
+    Set<BgpAdvertisement> externalAdverts =
+        _batfish.loadExternalBgpAnnouncements(snapshot, configurations);
+    if (!controllerHost.isEmpty()) {
+      if (!distributedProtocolsSupported(configurations)) {
+        // EIGRP/IS-IS/RIP are not distributed; the pool cannot compute this snapshot. Fall back to
+        // the in-process single-worker path below (equivalent to the stock engine).
+        _logger.warn(
+            "S2: snapshot uses EIGRP/IS-IS/RIP, which the worker pool cannot distribute;"
+                + " ignoring s2controllerhost and computing in-process with 1 worker");
+      } else {
+        return computeViaController(
+            snapshot,
+            configurations,
+            externalAdverts,
+            topologyContext,
+            controllerHost,
+            controllerPort,
+            sliceDir);
+      }
+    }
     if (!sliceDir.isEmpty()) {
       // An out-of-process S2 pool already produced the per-host slices (Kubernetes shared storage);
       // serve questions from them lazily instead of computing in-process.
       return computeFromSlices(topologyContext, Paths.get(sliceDir));
     }
-    Set<BgpAdvertisement> externalAdverts =
-        _batfish.loadExternalBgpAnnouncements(snapshot, configurations);
 
     int numWorkers = resolveNumWorkers(configurations);
     Map<String, Integer> assignment =
@@ -137,6 +162,90 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
         "S2: serving the data plane from %d host slices under %s", slices.hosts().size(), sliceDir);
     return new ComputeDataPlaneResult(
         new IncrementalBdpAnswerElement(), S2LazyDataPlane.of(slices), topologyContext);
+  }
+
+  /** Per-snapshot slice directories this JVM created, deleted on shutdown (slice GC). */
+  private static final Set<Path> _sliceDirsForGc = ConcurrentHashMap.newKeySet();
+
+  private static final AtomicBoolean _sliceGcHookRegistered = new AtomicBoolean();
+
+  /**
+   * Drive the persistent controller service (choice A): ship this snapshot to the pool, wait for
+   * the workers to write their owned hosts' slices, then serve questions lazily from those slices.
+   * The per-snapshot directory is registered for deletion on JVM shutdown so a shared volume does
+   * not accumulate one directory per snapshot.
+   */
+  private ComputeDataPlaneResult computeViaController(
+      NetworkSnapshot snapshot,
+      Map<String, Configuration> configurations,
+      Set<BgpAdvertisement> externalAdverts,
+      TopologyContext topologyContext,
+      String controllerHost,
+      int controllerPort,
+      String baseSliceDir) {
+    if (controllerPort <= 0) {
+      throw new IllegalStateException(
+          "s2controllerhost is set but s2controllerport is not a valid port: " + controllerPort);
+    }
+    Path sliceDir;
+    try {
+      Path base =
+          baseSliceDir.isEmpty()
+              ? Files.createTempDirectory("s2-slices-")
+              : Files.createDirectories(Paths.get(baseSliceDir));
+      sliceDir = Files.createTempDirectory(base, "snapshot-");
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to create the S2 slice directory", e);
+    }
+    registerSliceGc(sliceDir);
+    try {
+      S2ControllerClient client = new S2ControllerClient(controllerHost, controllerPort);
+      S2ControlMessages.ComputeRequest request =
+          new S2ControlMessages.ComputeRequest(
+              S2ControlMessages.serializeConfigs(configurations),
+              S2ControlMessages.serializeExternalAdverts(externalAdverts),
+              sliceDir.toString(),
+              snapshot.getSnapshot().getId());
+      S2ControlMessages.ComputeResponse response = client.compute(request);
+      if (!response.ok) {
+        throw new IllegalStateException(
+            "S2 controller failed for "
+                + snapshot.getSnapshot()
+                + " ("
+                + controllerHost
+                + ":"
+                + controllerPort
+                + "): "
+                + response.message);
+      }
+      Path resultDir = response.sliceDir == null ? sliceDir : Paths.get(response.sliceDir);
+      _logger.infof(
+          "S2: controller %s:%d computed snapshot %s on %d workers; slices at %s",
+          controllerHost, controllerPort, snapshot.getSnapshot(), response.numWorkers, resultDir);
+      return computeFromSlices(topologyContext, resultDir);
+    } catch (IOException | ClassNotFoundException e) {
+      throw new IllegalStateException(
+          "S2 controller request to " + controllerHost + ":" + controllerPort + " failed", e);
+    }
+  }
+
+  private static void registerSliceGc(Path sliceDir) {
+    if (_sliceGcHookRegistered.compareAndSet(false, true)) {
+      Runtime.getRuntime()
+          .addShutdownHook(new Thread(S2DataPlanePlugin::deleteSliceDirs, "s2-slice-gc"));
+    }
+    _sliceDirsForGc.add(sliceDir);
+  }
+
+  private static void deleteSliceDirs() {
+    for (Path dir : _sliceDirsForGc) {
+      try {
+        S2DirectoryHostSlices.deleteRecursively(dir);
+      } catch (IOException e) {
+        // Best effort: the directory may be on a read-only or already-unmounted volume.
+        System.err.printf("S2: failed to delete slice directory %s: %s%n", dir, e);
+      }
+    }
   }
 
   /** Run the workers concurrently and assemble their owned data planes lazily. */

@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s2-controller
+  labels: {app: s2-controller}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: s2-controller}
+  template:
+    metadata:
+      labels: {app: s2-controller}
+    spec:
+      containers:
+        - name: controller
+          image: s2:local
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/s2/entrypoint-controller-service.sh"]
+          env:
+            # Must match the StatefulSet's replica count: the controller waits for WORKERS
+            # worker services to register before it serves a compute request.
+            - name: WORKERS
+              value: "3"
+            - name: CONTROLLER_PORT
+              value: "4090"
+            # The controller is a lightweight coordinator (parses the shipped configs,
+            # resolves the partition, ships it, drives the fixpoint, collects Done). The
+            # engine ships configs, so it never reads the snapshot itself.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx1g -Ds2.partition=WEIGHTED_LPT_FM"
+          ports:
+            - containerPort: 4090
+          resources:
+            requests: {memory: "512Mi", cpu: "0.5"}
+            limits: {memory: "2Gi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s2-controller
+  labels: {app: s2-controller}
+spec:
+  selector: {app: s2-controller}
+  ports:
+    - port: 4090
+      targetPort: 4090

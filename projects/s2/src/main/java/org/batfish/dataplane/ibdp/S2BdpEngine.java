@@ -65,15 +65,21 @@ public class S2BdpEngine extends IncrementalBdpEngine {
    * <p>This is the *requested* mode. It is turned off for a run (see {@link #prepareDataPlane})
    * when the snapshot contains features that need complete remote FIBs (tracks, VXLAN/IPsec/tunnel
    * reachability pruning), because owned-only FIBs would give silently wrong answers there.
+   *
+   * <p>It is also the setter for the batch-forwarding analysis exactness: a remote shadow's FIB is
+   * a stub, so a worker's {@code ForwardingAnalysis} (ARP replies / VRF forwarding behavior) for
+   * its owned nodes can differ from the stock engine's. In-process S2 shadows share the real node,
+   * so that gap is invisible there; remote workers (the persistent pool) must run with owned mode
+   * off when the slices are served to questions that consult the forwarding analysis. {@link
+   * S2WorkerService} does so by default.
    */
-  private final boolean _ownedDataplaneRequested =
-      Boolean.parseBoolean(System.getProperty("s2.ownedDataplane", "true"));
+  private final boolean _ownedDataplaneRequested;
 
   /**
    * The effective owned mode for the current run. Equals {@link #_ownedDataplaneRequested} unless
    * {@link #prepareDataPlane} disabled it as an unsafe fallback.
    */
-  private boolean _ownedDataplane = _ownedDataplaneRequested;
+  private boolean _ownedDataplane;
 
   /**
    * Whether this run materializes reduced shadow configs from remote descriptors (default on,
@@ -108,12 +114,36 @@ public class S2BdpEngine extends IncrementalBdpEngine {
       @Nullable Runnable shadowSync,
       Set<Prefix> externalAdvertPrefixes,
       boolean descriptorShadows) {
+    this(
+        settings,
+        nodes,
+        coordinator,
+        shadowSync,
+        externalAdvertPrefixes,
+        descriptorShadows,
+        Boolean.parseBoolean(System.getProperty("s2.ownedDataplane", "true")));
+  }
+
+  /**
+   * Full constructor with an explicit owned-only flag, so a caller (the remote worker service) can
+   * request the forwarding-exact full-dataplane mode regardless of the process-wide default.
+   */
+  S2BdpEngine(
+      IncrementalDataPlaneSettings settings,
+      Map<String, DistributedNode> nodes,
+      S2Coordinator coordinator,
+      @Nullable Runnable shadowSync,
+      Set<Prefix> externalAdvertPrefixes,
+      boolean descriptorShadows,
+      boolean ownedDataplane) {
     super(settings);
     _nodes = nodes;
     _coordinator = coordinator;
     _shadowSync = shadowSync;
     _externalAdvertPrefixes = externalAdvertPrefixes;
     _descriptorShadows = descriptorShadows;
+    _ownedDataplaneRequested = ownedDataplane;
+    _ownedDataplane = ownedDataplane;
   }
 
   @Override

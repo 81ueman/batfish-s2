@@ -36,17 +36,29 @@ S2_WORKERS=4 scripts/s2-batfish.sh -snapshotdir /path/to/snapshots
   path does not need it.
 * **Protocol fallback.** Snapshots that use EIGRP/IS-IS/RIP (not distributed) automatically run on a
   single worker, so the engine is a drop-in for any snapshot.
+* **Persistent pool.** With `-s2controllerhost` / `-s2controllerport` the engine ships each snapshot
+  to a long-lived controller service and its worker pool, then serves questions lazily from the
+  per-host slices the workers wrote; see "Persistent pool" below.
+
+> Note: `scripts/s2-batfish.sh` works because `//projects/allinone:allinone_main` now bundles the S2
+> plugin (`//projects/s2:s2`), so the engine is discoverable exactly like stock `ibdp`.
 
 ## Settings
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `dataplaneengine` | `ibdp` | Selects the engine; set to `s2` to use S2. |
-| `s2workers` | `0` (auto) | S2 workers (partition shards). Auto = pool size (once a remote pool exists), else `availableProcessors` capped by the node count. An explicit value is honored. |
+| `s2workers` | `0` (auto) | S2 workers (partition shards) for the in-process engine. Auto = `availableProcessors` capped by the node count. Ignored when a controller host is configured (the pool size is fixed there). |
 | `s2storedataplane` | `true` | Persist the data plane to disk. Set `false` for a lazy/remote data plane (kept in memory only). |
+| `s2slicedir` | `""` | Directory for per-host data-plane slices. With `s2controllerhost` it is the base directory the pool writes into and the engine reads from; alone it means "serve from these pre-written slices". |
+| `s2controllerhost` | `""` | Host of the persistent S2 controller service. When set, the engine ships each snapshot to the pool instead of computing in-process. |
+| `s2controllerport` | `0` | Port of the persistent S2 controller service (required with `s2controllerhost`). |
 
-`Settings.getS2Workers()` / `setS2Workers`, `getS2StoreDataPlane()` / `setS2StoreDataPlane`; CLI
-`-s2workers` / `-s2storedataplane`, or the same keys in `batfish.properties`.
+`Settings.getS2Workers()` / `setS2Workers`, `getS2StoreDataPlane()` / `setS2StoreDataPlane`,
+`getS2SliceDir()` / `setS2SliceDir`, `getS2ControllerHost()` / `setS2ControllerHost`,
+`getS2ControllerPort()` / `setS2ControllerPort`; CLI `-s2workers`, `-s2storedataplane`,
+`-s2slicedir`, `-s2controllerhost`, `-s2controllerport`, or the same keys in
+`batfish.properties`.
 
 ## Kubernetes integration (persistent worker pool)
 
@@ -92,22 +104,61 @@ which is the concrete Kubernetes step:
 
 1. **Produce.** The S2 worker pool computes the fixpoint and each worker writes its owned hosts'
    slices to the shared volume (`S2_SLICE_DIR`, default `<S2_OUTPUT_DIR>/slices`; the `s2-worker`
-   StatefulSet mounts the PVC there). `S2Main worker` does this now.
+   StatefulSet mounts the PVC there). `S2Main worker` (one-shot) and `S2Main worker-service`
+   (persistent) both do this.
 2. **Serve.** A Batfish engine runs with `-dataplaneengine=s2 -s2slicedir=/s2/shared/slices
    -s2storedataplane=false`; questions are answered lazily from the slices (`S2DirectoryHostSlices` →
    `S2LazyDataPlane`), so only the touched hosts are read. Verified by
    `S2DataPlanePluginTest#testS2EngineServesFromSliceDirectory`.
 
-### What must be added to fully automate this
+### Persistent pool (choice A, implemented)
 
-1. **Persistent controller service** (choice A): a long-lived `s2-controller` Deployment + Service the
-   worker pool connects to and the engine drives per snapshot. The worker-side network barrier
-   (`S2RemoteCoordinator`) and the controller/sidecar servers already exist from the runner.
-2. **Worker service** — a long-lived Pod that joins the pool, accepts a snapshot assignment, runs its
-   shard, writes its slices, and waits for the next snapshot.
-3. **Pool discovery + settings** — headless Service (DNS) + a settings key (e.g. `s2workerpool`); auto
-   `N` from the pool size.
-4. **Slice GC** — clean the snapshot's slice directory after the run.
+The two stages are automated by a long-lived controller service and worker services, so a
+persistent pool serves many snapshots:
+
+```sh
+# 1. Controller service: accepts N worker services, then one compute request per snapshot.
+S2Main controller-service <numWorkers> <controllerPort>
+
+# 2. Worker services: register once, then serve snapshots until shut down.
+S2Main worker-service <workerId> <controllerHost> <controllerPort> <sidecarPort> [advertisedHost]
+
+# 3. Drive the pool. Locally, the smoke client ships one snapshot and compares to vanilla:
+S2Main pool-compute <network> <controllerPort>
+#    or, on a real engine, set the controller host so the plugin drives the pool:
+batfish -dataplaneengine=s2 -s2controllerhost=HOST -s2controllerport=PORT \
+        -s2slicedir=/s2/shared/slices -s2storedataplane=false ...
+```
+
+* **Protocol reuse.** The pool reuses the runner's controller/sidecar protocol
+  (`S2ControlMessages` / `S2ControllerServer` / `S2SidecarServer`) and its round/sum barriers
+  (`S2RoundBarrier` / `S2SumBarrier`); the worker-side barrier is still `S2RemoteCoordinator`. No
+  new barrier.
+* **Engines.** `S2ControllerService` accepts N workers once (each advertises its sidecar endpoint),
+  then per snapshot computes the partition, ships the payload, drives the existing fixpoint, and
+  returns once the workers wrote their slices. Requests are serialized and tagged with a monotonic
+  `runId` so a straggler from a failed run cannot be mistaken for the next snapshot.
+  `S2WorkerService` swaps its route-sidecar handler per snapshot and loops.
+* **Slice GC.** The engine creates a unique per-snapshot directory under `s2slicedir`, registers it
+  for recursive deletion on JVM shutdown (`S2DirectoryHostSlices.deleteRecursively`), and the
+  `pool-compute` client deletes its temporary directory when done.
+* **Forwarding exactness.** A remote shadow's FIB is a stub, so owned-only mode would give an ARP /
+  forwarding view that differs from stock Batfish. `S2WorkerService` therefore runs the
+  forwarding-exact full dataplane by default (`S2BdpEngine` takes an explicit owned-only flag);
+  `-Ds2.ownedDataplane=true` restores owned-only mode for RIB/FIB-only scale runs.
+* **Kubernetes.** `k8s/pool/` (separate from the one-shot `k8s/base` runner) has a persistent
+  `s2-controller` Deployment + Service, an `s2-worker` StatefulSet in worker-service mode, a
+  ReadWriteMany `s2-slices` PVC shared by the workers and the engine, and an `s2-engine` Deployment
+  running allinone with `-dataplaneengine=s2 -s2controllerhost ... -s2storedataplane=false`.
+* **Local verification.** `scripts/s2-pool-demo.sh <N> [network]` starts the controller service and
+  N worker services as processes and runs `pool-compute` (expects `ribs=MATCH forwarding=MATCH`);
+  `S2PoolServiceTest` does the same in-JVM and also drives the real plugin, serving two snapshots
+  through one pool.
+
+One-time build for the engine image: `bazel build //projects/allinone:allinone_main_deploy.jar`
+then `cp -f bazel-bin/projects/allinone/allinone_main_deploy.jar docker/` and
+`docker build -f docker/Dockerfile.s2-engine -t s2-engine:local .` (the deploy jar now bundles the
+S2 plugin, so `-dataplaneengine=s2` is discoverable like any stock engine).
 
 ## Scale verification
 
@@ -116,18 +167,37 @@ which is the concrete Kubernetes step:
   snapshot, compare peak heap for a node-scoped question (`routes` on one node) vs a whole-network
   question, with `-dataplaneengine=s2` and `-s2storedataplane=false`; the node-scoped run should pull
   only the touched hosts. Runner-scale baselines are in `M5-SCALE.md`.
-* **Kubernetes.** `scripts/k8s-demo.sh` covers the runner path today; the plugin path needs the
-  worker pool. Once the pool exists, run a Batfish Job with `-dataplaneengine=s2` and
-  `-s2workerpool s2-workers:PORT` and compare a question against `ibdp` on the same snapshot.
+* **Kubernetes.** `scripts/k8s-demo.sh` covers the one-shot `k8s/base` runner path.
+  `k8s/pool/` is the persistent pool: apply it, then drive the `s2-engine` Deployment (or a local
+  engine) with `-dataplaneengine=s2 -s2controllerhost=s2-controller.s2-pool.svc.cluster.local
+  -s2controllerport=4090 -s2storedataplane=false` and compare a question against `ibdp` on the
+  same snapshot. `kubectl scale statefulset/s2-worker --replicas=N` grows the pool.
 
 ## Status
 
 Done: engine registration/selection, `-s2workers` (explicit + auto), distributed compute + lazy
 global data plane, stock-question equivalence, protocol fallback, `s2storedataplane`, launcher, the
 pluggable per-host slice source (`S2HostSlices`: in-process + directory-backed), **slice production
-by the worker pool** (`S2_SLICE_DIR`; the k8s `s2-worker` StatefulSet mounts it), and **serving from
-those slices** (`-s2slicedir`, lazily).
+by the worker pool** (`S2_SLICE_DIR`; the k8s `s2-worker` StatefulSet mounts it), **serving from
+those slices** (`-s2slicedir`, lazily), and the **persistent controller/worker service pool**
+(choice A): `controller-service` / `worker-service` roles, the engine client and settings
+(`s2controllerhost` / `s2controllerport`), slice GC, `k8s/pool/`, and the local
+`S2PoolServiceTest` + `scripts/s2-pool-demo.sh` verification.
 
-Next (large): automate the two stages with a **persistent controller service** (choice A) — the
-engine drives the pool per snapshot while the worker-side barrier/servers are reused — plus pool
-discovery/auto-`N`, slice GC, and the scale verification above.
+Next: pool discovery/auto-`N` from the Service, per-snapshot slice cleanup keyed on snapshot ids
+(currently JVM-exit GC), and the scale verification above.
+
+## Running the local pool
+
+```sh
+bazel build //projects/s2:s2_main_deploy.jar
+S2_INPUT_DIR=$PWD/networks scripts/s2-pool-demo.sh 3 s2-triangle
+# -> S2 pool-compute s2-triangle (3 workers): ribs=MATCH forwarding=MATCH
+```
+
+`S2PoolServiceTest` is the same flow in-JVM (it also drives the real `S2DataPlanePlugin` through the
+pool and serves two snapshots from one worker pool):
+
+```sh
+bazel test //projects/s2:s2_tests --test_filter=org.batfish.dataplane.ibdp.S2PoolServiceTest
+```
