@@ -3,6 +3,7 @@ package org.batfish.datamodel;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Ordering;
@@ -188,6 +189,27 @@ public class PrefixSpace implements Serializable {
     return BitSet.valueOf(new long[] {Integer.reverse((int) address.asLong()) & 0xffffffffL});
   }
 
+  /**
+   * Maximum number of positive {@link #containsPrefix} results to memoize per space when {@link
+   * #_cachePositiveOnly} is set. Bounds a single space's cache; see {@link #_cachePositiveOnly}.
+   */
+  private static final int MAX_POSITIVE_CACHE_ENTRIES = 1 << 14;
+
+  /**
+   * When true, {@link #containsPrefix} memoizes only positive results, and only up to {@link
+   * #MAX_POSITIVE_CACHE_ENTRIES} of them. Enabled with {@code
+   * -Ds2.prefixSpacePositiveCacheOnly=true}; default off preserves stock behavior.
+   *
+   * <p>The cache is a pure memoization, so this never changes results. It bounds memory for a
+   * policy that embeds many single-prefix {@code PrefixSpace}s -- for example the Cisco
+   * redistribution policy generated for BGP {@code network} statements, which has one {@code
+   * MatchPrefixSet}/{@code ExplicitPrefixSet} per advertised prefix. Evaluating such a policy
+   * against N route prefixes otherwise caches O(N^2) negative results (the observed dominant EGP
+   * control-plane transient on the {@code s2-giga} snapshot).
+   */
+  private static volatile boolean _cachePositiveOnly =
+      Boolean.getBoolean("s2.prefixSpacePositiveCacheOnly");
+
   private transient ConcurrentMap<Prefix, Boolean> _cache;
 
   private BitTrie _trie;
@@ -240,11 +262,27 @@ public class PrefixSpace implements Serializable {
     @Nullable Boolean result = _cache.get(prefix);
     if (result != null) {
       return result;
-    } else {
-      boolean contained = containsPrefixRange(PrefixRange.fromPrefix(prefix));
-      _cache.put(prefix, contained);
-      return contained;
     }
+    boolean contained = containsPrefixRange(PrefixRange.fromPrefix(prefix));
+    // Memoizing a negative result for a single-prefix space is pure overhead and, when a policy
+    // contains many such spaces, grows without bound. Only do it in stock mode (see
+    // _cachePositiveOnly).
+    if (!_cachePositiveOnly || (contained && _cache.size() < MAX_POSITIVE_CACHE_ENTRIES)) {
+      _cache.put(prefix, contained);
+    }
+    return contained;
+  }
+
+  /** Test hook for {@link #_cachePositiveOnly}. */
+  @VisibleForTesting
+  static void setCachePositiveOnly(boolean value) {
+    _cachePositiveOnly = value;
+  }
+
+  /** Test hook for the size of this space's {@link #containsPrefix} cache. */
+  @VisibleForTesting
+  int cacheSize() {
+    return _cache.size();
   }
 
   /**
