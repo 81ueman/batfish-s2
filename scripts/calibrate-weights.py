@@ -14,6 +14,11 @@ Measurement (see {@code docs/s2-port/PARTITIONING-PLAN.md} section 6.7):
       java -Ds2.nodeWeightsDump=features-<net>.tsv \\
           -jar bazel-bin/projects/s2/s2_main_deploy.jar partition <net> <workers>
 
+  The dump carries the seven base features, the v2 topology term ``bgpClosure`` (the estimated
+  full-table route count: the number of prefixes originated in the node's BGP connected component)
+  and the effective weight. ``fit --origin-closure-weight K`` additionally reports the correlation
+  of ``base weight + K * bgpClosure``, the Java ``-Ds2.nodeWeightsV2`` correction.
+
 * **Measured cost** is the per-node main-RIB route count, parsed from the controller's
   {@code results/local-<net>-<workers>/result-<workers>worker.txt} (the {@code --- distributed ---}
   section). The main RIB is the dominant retained per-node term that the partitioner balances
@@ -72,6 +77,12 @@ FEATURE_COLUMNS = (
     "vrfs",
 )
 
+# Extra (topology) model columns emitted by the Java dump. They are not part of the base additive
+# feature fit; the v2 correction adds ``--origin-closure-weight * bgpClosure`` on top of the base
+# weight. ``bgpClosure`` is the estimated full-table route count (the number of prefixes originated
+# anywhere in the node's BGP connected component).
+TOPOLOGY_COLUMNS = ("bgpClosure",)
+
 # The v1 model: every coefficient is 1.
 V1_COEFFICIENTS = {name: 1 for name in FEATURE_COLUMNS}
 
@@ -114,25 +125,33 @@ def parse_result_routes(path: Path):
 
 
 def parse_features(path: Path):
-    """Return ({hostname: {feature: value}}, ordered feature names) from a NodeWeights TSV dump."""
+    """Return ({hostname: {column: value}}, ordered base feature names) from a NodeWeights TSV dump.
+
+    The dump may carry extra topology columns (``bgpClosure``) and a trailing ``weight`` column; the
+    topology columns stay in the per-host mapping (under their own keys) but are not part of the
+    returned base design matrix.
+    """
     lines = path.read_text(encoding="utf-8").splitlines()
     if not lines:
         raise ValueError(f"empty feature dump: {path}")
     header = lines[0].split("\t")
     if header[0] != "hostname":
         raise ValueError(f"bad feature dump header in {path}: {header}")
-    columns = header[1:]
+    all_columns = header[1:]
     # The Java dump appends the model's current total as a trailing `weight` column for humans;
     # it is a derived value, not a feature, so drop it from the design matrix.
-    if columns and columns[-1] == "weight":
-        columns = columns[:-1]
+    if all_columns and all_columns[-1] == "weight":
+        all_columns = all_columns[:-1]
     features = {}
     for line in lines[1:]:
         if not line.strip():
             continue
         parts = line.split("\t")
         host = parts[0]
-        features[host] = {col: int(val) for col, val in zip(columns, parts[1 : 1 + len(columns)])}
+        features[host] = {
+            col: int(val) for col, val in zip(all_columns, parts[1 : 1 + len(all_columns)])
+        }
+    columns = [col for col in all_columns if col not in TOPOLOGY_COLUMNS]
     return features, columns
 
 
@@ -175,6 +194,11 @@ def load_sample(name, result_path, features_path):
 
 def dot(weights, vector, columns):
     return sum(weights.get(col, 0) * vector.get(col, 0) for col in columns)
+
+
+def predicted(weights, vector, columns, origin_closure_weight=0.0):
+    """Base feature dot product plus the v2 full-table topology term (if any)."""
+    return dot(weights, vector, columns) + origin_closure_weight * vector.get("bgpClosure", 0)
 
 
 def pearson(xs, ys):
@@ -313,11 +337,13 @@ def centered_rows(samples, columns):
     return rows
 
 
-def print_correlations(samples, columns, coefficients, title):
+def print_correlations(
+    samples, columns, coefficients, title, origin_closure_weight=0.0
+):
     print(title)
     print("  network           n   pearson  spearman")
     xs, ys = dataset_vectors(samples, columns)
-    pooled = [dot(coefficients, x, columns) for x in xs]
+    pooled = [predicted(coefficients, x, columns, origin_closure_weight) for x in xs]
     print(
         f"  {'ALL (pooled)':<16} {len(xs):>3}   {pearson(pooled, ys):>7.3f}  "
         f"{spearman(pooled, ys):>8.3f}"
@@ -325,14 +351,14 @@ def print_correlations(samples, columns, coefficients, title):
     for sample in samples:
         sx = [sample["features"][h] for h in sample["hosts"]]
         sy = [sample["cost"][h] for h in sample["hosts"]]
-        pred = [dot(coefficients, x, columns) for x in sx]
+        pred = [predicted(coefficients, x, columns, origin_closure_weight) for x in sx]
         print(
             f"  {sample['name']:<16} {len(sx):>3}   {pearson(pred, sy):>7.3f}  "
             f"{spearman(pred, sy):>8.3f}"
         )
 
 
-def print_fit(samples, columns, coefficients, varying):
+def print_fit(samples, columns, coefficients, varying, origin_closure_weight=0.0):
     print("fitted coefficients (non-negative ridge least squares):")
     for col in columns:
         note = "" if col in varying else "  (unidentifiable: constant in the dataset)"
@@ -343,6 +369,20 @@ def print_fit(samples, columns, coefficients, varying):
         print(f"  {col:<22} {ints[col]:>12d}")
     print()
     print_correlations(samples, columns, ints, "correlation of weight with measured route count:")
+    if origin_closure_weight:
+        print()
+        print(
+            "v2 topology correction: "
+            f"base weight + {origin_closure_weight:g} * bgpClosure (Java "
+            "-Ds2.nodeWeightsV2Scale)"
+        )
+        print_correlations(
+            samples,
+            columns,
+            ints,
+            "correlation of corrected weight with measured route count:",
+            origin_closure_weight,
+        )
 
 
 def load_assignment(path: Path):
@@ -416,6 +456,13 @@ def main(argv=None):
         action="store_true",
         help="remove the per-network mean (within-network calibration; the partitioner's regime)",
     )
+    fit.add_argument(
+        "--origin-closure-weight",
+        type=float,
+        default=0.0,
+        help="also report the correlation of base weight + K * bgpClosure (the Java v2 full-table "
+        "correction; K is `-Ds2.nodeWeightsV2Scale`)",
+    )
     fit.add_argument("--json", action="store_true")
 
     imb = sub.add_parser("imbalance", help="measured per-worker cost imbalance of assignments")
@@ -455,20 +502,17 @@ def main(argv=None):
             col for col in columns if len({row["x"].get(col, 0) for row in rows}) > 1
         }
         print()
-        print_fit(samples, columns, coefficients, varying)
+        print_fit(samples, columns, coefficients, varying, args.origin_closure_weight)
         ints = integerize(coefficients, columns, varying)
         if args.json:
-            print(
-                json.dumps(
-                    {
-                        "measured": "main-rib-route-count",
-                        "coefficients": coefficients,
-                        "integerCoefficients": ints,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
+            out = {
+                "measured": "main-rib-route-count",
+                "coefficients": coefficients,
+                "integerCoefficients": ints,
+            }
+            if args.origin_closure_weight:
+                out["originClosureWeight"] = args.origin_closure_weight
+            print(json.dumps(out, indent=2, sort_keys=True))
         return 0
 
     if args.mode == "imbalance":

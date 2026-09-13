@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import org.batfish.datamodel.AclLine;
+import org.batfish.datamodel.BgpProcess;
 import org.batfish.datamodel.ConcreteInterfaceAddress;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.ConfigurationFormat;
@@ -29,9 +30,12 @@ import org.batfish.datamodel.Edge;
 import org.batfish.datamodel.ExprAclLine;
 import org.batfish.datamodel.Interface;
 import org.batfish.datamodel.InterfaceType;
+import org.batfish.datamodel.Ip;
 import org.batfish.datamodel.IpAccessList;
 import org.batfish.datamodel.LineAction;
 import org.batfish.datamodel.Prefix;
+import org.batfish.datamodel.PrefixRange;
+import org.batfish.datamodel.PrefixSpace;
 import org.batfish.datamodel.StaticRoute;
 import org.batfish.datamodel.Topology;
 import org.batfish.datamodel.Vrf;
@@ -360,6 +364,99 @@ public class NodePartitionerTest {
     NodeWeights.Features endpoint = new NodeWeights.Features(2, 1, 1, 0, 6, 0, 1);
     NodeWeights.Features interior = new NodeWeights.Features(3, 2, 1, 0, 7, 0, 1);
     assertThat(NodeWeights.weightOf(interior), greaterThan(NodeWeights.weightOf(endpoint)));
+  }
+
+  /**
+   * The v2 full-table estimate is the number of prefixes originated anywhere in the node's BGP
+   * connected component (its propagation closure). A node with no session forms a singleton
+   * component and only counts its own origination.
+   */
+  @Test
+  public void testFullTableRoutesPerBgpComponent() {
+    Map<String, Configuration> configs =
+        ImmutableMap.of(
+            "a", configWithBgp("a", 2),
+            "b", configWithBgp("b", 1),
+            "c", configWithBgp("c", 1),
+            "d", configWithBgp("d", 0));
+    Map<String, Set<String>> adjacency =
+        ImmutableMap.of(
+            "a", ImmutableSet.of("b"),
+            "b", ImmutableSet.of("a", "c"),
+            "c", ImmutableSet.of("b"),
+            "d", ImmutableSet.of());
+    assertThat(
+        NodeWeights.fullTableRoutes(configs, adjacency),
+        equalTo(ImmutableMap.of("a", 4, "b", 4, "c", 4, "d", 0)));
+  }
+
+  /** The v2 correction is off unless {@code -Ds2.nodeWeightsV2=true}. */
+  @Test
+  public void testV2CorrectionDisabledByDefault() {
+    Map<String, Configuration> configs =
+        ImmutableMap.of("a", configWithBgp("a", 2), "b", configWithBgp("b", 1));
+    Map<String, Set<String>> adjacency =
+        ImmutableMap.of("a", ImmutableSet.of("b"), "b", ImmutableSet.of("a"));
+    String previous = System.getProperty(NodeWeights.V2_PROPERTY);
+    try {
+      System.clearProperty(NodeWeights.V2_PROPERTY);
+      assertThat(NodeWeights.compute(configs, adjacency), equalTo(NodeWeights.compute(configs)));
+    } finally {
+      restoreProperty(NodeWeights.V2_PROPERTY, previous);
+    }
+  }
+
+  /** With v2 enabled the weight is the base weight plus the full-table route term. */
+  @Test
+  public void testV2CorrectionAddsFullTableWeight() {
+    Map<String, Configuration> configs =
+        ImmutableMap.of(
+            "a", configWithBgp("a", 2),
+            "b", configWithBgp("b", 1),
+            "d", configWithBgp("d", 0));
+    Map<String, Set<String>> adjacency =
+        ImmutableMap.of(
+            "a", ImmutableSet.of("b"),
+            "b", ImmutableSet.of("a"),
+            "d", ImmutableSet.of());
+    Map<String, Integer> base = NodeWeights.compute(configs);
+    String previous = System.getProperty(NodeWeights.V2_PROPERTY);
+    String previousScale = System.getProperty(NodeWeights.V2_SCALE_PROPERTY);
+    try {
+      System.setProperty(NodeWeights.V2_PROPERTY, "true");
+      System.setProperty(NodeWeights.V2_SCALE_PROPERTY, "2");
+      Map<String, Integer> corrected = NodeWeights.compute(configs, adjacency);
+      // Component {a,b} originates 3 prefixes; d is a singleton with none.
+      assertThat(corrected.get("a"), equalTo(base.get("a") + 2 * 3));
+      assertThat(corrected.get("b"), equalTo(base.get("b") + 2 * 3));
+      assertThat(corrected.get("d"), equalTo(base.get("d")));
+      // Deterministic.
+      assertThat(NodeWeights.compute(configs, adjacency), equalTo(corrected));
+    } finally {
+      restoreProperty(NodeWeights.V2_PROPERTY, previous);
+      restoreProperty(NodeWeights.V2_SCALE_PROPERTY, previousScale);
+    }
+  }
+
+  private static void restoreProperty(String name, String previous) {
+    if (previous == null) {
+      System.clearProperty(name);
+    } else {
+      System.setProperty(name, previous);
+    }
+  }
+
+  private static Configuration configWithBgp(String hostname, int originatedPrefixes) {
+    Configuration c = configWithInterface(hostname, "i1", "10.0.0.1/30");
+    Vrf vrf = c.getVrfs().get(Configuration.DEFAULT_VRF_NAME);
+    BgpProcess process = BgpProcess.testBgpProcess(Ip.parse("1.1.1.1"));
+    PrefixSpace space = new PrefixSpace();
+    for (int i = 0; i < originatedPrefixes; i++) {
+      space.addPrefixRange(PrefixRange.fromPrefix(Prefix.parse("10." + i + ".0.0/24")));
+    }
+    process.setOriginationSpace(space);
+    vrf.setBgpProcess(process);
+    return c;
   }
 
   private static Configuration configWithInterface(
