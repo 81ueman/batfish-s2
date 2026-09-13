@@ -694,6 +694,29 @@ python3 scripts/calibrate-weights.py imbalance \
 - **prefix shard**: peak-vs-N は実測済み（`scripts/shard-sweep.sh`, `M5-SCALE.md`）。wall time は
   未収録で、現行既定では peak は flat（no-op）の見込み。
 
+**Clos の別サイズ / WAN らしい網**（同じ sweep、全 30 セル `MATCH`）:
+
+| network (nodes) | W | RANDOM | NAME_ORDERED | WEIGHTED_LPT_FM | GREEDY_REGION | METIS |
+| --- | --- | --- | --- | --- | --- | --- |
+| `s2-hub` (9, star/RR) | 3 | 160.0 | 164.6 | 131.2 | 160.9 | **128.4** |
+| `s2-hub` (9, star/RR) | 6 | 157.4 | 156.7 | 161.0 | 159.3 | 161.4 |
+| `s2-big2` (10, line) | 3 | **148.5** | 152.8 | 151.2 | 153.1 | 167.4 |
+| `s2-big2` (10, line) | 6 | 168.2 | 172.6 | 170.0 | 172.0 | 182.7 |
+| `s2-fat6` (45, Clos k=6) | 3 | 142.3 | 191.4 | 146.8 | 140.1 | **135.6** |
+| `s2-fat6` (45, Clos k=6) | 6 | 149.4 | 146.2 | 149.8 | 149.3 | **139.5** |
+
+追加の知見:
+
+- **`s2-hub`（WAN の star/route-reflector、W=3）**: `WEIGHTED_LPT_FM`/`METIS` が良い（~128–131 vs
+  RANDOM 160）。hub（peer 多）と spoke のロール差が出る。W=6 では差が消える（9 ノード / 6 worker で
+  余地が小さい）。
+- **`s2-big2`（line WAN）**: scheme 差はほぼ無し（RANDOM が最良のことも）。一様なので割当が効かない。
+- **`s2-fat6`（Clos k=6, 45 ノード）**: 差は小さく `METIS` がやや良い程度（135–139 vs RANDOM
+  142–149）。fat4 ほど効かない。
+- 総合: **scheme の効きは「ノードのロール差 × worker あたりのノード数」に依存**し、強いケース
+  （`s2-fat4` −37%）から無差別（line）まで幅がある。**`WEIGHTED_LPT_FM` は最良か同等で安全**、
+  runner 既定 `AUTO`（→METIS）も概ね同等。
+
 ---
 
 ## 7. マイルストーン
