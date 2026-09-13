@@ -98,7 +98,6 @@ final class PrefixSharder {
   }
 
   /** Assigns the components of {@code graph} to at most {@code n} shards. */
-  @VisibleForTesting
   static List<PrefixSpace> shards(PrefixDependencyGraph graph, int n) {
     List<Set<Prefix>> components = graph.weaklyConnectedComponents();
     Set<Prefix> allPrefixes = graph.nodes();

@@ -19,6 +19,8 @@ Knobs added for scale work:
 | `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies) | off |
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
 | `S2_PREFIX_SHARDS=N` | control-plane (BGP RIB) prefix sharding, N rounds | 1 (off) |
+| `S2_PREFIX_SHARDS=auto` | auto shard count from the DPDG component weights (alias `-Ds2.prefixShardCount=auto`) | — |
+| `-Ds2.prefixShardBudgetMiB=M` | per-shard live-BGP-RIB budget used by `auto` (smaller ⇒ more shards, cap 16) | 192 |
 | `-Ds2.prefixShardExternalize=true` | serialize each shard's BGP RIB between rounds | off |
 
 Headline peak-heap per worker (3 workers, `-Xmx4g`):
@@ -56,7 +58,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 | --- | --- | --- |
 | **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS); controller computes and distributes the assignment | **Done**: new `.../ibdp/partition/` package + `NodePartitioner`, union graph/`NodeWeights`, `-Ds2.partition` (default RANDOM unchanged), assignment shipped in `Start.assignment`; metrics/eval in `PARTITIONING-PLAN.md` §6.6. P0 (weights) |
 | **P3** | PrefixDependencyGraph (closure + DPDG + weighted WCC-LPT) | **Done**: `PrefixDependencyGraph.java` + `PrefixSharder` rewrite (weighted WCC-LPT, degenerate fallback); `PrefixSharderTest` extended |
-| **P-X** | shard-count selection | P3 |
+| **P-X** | shard-count selection | **Done**: `S2_PREFIX_SHARDS=auto` (`PrefixShardCountSelector`) picks N deterministically from the DPDG component weights under a per-shard budget (`-Ds2.prefixShardBudgetMiB`, default 192, cap 16); `scripts/shard-sweep.sh` + `M5-SCALE.md` record peak-vs-N |
 
 ### Memory
 
@@ -96,10 +98,10 @@ M2 ⇄ P3                      (both target T_w)
 
 ### Recommended order
 
-Done (merged): C-PFX, P3, M1, M3, M4, C3, P0 (except weight calibration O6).
+Done (merged): C-PFX, P3, P-X, M1, M3, M4, C3, P0 (except weight calibration O6).
 
 1. **P2** node→worker partitioner (with O6 weight calibration + partition-quality metrics from P0)
-2. **M2 or** the remaining DPDG refinements (P-X shard-count selection)
+2. **M2** control-plane transient reduction (the remaining DPDG/P3 follow-up)
 3. **O1** defaults / **O2** k8s / **O3** CI matrix / **O4** bench automation / **O5** METIS
 4. **M5** (deferred)
 5. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required

@@ -163,6 +163,43 @@ public class S2DistributedControlPlaneTest {
   }
 
   /**
+   * Auto shard-count selection ({@code S2_PREFIX_SHARDS=auto}): N is derived deterministically from
+   * the prefix dependency graph. A tight budget forces more than one shard so the sharding path
+   * (not just the unsharded one) is exercised, and the result must still match vanilla.
+   */
+  @Test
+  public void testPrefixShardingAutoMatchesVanilla() throws Exception {
+    System.setProperty("s2.prefixShards", "auto");
+    System.setProperty("s2.prefixShardBudgetMiB", "2");
+    System.setProperty("s2.prefixShardExternalize", "true");
+    try {
+      assertDistributedMatchesVanilla(OSPF_BGP_TESTRIG, OSPF_BGP_CONFIGS, new int[] {1, 3});
+    } finally {
+      System.clearProperty("s2.prefixShards");
+      System.clearProperty("s2.prefixShardBudgetMiB");
+      System.clearProperty("s2.prefixShardExternalize");
+    }
+  }
+
+  /**
+   * Auto selection with an aggregate: even when a tight budget shards the network, the aggregate
+   * and the prefixes it covers must stay in one shard.
+   */
+  @Test
+  public void testPrefixShardingAutoWithAggregateMatchesVanilla() throws Exception {
+    System.setProperty("s2.prefixShards", "auto");
+    System.setProperty("s2.prefixShardBudgetMiB", "3");
+    System.setProperty("s2.prefixShardExternalize", "true");
+    try {
+      assertDistributedMatchesVanilla(AGG_TESTRIG, AGG_CONFIGS, new int[] {1, 3});
+    } finally {
+      System.clearProperty("s2.prefixShards");
+      System.clearProperty("s2.prefixShardBudgetMiB");
+      System.clearProperty("s2.prefixShardExternalize");
+    }
+  }
+
+  /**
    * OSPF->BGP redistribution (on r2) and BGP->OSPF redistribution (on r3) must propagate correctly
    * across workers: r4 learns r1's loopback as an OSPF external route.
    */
