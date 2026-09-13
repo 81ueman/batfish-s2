@@ -7,6 +7,7 @@ import static org.hamcrest.Matchers.equalTo;
 
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 import org.batfish.common.NetworkSnapshot;
 import org.batfish.datamodel.DataPlane;
@@ -44,6 +45,51 @@ public final class S2DataPlanePluginTest {
   @Test
   public void testS2EngineMatchesVanillaAutoWorkers() throws IOException {
     assertS2MatchesVanilla(0);
+  }
+
+  /**
+   * The engine can serve the data plane from per-host slices written by an out-of-process pool
+   * ({@code s2slicedir}), matching vanilla.
+   */
+  @Test
+  public void testS2EngineServesFromSliceDirectory() throws IOException {
+    TestrigText testrigText = TestrigText.builder().setConfigurationFiles(TESTRIG, CONFIGS).build();
+
+    Batfish vanilla = BatfishTestUtils.getBatfishFromTestrigText(testrigText, _folder);
+    vanilla.getSettings().setDataplaneEngineName(IncrementalDataPlanePlugin.PLUGIN_NAME);
+    NetworkSnapshot vanillaSnapshot = vanilla.getSnapshot();
+    vanilla.computeDataPlane(vanillaSnapshot);
+    DataPlane vanillaDataPlane = vanilla.loadDataPlane(vanillaSnapshot);
+
+    Batfish s2 = BatfishTestUtils.getBatfishFromTestrigText(testrigText, _folder);
+    new S2DataPlanePlugin().initialize(s2);
+    s2.getSettings().setDataplaneEngineName(S2DataPlanePlugin.PLUGIN_NAME);
+    s2.getSettings().setS2Workers(3);
+    NetworkSnapshot s2Snapshot = s2.getSnapshot();
+    s2.computeDataPlane(s2Snapshot);
+    DataPlane s2DataPlane = s2.loadDataPlane(s2Snapshot);
+
+    // Write the distributed result as one slice per host (as an out-of-process pool would).
+    Path sliceDir = _folder.newFolder("slices").toPath();
+    S2DirectoryHostSlices.write(sliceDir, S2InProcessHostSlices.of(List.of(s2DataPlane)));
+
+    // A fresh engine with s2slicedir serves from the slices, matching vanilla.
+    Batfish fromSlices = BatfishTestUtils.getBatfishFromTestrigText(testrigText, _folder);
+    new S2DataPlanePlugin().initialize(fromSlices);
+    fromSlices.getSettings().setDataplaneEngineName(S2DataPlanePlugin.PLUGIN_NAME);
+    fromSlices.getSettings().setS2SliceDir(sliceDir.toString());
+    fromSlices.getSettings().setS2StoreDataPlane(false);
+    NetworkSnapshot fromSlicesSnapshot = fromSlices.getSnapshot();
+    fromSlices.computeDataPlane(fromSlicesSnapshot);
+    DataPlane fromSlicesDataPlane = fromSlices.loadDataPlane(fromSlicesSnapshot);
+
+    assertThat(fromSlicesDataPlane.getRibs(), equalTo(vanillaDataPlane.getRibs()));
+    assertThat(fromSlicesDataPlane.getBgpRoutes(), equalTo(vanillaDataPlane.getBgpRoutes()));
+    assertThat(
+        fromSlicesDataPlane.getFibs().keySet(), equalTo(vanillaDataPlane.getFibs().keySet()));
+    assertThat(
+        fromSlicesDataPlane.getForwardingAnalysis().getVrfForwardingBehavior(),
+        equalTo(vanillaDataPlane.getForwardingAnalysis().getVrfForwardingBehavior()));
   }
 
   private void assertS2MatchesVanilla(int workers) throws IOException {
