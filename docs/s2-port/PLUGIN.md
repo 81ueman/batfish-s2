@@ -27,9 +27,11 @@ S2_WORKERS=4 scripts/s2-batfish.sh -snapshotdir /path/to/snapshots
 * **No S2 API.** Questions are answered by the stock answerers; pybatfish/REST are untouched.
   `S2RoutesQuestionTest` asserts the stock `RoutesAnswerer`/`RoutesQuestion` answer identically to
   `ibdp` with `-dataplaneengine=s2 -s2workers=3`.
-* **Lazy global data plane.** `S2LazyDataPlane` unions the per-worker owned data planes lazily: a
-  point/row lookup (a node-scoped question) is served from the owning worker; only whole-network
-  iteration materializes the union.
+* **Lazy global data plane.** `S2LazyDataPlane` resolves each host's data-plane slice through a
+  pluggable `S2HostSlices` source, lazily: a point/row lookup (a node-scoped question) is served
+  from the owning host's slice; only whole-network iteration materializes the union. The in-process
+  source extracts slices from the per-worker data planes; a directory-backed source (the Kubernetes
+  shared-PVC model) reads a host on demand. This is the seam the remote worker pool plugs into.
 * **No verify step.** The `S2Main verify` role (and `scripts/*`) is a runner/CI concern; the engine
   path does not need it.
 * **Protocol fallback.** Snapshots that use EIGRP/IS-IS/RIP (not distributed) automatically run on a
@@ -88,8 +90,10 @@ pybatfish ── init_snapshot / question ──▶ Batfish (coordinator/worker 
 1. **Network `S2Coordinator`** — replace `S2Cluster` (in-process) with an RPC-barrier implementation.
 2. **Worker service** — a long-lived Pod that joins the pool, accepts a snapshot assignment, runs its
    shard, persists its per-host slices, and waits for the next snapshot.
-3. **Remote host-slice source** — the `S2LazyDataPlane` seam: fetch a host's slice from shared
-   storage / its owner instead of the in-process `parts` list.
+3. **Remote host-slice source** — the `S2LazyDataPlane` seam is in place: per-host slices are
+   exposed as `HostDataPlaneSlice` and resolved through `S2HostSlices` (in-process now; a
+   directory/shared-storage source covers the PVC model). Remaining: a live fetch-from-owner source
+   keyed by snapshot id, with an LRU, wired to the pool.
 4. **Pool discovery + settings** — headless Service (DNS) + a settings key (e.g. `s2workerpool`); auto
    `N` from the pool size.
 5. **Snapshot shipping/cleanup** — shared PVC or object store; GC the slices after the run.
@@ -108,7 +112,10 @@ pybatfish ── init_snapshot / question ──▶ Batfish (coordinator/worker 
 ## Status
 
 Done: engine registration/selection, `-s2workers` (explicit + auto), distributed compute + lazy
-global data plane, stock-question equivalence, protocol fallback, storage flag, launcher.
+global data plane, stock-question equivalence, protocol fallback, storage flag, launcher, and the
+pluggable per-host slice source (`S2HostSlices`: in-process + directory-backed) under the lazy data
+plane.
 
-Next (large): the remote worker pool on Kubernetes (A.1) — network coordinator, worker service,
-remote host-slice source, pool discovery, slice storage/GC — then the scale verification above.
+Next (large): the remote worker pool on Kubernetes (A.1) — network coordinator, long-lived worker
+service, live fetch-from-owner slice source, pool discovery, slice GC — then the scale verification
+above.
