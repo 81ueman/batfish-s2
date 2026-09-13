@@ -64,20 +64,40 @@ Two questions to answer:
    whole-network question materializes the union. Measure the engine's peak heap for
    `routes` on one node vs all nodes with `-s2storedataplane=false`.
 
-### Worker memory: owned-only vs full (measured 2026-09-14)
+### Per-worker peak vs vanilla (upstream `ibdp`) — measured 2026-09-14
 
-`task/s2-dpv` made owned-only forwarding-exact, so the pool now defaults to it. The controller
-reports the workers' combined peak per snapshot. On `s2-mega` (16 nodes / 4096 prefixes) with 3
-worker-services:
+The metric that matters for "can a huge network run distributed" is **one worker's peak vs stock
+Batfish in one JVM**. `S2Main vanilla <network>` (PR #14) runs the stock `ibdp` engine in a single
+JVM (parse + compute) and prints its peak; the S2 per-worker peaks are from the runner/pool
+(owned-only, controller-shipped configs). All runs `MATCH`.
 
-| mode | ribs | forwarding | total peak (3 workers) |
-| --- | --- | --- | --- |
-| owned-only (now default) | MATCH | MATCH | **1054.7 MiB** |
-| full (`-Ds2.ownedDataplane=false`) | MATCH | MATCH | 1125.6 MiB |
+| network | prefixes | vanilla `ibdp` (1 JVM) | S2 W=3 max/worker | S2 W=6 max/worker |
+| --- | --- | --- | --- | --- |
+| `s2-big2` | 640 | 547.6 MiB | 209.5 | 182.7 |
+| `s2-mega` | 4096 | 867.1 MiB | 381.5 | 372.2 |
+| `s2-giga` | 32768 | 4480.0 MiB | 1625.4 | 1202.8 |
+| `s2-giga2` | 65552 | 12182.0 MiB | 4844 (controller 2698) | 3306 |
 
-Owned-only is forwarding-exact (distributed `unownedArpIps` + remote `arpReplies`) and no higher
-than full here (~6% lower). The gap grows with how much of a worker's materialized FIB/ARP state
-belongs to nodes it does not own (denser / role-diverse fabrics).
+Per-worker is **60–73% below vanilla** and decreases with W (with a floor set by the per-worker
+fixed/global data: all configs + the cluster-wide ARP-replies exchange). `s2-giga4` (131088
+prefixes) vanilla peaks at **31796 MiB** in one JVM — beyond a normal node — while S2's per-worker
+share is `~(N×P)/W`, i.e. a few GiB.
+
+### Single host vs multiple nodes
+
+On **one** host, S2's total across workers is **≥ vanilla's single-JVM peak** (same total work, plus
+the controller and the cross-worker exchanges). So distributing does **not** let a single machine run
+a network that vanilla OOMs on: it lowers the **per-process** peak, which only helps when the workers
+run on **separate nodes**. Raising OrbStack's memory only repartitions the host's RAM into the single
+Linux VM, so it does not change this. The invariant to measure is therefore *per-worker peak*, which
+is what the table above shows.
+
+### owned-only vs full (secondary)
+
+The pool now defaults to owned-only (forwarding-exact via the distributed `unownedArpIps` + remote
+`arpReplies` exchanges). Compared with full mode on the same pool, per-worker peaks are comparable
+(within a few %; one `s2-mega` run had owned lower, route-light/DCN re-runs roughly equal, with the
+exchange overhead). The win that matters is per-worker vs vanilla, above.
 
 Engine-side laziness (question-scoped): **structurally proven**, not just measured.
 `S2HostSlicesTest#testPointLookupsResolveOnlyOwningHost` uses a slice source that **throws for any
