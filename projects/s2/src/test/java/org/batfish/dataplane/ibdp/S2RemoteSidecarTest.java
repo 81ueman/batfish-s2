@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.dataplane.ibdp;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -110,6 +111,9 @@ public class S2RemoteSidecarTest {
     }
   }
 
+  // The sidecar servers and the worker pool are shut down together in the finally block below;
+  // PMD's CloseResource only recognizes close()/try-with-resources, so suppress it here.
+  @SuppressWarnings("PMD.CloseResource")
   private static Table<String, String, FinalMainRib> runRemote(
       SortedMap<String, Configuration> configs,
       Set<BgpAdvertisement> adverts,

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.dataplane.ibdp;
 
 import java.util.Map;
@@ -35,8 +36,7 @@ final class RemoteOutgoingRoutesProvider implements OutgoingRoutesProvider {
       boolean isNewSession) {
     S2Messages.RoutesResponse response =
         (S2Messages.RoutesResponse)
-            _client.call(
-                _owner, new S2Messages.RoutesRequest(_hostname, _vrf, edge, isNewSession));
+            _client.call(_owner, new S2Messages.RoutesRequest(_hostname, _vrf, edge, isNewSession));
     return response.routes.stream();
   }
 }

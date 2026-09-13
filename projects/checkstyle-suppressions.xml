@@ -12,4 +12,12 @@
   -->
   <suppress checks="IllegalImport"
             files="org[\\/]batfish[\\/]common[\\/]bdd[\\/]IpSpaceToBDD\.java"/>
+
+  <!--
+    The S2 port uses standard Java member naming (e.g. "hostname"), not Batfish's underscore
+    convention ("_hostname"). Exempt projects/s2 from MemberName rather than renaming the fields.
+    Scoped to the projects/s2 tree so the rest of the codebase keeps the _-prefix convention.
+  -->
+  <suppress checks="MemberName"
+            files="projects[\\/]s2[\\/].*\.java"/>
 </suppressions>

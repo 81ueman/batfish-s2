@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.dataplane.ibdp;
 
 import com.google.common.collect.ImmutableMap;
@@ -12,9 +13,9 @@ import org.batfish.datamodel.VrfForwardingBehavior;
  * A {@link ForwardingAnalysis} view restricted to a worker's owned hostnames.
  *
  * <p>Passing this to {@code BDDReachabilityAnalysisFactory} makes each worker generate reachability
- * transitions only for the switches it owns (S2's scale-out design). Cross-worker edges still appear
- * (their source is local); their targets are owned by other workers and are reached by shipping the
- * BDD over the sidecar.
+ * transitions only for the switches it owns (S2's scale-out design). Cross-worker edges still
+ * appear (their source is local); their targets are owned by other workers and are reached by
+ * shipping the BDD over the sidecar.
  */
 public final class OwnedForwardingAnalysis implements ForwardingAnalysis {
 

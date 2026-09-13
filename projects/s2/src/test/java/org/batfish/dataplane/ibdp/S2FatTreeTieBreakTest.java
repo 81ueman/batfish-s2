@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.dataplane.ibdp;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -210,6 +211,9 @@ public class S2FatTreeTieBreakTest {
     return canonical(result._dataPlane);
   }
 
+  // The worker pool is shut down in the finally block below; PMD's CloseResource only recognizes
+  // close()/try-with-resources, so suppress it here.
+  @SuppressWarnings("PMD.CloseResource")
   private Map<String, Map<String, Set<String>>> runS2(int workers) throws Exception {
     Setups s = freshSetups();
     Map<String, Integer> assignment =

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.bddreachability.transition;
 
 import static org.hamcrest.MatcherAssert.assertThat;

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.dataplane.ibdp;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -66,12 +67,11 @@ public class RemoteNodeDescriptorTest {
             .setLines(ImmutableList.of(ExprAclLine.ACCEPT_ALL))
             .build();
     r1.getAllInterfaces().get("GigabitEthernet0/0").setIncomingFilter(acl);
-    RoutingPolicy policy =
-        RoutingPolicy.builder()
-            .setOwner(r1)
-            .setName("p")
-            .setStatements(ImmutableList.of(Statements.ExitAccept.toStaticStatement()))
-            .build();
+    RoutingPolicy.builder()
+        .setOwner(r1)
+        .setName("p")
+        .setStatements(ImmutableList.of(Statements.ExitAccept.toStaticStatement()))
+        .build();
     r1.getDefaultVrf().setResolutionPolicy("p");
     r1.getDefaultVrf().getBgpProcess().setNextHopIpResolverRestrictionPolicy("p");
 

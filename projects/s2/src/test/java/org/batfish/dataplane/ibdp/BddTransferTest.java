@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.dataplane.ibdp;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -9,7 +10,9 @@ import net.sf.javabdd.BDDTransfer;
 import net.sf.javabdd.JFactory;
 import org.junit.Test;
 
-/** Round-trips a BDD between two factories, the primitive S2 uses to forward packets across workers. */
+/**
+ * Round-trips a BDD between two factories, the primitive S2 uses to forward packets across workers.
+ */
 public class BddTransferTest {
 
   @Test

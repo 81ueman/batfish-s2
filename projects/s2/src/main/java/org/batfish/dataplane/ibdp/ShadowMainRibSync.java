@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.dataplane.ibdp;
 
 import java.util.List;
@@ -6,8 +7,8 @@ import java.util.Map;
 import org.batfish.dataplane.rib.Rib;
 
 /**
- * Populates shadow nodes' main RIBs with the owning workers' real routes, so each worker can build a
- * complete forwarding analysis (FIBs) — the FIB-distribution half of S2.
+ * Populates shadow nodes' main RIBs with the owning workers' real routes, so each worker can build
+ * a complete forwarding analysis (FIBs) — the FIB-distribution half of S2.
  */
 public final class ShadowMainRibSync implements Runnable {
 

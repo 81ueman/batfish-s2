@@ -1351,7 +1351,6 @@ public class IncrementalBdpEngine {
           cachedByVr.get(i).add(serializeBgpRoutes(vrs.get(i).drainBgpRoutes()));
         }
         appointPrefixSpace(vrs, null);
-        System.gc();
       }
     }
     if (sharded && externalize()) {

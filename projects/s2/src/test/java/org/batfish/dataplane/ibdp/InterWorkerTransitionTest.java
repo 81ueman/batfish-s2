@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.dataplane.ibdp;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -27,7 +28,7 @@ public class InterWorkerTransitionTest {
     receiverFactory.setVarNum(4);
 
     CompletableFuture<BDD> received = new CompletableFuture<>();
-    S2BddSidecar server =
+    try (S2BddSidecar server =
         new S2BddSidecar(
             0,
             (state, payload) -> {
@@ -36,9 +37,8 @@ public class InterWorkerTransitionTest {
               } catch (Exception e) {
                 received.completeExceptionally(e);
               }
-            });
-    server.start();
-    try {
+            })) {
+      server.start();
       S2BddSidecar.Client client =
           new S2BddSidecar.Client(new S2WorkerEndpoint("127.0.0.1", server.getPort()));
 
@@ -77,8 +77,6 @@ public class InterWorkerTransitionTest {
             evaluate(senderFactory, packet, assignment),
             equalTo(evaluate(receiverFactory, remotePacket, assignment)));
       }
-    } finally {
-      server.close();
     }
   }
 

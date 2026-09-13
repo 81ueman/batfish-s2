@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+
 package org.batfish.dataplane.ibdp;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -320,6 +321,9 @@ public class S2DistributedControlPlaneTest {
     }
   }
 
+  // The worker pool is shut down in the finally block below; PMD's CloseResource only recognizes
+  // close()/try-with-resources, so suppress it here.
+  @SuppressWarnings("PMD.CloseResource")
   private static Table<String, String, FinalMainRib> runDistributed(
       SortedMap<String, Configuration> configs,
       Set<BgpAdvertisement> adverts,
