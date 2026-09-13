@@ -610,7 +610,8 @@ public class IncrementalBdpEngine {
     // nodes.values().parallelStream().flatMap(get vrs stream) is only node-parallel and clusters
     // nodes by hostname. See https://github.com/batfish/batfish/pull/7054 description.
     List<VirtualRouter> vrs =
-        toListInRandomOrder(nodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
+        toListInRandomOrder(
+            nodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
     NetworkConfigurations networkConfigurations = NetworkConfigurations.of(configurations);
     reportPhase("after building nodes");
 
@@ -1364,7 +1365,18 @@ public class IncrementalBdpEngine {
       DataPlaneTrackMethodEvaluatorProvider provider) {
     Map<Integer, SortedSet<Integer>> iterationsByHashCode = new HashMap<>();
 
-    Schedule currentSchedule = initialSchedule();
+    // C1: on a cyclic equal-cost topology the EGP fixed point depends on the schedule, because the
+    // default ARRIVAL_ORDER BGP tie-breaker consumes the order in which equal-cost advertisements
+    // are merged. Vanilla Batfish uses the deterministic NODE_COLORED schedule; the S2 engine
+    // hard-codes Schedule.ALL, which is itself run-to-run nondeterministic (all nodes pull in one
+    // concurrent round). -Ds2.egpSchedule=NODE_COLORED forces the deterministic schedule. It is
+    // safe
+    // for the S2 engine because every worker sees the same full node set and topology, so the color
+    // classes -- and therefore the per-step barriers -- are identical across workers. Default null
+    // preserves stock (and S2) behavior.
+    String scheduleOverride = System.getProperty("s2.egpSchedule");
+    Schedule currentSchedule =
+        scheduleOverride == null ? initialSchedule() : Schedule.valueOf(scheduleOverride);
     // The node schedule depends on the nodes, the topology, and the schedule type. Within a round
     // only the type can change, on oscillation, so compute the schedule once per type.
     List<Map<String, Node>> scheduleSteps = null;

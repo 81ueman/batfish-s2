@@ -16,6 +16,7 @@ Knobs added for scale work:
 | (none) | controller ships parsed configs; workers do not re-parse | on |
 | `-Ds2.noShipConfigs=true` | worker parses the snapshot itself (reproduce the old floor) | off |
 | `-Ds2.ownedDataplane=true` | worker keeps full RIBs/FIBs only for owned nodes (remote get stub FIBs) | **on** (`-Ds2.ownedDataplane=false` disables) |
+| `-Ds2.egpSchedule=NODE_COLORED` | override the EGP schedule (S2 default is `ALL`); `NODE_COLORED` reproduces vanilla on cyclic equal-cost topologies (C1) | off |
 | `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies); still gated by `descriptorShadowsSafe` (tracks / VNI / tunnel / IPsec fall back to full configs) | **on** (`-Ds2.descriptorShadows=false` disables) |
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
 | `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM (default) / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) | RANDOM (unchanged) |
@@ -89,7 +90,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 ### Correctness / generality — section B
 
-- **C1** cyclic equal-cost BGP tie-break nondeterminism (known residual)
+- **C1** cyclic equal-cost BGP tie-break nondeterminism — **Done (opt-in)**: root cause is the S2 engine forcing `Schedule.ALL` with the default `ARRIVAL_ORDER` BGP tie-breaker; `-Ds2.egpSchedule=NODE_COLORED` uses vanilla's deterministic schedule and matches vanilla on `s2-fat4` at 1 and 3 workers. Evidence in `C1-TIE-BREAK.md`.
 - **C2** EIGRP/IS-IS/RIP out of scope
 - **C3** controller-side digest for owned mode — **Done (documented)**: the RIB ⇒ forwarding implication (and its descriptor-mode variant) is documented in `S2Main`.
 
@@ -213,8 +214,10 @@ Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1.
 ## B. Correctness / generality
 
 * **B1. Cyclic equal-cost BGP tie-break nondeterminism.** On a cyclic equal-cost topology the
-  distributed BGP fixpoint can pick a different (valid) route than single-machine Batfish. Known
-  residual, documented in `M5-SCALE.md`; handoff topologies are unaffected.
+  distributed BGP fixpoint can pick a different (valid) route than single-machine Batfish. Root cause
+  and a default-off fix (`-Ds2.egpSchedule=NODE_COLORED`) are documented in `C1-TIE-BREAK.md`; with
+  the flag the `s2-fat4` FatTree matches vanilla at 1 and 3 workers. The residual risk (per-worker
+  coloring consistency for arbitrary topologies) is noted there.
 * **B2. EIGRP / IS-IS / RIP** are intentionally not distributed and are rejected for `>1` worker.
 * **B3. Owned-mode non-covered cases** — see A4.
 * **B4. Controller-side digest for owned mode.** Today, with `-Ds2.ownedDataplane`, workers return
