@@ -19,9 +19,8 @@ import org.junit.rules.TemporaryFolder;
 
 /**
  * Proves S2 is usable through the standard Batfish interface: selected with {@code
- * -dataplaneengine=s2}, the plugin computes a data plane the normal question engine can consume,
- * and the result matches the stock {@code ibdp} engine. This is the engine-selection and
- * question-answering wiring (single worker for now); distribution is a later increment.
+ * -dataplaneengine=s2}, the plugin runs the distributed engine and produces a data plane the normal
+ * question engine can consume, identical to the stock {@code ibdp} engine at 1 and 3 workers.
  */
 public final class S2DataPlanePluginTest {
 
@@ -31,7 +30,16 @@ public final class S2DataPlanePluginTest {
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
   @Test
-  public void testS2EngineMatchesVanilla() throws IOException {
+  public void testS2EngineMatchesVanillaOneWorker() throws IOException {
+    assertS2MatchesVanilla(1);
+  }
+
+  @Test
+  public void testS2EngineMatchesVanillaThreeWorkers() throws IOException {
+    assertS2MatchesVanilla(3);
+  }
+
+  private void assertS2MatchesVanilla(int workers) throws IOException {
     TestrigText testrigText = TestrigText.builder().setConfigurationFiles(TESTRIG, CONFIGS).build();
 
     Batfish vanilla = BatfishTestUtils.getBatfishFromTestrigText(testrigText, _folder);
@@ -44,7 +52,12 @@ public final class S2DataPlanePluginTest {
     new S2DataPlanePlugin().initialize(s2);
     s2.getSettings().setDataplaneEngineName(S2DataPlanePlugin.PLUGIN_NAME);
     NetworkSnapshot s2Snapshot = s2.getSnapshot();
-    s2.computeDataPlane(s2Snapshot);
+    System.setProperty(S2DataPlanePlugin.WORKERS_PROPERTY, Integer.toString(workers));
+    try {
+      s2.computeDataPlane(s2Snapshot);
+    } finally {
+      System.clearProperty(S2DataPlanePlugin.WORKERS_PROPERTY);
+    }
     DataPlane s2DataPlane = s2.loadDataPlane(s2Snapshot);
 
     // The data plane the standard question engine sees must be identical to vanilla.

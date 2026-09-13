@@ -3,9 +3,15 @@
 package org.batfish.dataplane.ibdp;
 
 import com.google.auto.service.AutoService;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 import org.batfish.common.NetworkSnapshot;
 import org.batfish.common.plugin.DataPlanePlugin;
@@ -13,6 +19,7 @@ import org.batfish.common.plugin.Plugin;
 import org.batfish.common.topology.TopologyProvider;
 import org.batfish.datamodel.BgpAdvertisement;
 import org.batfish.datamodel.Configuration;
+import org.batfish.datamodel.DataPlane;
 import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.answers.IncrementalBdpAnswerElement;
 import org.batfish.datamodel.isis.IsisTopology;
@@ -26,16 +33,21 @@ import org.batfish.datamodel.isis.IsisTopology;
  * {@link IncrementalDataPlanePlugin}; the stock engine remains the default, so vanilla Batfish is
  * unaffected unless this engine is explicitly selected.
  *
- * <p><b>Current increment.</b> This first version runs a single S2 worker ({@code W=1}) with every
- * node real, so its result is the assembled global data plane and is identical to vanilla. It
- * exists to prove the engine-selection and question-answering path end to end; the work
- * distribution ({@code W>1}, merging the per-worker owned data planes) and the lazy data plane
- * follow.
+ * <p>The snapshot is partitioned across {@code N} in-process workers (each owns a subset of nodes
+ * and shadows the rest), the workers run concurrently, and their owned data planes are merged into
+ * the global one. This is the naive, fully-materialized assembly; a lazy per-node data plane
+ * replaces it when the global result does not fit in one JVM, and the worker pool will be able to
+ * be remote instead of in-process.
  */
 @AutoService(Plugin.class)
 public final class S2DataPlanePlugin extends DataPlanePlugin {
 
   public static final String PLUGIN_NAME = "s2";
+
+  /** Configuration key (or {@code -Ds2.workers}) for the number of S2 workers. Temporary. */
+  public static final String WORKERS_KEY = "s2workers";
+
+  public static final String WORKERS_PROPERTY = "s2.workers";
 
   private IncrementalDataPlaneSettings _settings;
 
@@ -61,28 +73,94 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
             .setTunnelTopology(topologyProvider.getInitialTunnelTopology(snapshot))
             .build();
 
-    // The first increment runs a single worker with every node real, so the engine returns the
-    // assembled global data plane. Distribution (W>1, merging owned fragments) lands next.
-    Map<String, DistributedNode> nodes = new HashMap<>();
-    configurations.values().forEach(c -> nodes.put(c.getHostname(), DistributedNode.real(c)));
-    S2Coordinator coordinator = new S2Cluster(1);
+    int numWorkers = Math.min(numWorkers(), Math.max(1, configurations.size()));
+    Map<String, Integer> assignment =
+        NetworkPartitioner.partition(configurations.keySet(), numWorkers, 0L);
+    Map<String, DistributedNode> realByHost = new HashMap<>();
+    configurations.values().forEach(c -> realByHost.put(c.getHostname(), DistributedNode.real(c)));
+
+    S2Coordinator coordinator = new S2Cluster(numWorkers);
     Set<Prefix> externalAdvertPrefixes =
         externalAdverts.stream().map(BgpAdvertisement::getNetwork).collect(Collectors.toSet());
-    S2BdpEngine engine =
-        new S2BdpEngine(_settings, nodes, coordinator, null, externalAdvertPrefixes);
+    List<S2BdpEngine> engines = new ArrayList<>();
+    for (int w = 0; w < numWorkers; w++) {
+      Map<String, DistributedNode> nodes = new HashMap<>();
+      for (String host : configurations.keySet()) {
+        nodes.put(
+            host,
+            assignment.get(host) == w
+                ? realByHost.get(host)
+                : DistributedNode.shadowOf(realByHost.get(host)));
+      }
+      engines.add(new S2BdpEngine(_settings, nodes, coordinator, null, externalAdvertPrefixes));
+    }
 
     ComputeDataPlaneResult result =
-        engine.computeDataPlane(
+        runDistributed(
+            engines,
             configurations,
             topologyContext,
             externalAdverts,
-            topologyProvider.getInitialIpOwners(snapshot),
-            _batfish.debugFlagEnabled(IncrementalDataPlanePlugin.DEBUG_FLAG_RETAIN_ANNOTATED_RIBS));
+            topologyProvider.getInitialIpOwners(snapshot));
     _logger.infof(
-        "Generated S2 data-plane for snapshot:%s; iterations:%s",
+        "Generated S2 data-plane for snapshot:%s (workers=%d); iterations:%s",
         snapshot.getSnapshot(),
+        numWorkers,
         ((IncrementalBdpAnswerElement) result._answerElement).getDependentRoutesIterations());
     return result;
+  }
+
+  /** Run the workers concurrently and merge their owned, global-assembled data planes. */
+  private ComputeDataPlaneResult runDistributed(
+      List<S2BdpEngine> engines,
+      Map<String, Configuration> configurations,
+      TopologyContext topologyContext,
+      Set<BgpAdvertisement> externalAdverts,
+      org.batfish.common.topology.IpOwners ipOwners) {
+    boolean retainAnnotated =
+        _batfish.debugFlagEnabled(IncrementalDataPlanePlugin.DEBUG_FLAG_RETAIN_ANNOTATED_RIBS);
+    ExecutorService pool = Executors.newFixedThreadPool(engines.size());
+    try {
+      List<Future<ComputeDataPlaneResult>> futures = new ArrayList<>();
+      for (S2BdpEngine engine : engines) {
+        futures.add(
+            pool.submit(
+                () ->
+                    engine.computeDataPlane(
+                        configurations,
+                        topologyContext,
+                        externalAdverts,
+                        ipOwners,
+                        retainAnnotated)));
+      }
+      List<ComputeDataPlaneResult> results = new ArrayList<>();
+      for (Future<ComputeDataPlaneResult> future : futures) {
+        results.add(future.get());
+      }
+      ComputeDataPlaneResult first = results.get(0);
+      List<DataPlane> dataPlanes =
+          results.stream().map(r -> r._dataPlane).collect(Collectors.toList());
+      return new ComputeDataPlaneResult(
+          first._answerElement, S2MergedDataPlane.of(dataPlanes), first._topologies);
+    } catch (InterruptedException | ExecutionException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("S2 distributed data plane computation failed", e);
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  /** The requested number of workers (temporary: config {@link #WORKERS_KEY}, else a property). */
+  private int numWorkers() {
+    String raw = System.getProperty(WORKERS_PROPERTY);
+    if (raw == null) {
+      raw = _batfish.getSettingsConfiguration().getString(WORKERS_KEY, "1");
+    }
+    try {
+      return Math.max(1, Integer.parseInt(raw.trim()));
+    } catch (NumberFormatException e) {
+      return 1;
+    }
   }
 
   @Override
