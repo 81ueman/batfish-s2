@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.batfish.dataplane.ibdp.partition;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -19,8 +23,17 @@ import org.batfish.datamodel.routing_policy.RoutingPolicy;
  * the transient BDD/queue cost). It is an additive feature sum over the parsed configuration;
  * before simulation the real per-router route count is unknown, so this is a static proxy.
  *
- * <p>The coefficients are deliberately coarse (this is the plan's {@code v1} static estimate; a
- * proper calibration against single-worker phase peaks, O6, is future work):
+ * <p><b>Calibration (O6).</b> The coefficients are fitted against measured per-node main-RIB route
+ * counts (the dominant retained {@code R_w} term) from 13 testbeds, using within-network centering
+ * so the fit sees the node-to-node variation the partitioner actually balances. The fitted
+ * within-network ratios are {@code interfaces : peers : static = 0.68 : 1.81 : 0.99}, integerized
+ * to {@code 1 : 3 : 1}; {@code originationPrefixes} and the generated-policy count fit to 0 (see
+ * their constants). The {@code ACL_LINE} term is retained but cannot be identified from the RIB
+ * measurements. See {@code scripts/calibrate-weights.py} and {@code
+ * docs/s2-port/PARTITIONING-PLAN.md} &sect;6.7 for the methodology and the measured before/after
+ * correlation. The model remains a pure, deterministic function of the parsed configuration.
+ *
+ * <p>The features are:
  *
  * <ul>
  *   <li>{@link #INTERFACE} per interface holding a concrete address: connected/interface routes,
@@ -30,18 +43,17 @@ import org.batfish.datamodel.routing_policy.RoutingPolicy;
  *   <li>{@link #ORIGINATION_PREFIX} per prefix in the BGP origination space or an unconditional
  *       network statement, plus per configured aggregate: locally sourced routes that enter the
  *       dispersed RIB.
- *   <li>{@link #ACL_LINE} per access-list line and per routing-policy statement: proxies the BDD
- *       transition and forwarding cost.
+ *   <li>{@link #ACL_LINE} per explicit access-list line: proxies the BDD transition and forwarding
+ *       cost.
+ *   <li>{@link #POLICY_STATEMENT} per generated routing-policy statement (see the constant).
  *   <li>{@link #STATIC_ROUTE} per static route: a retained main-RIB entry that can be
  *       redistributed.
  *   <li>{@link #VRF} per VRF: per-VRF processes and tables.
  * </ul>
  *
- * <p>The weight is the sum of these counts, so it is also exactly the feature count: the existing
- * {@code scripts/partition-metrics.py} baseline weight ({@code interfaces + peers + origination
- * prefixes}) is the same quantity restricted to the first three terms. This keeps the metrics
- * script and the Java partitioner comparable while making the ACL/policy and redistribution axes
- * explicit.
+ * <p>Calibration instrumentation: when the {@value #DUMP_PROPERTY} system property names a file,
+ * the {@link #compute(Map)} overload writes a TSV of the per-node feature counts there. It is off
+ * by default and has no effect on the weight.
  */
 public final class NodeWeights {
 
@@ -49,13 +61,32 @@ public final class NodeWeights {
   public static final int INTERFACE = 1;
 
   /** Weight per BGP neighbor. */
-  public static final int BGP_PEER = 1;
+  public static final int BGP_PEER = 3;
 
-  /** Weight per BGP-originated prefix (network statement, redistribution range, aggregate). */
-  public static final int ORIGINATION_PREFIX = 1;
+  /**
+   * Weight per BGP-originated prefix (network statement, redistribution range, aggregate).
+   *
+   * <p>Calibrated to 0: within a network the measured per-node main-RIB route count is essentially
+   * independent of how many prefixes the node itself originates (every other node carries them
+   * too), while the cross-network scale is a network-level effect the partitioner does not need.
+   */
+  public static final int ORIGINATION_PREFIX = 0;
 
-  /** Weight per access-list line or routing-policy statement. */
+  /**
+   * Weight per explicit access-list line. Not identifiable from the per-node RIB measurements (the
+   * one ACL-heavy testbed, {@code s2-acl}, has the same ACL size on every node), so it is retained
+   * at 1: the {@code after building nodes} peak jumps 59&rarr;121 MiB for the same route counts
+   * when 3000-line ACLs are present, so ACLs are real foreground work.
+   */
   public static final int ACL_LINE = 1;
+
+  /**
+   * Weight per generated routing-policy statement. Calibrated to 0: Batfish generates one policy
+   * per BGP peer/network, so the statement count is collinear with {@link #BGP_PEER} and {@link
+   * #ORIGINATION_PREFIX} and adds no measured within-network RIB signal. (It was the dominant term
+   * in v1 and is what made the FatTree core and edge weigh the same.)
+   */
+  public static final int POLICY_STATEMENT = 0;
 
   /** Weight per static route. */
   public static final int STATIC_ROUTE = 1;
@@ -63,52 +94,59 @@ public final class NodeWeights {
   /** Weight per VRF. */
   public static final int VRF = 1;
 
+  /** System property naming a file to dump the per-node feature counts to (calibration only). */
+  public static final String DUMP_PROPERTY = "s2.nodeWeightsDump";
+
   private NodeWeights() {}
 
-  /** Compute the node weight of every configuration, keyed by hostname. */
-  public static Map<String, Integer> compute(Map<String, Configuration> configs) {
-    Map<String, Integer> weights = new HashMap<>();
-    for (Configuration c : configs.values()) {
-      weights.put(c.getHostname(), compute(c));
+  /** The raw feature counts of one router, before the coefficients are applied. */
+  public static final class Features {
+    public final int interfaces;
+    public final int peers;
+    public final int originationPrefixes;
+    public final int aclLines;
+    public final int policyStatements;
+    public final int staticRoutes;
+    public final int vrfs;
+
+    Features(
+        int interfaces,
+        int peers,
+        int originationPrefixes,
+        int aclLines,
+        int policyStatements,
+        int staticRoutes,
+        int vrfs) {
+      this.interfaces = interfaces;
+      this.peers = peers;
+      this.originationPrefixes = originationPrefixes;
+      this.aclLines = aclLines;
+      this.policyStatements = policyStatements;
+      this.staticRoutes = staticRoutes;
+      this.vrfs = vrfs;
     }
-    return weights;
+
+    /** The feature column names, in the same order as the TSV dumped by {@link #DUMP_PROPERTY}. */
+    public static List<String> columnNames() {
+      return List.of(
+          "interfaces",
+          "peers",
+          "originationPrefixes",
+          "aclLines",
+          "policyStatements",
+          "staticRoutes",
+          "vrfs");
+    }
+
+    /** The feature values, in the same order as {@link #columnNames()}. */
+    public List<Integer> values() {
+      return List.of(
+          interfaces, peers, originationPrefixes, aclLines, policyStatements, staticRoutes, vrfs);
+    }
   }
 
-  /** Compute the node weight of a single configuration (see the class doc for the coefficients). */
-  public static int compute(Configuration c) {
-    int weight = 0;
-    for (Interface i : c.getAllInterfaces().values()) {
-      if (i.getConcreteAddress() != null) {
-        weight += INTERFACE;
-      }
-    }
-    for (IpAccessList acl : c.getIpAccessLists().values()) {
-      weight += ACL_LINE * acl.getLines().size();
-    }
-    for (RoutingPolicy policy : c.getRoutingPolicies().values()) {
-      weight += ACL_LINE * policy.getStatements().size();
-    }
-    for (Vrf vrf : c.getVrfs().values()) {
-      weight += VRF;
-      weight += STATIC_ROUTE * vrf.getStaticRoutes().size();
-      BgpProcess proc = vrf.getBgpProcess();
-      if (proc != null) {
-        weight += BGP_PEER * proc.getActiveNeighbors().size();
-        weight += BGP_PEER * proc.getPassiveNeighbors().size();
-        weight += BGP_PEER * proc.getInterfaceNeighbors().size();
-        weight += ORIGINATION_PREFIX * proc.getOriginationSpace().getPrefixRanges().size();
-        weight += ORIGINATION_PREFIX * proc.getUnconditionalNetworkStatements().size();
-        weight += ORIGINATION_PREFIX * proc.getAggregates().size();
-      }
-    }
-    return weight;
-  }
-
-  /**
-   * The per-node weight breakdown for logging/calibration, as an ordered list of {@code
-   * "term=count"} strings.
-   */
-  public static List<String> describe(Configuration c) {
+  /** Extract the raw feature counts of a configuration. */
+  public static Features features(Configuration c) {
     int interfaces = 0;
     int aclLines = 0;
     int policyLines = 0;
@@ -142,14 +180,80 @@ public final class NodeWeights {
                 + proc.getAggregates().size();
       }
     }
+    return new Features(
+        interfaces, peers, originationPrefixes, aclLines, policyLines, staticRoutes, vrfs);
+  }
+
+  /** Apply the calibrated coefficients to a feature vector. */
+  public static int weightOf(Features f) {
+    return INTERFACE * f.interfaces
+        + BGP_PEER * f.peers
+        + ORIGINATION_PREFIX * f.originationPrefixes
+        + ACL_LINE * f.aclLines
+        + POLICY_STATEMENT * f.policyStatements
+        + STATIC_ROUTE * f.staticRoutes
+        + VRF * f.vrfs;
+  }
+
+  /** Compute the node weight of every configuration, keyed by hostname. */
+  public static Map<String, Integer> compute(Map<String, Configuration> configs) {
+    Map<String, Integer> weights = new HashMap<>();
+    for (Configuration c : configs.values()) {
+      weights.put(c.getHostname(), compute(c));
+    }
+    dumpIfRequested(configs);
+    return weights;
+  }
+
+  /** Compute the node weight of a single configuration (see the class doc for the coefficients). */
+  public static int compute(Configuration c) {
+    return weightOf(features(c));
+  }
+
+  /**
+   * Write the per-node feature counts to the file named by {@link #DUMP_PROPERTY}, if set. Used by
+   * {@code scripts/calibrate-weights.py} through the offline {@code S2Main partition} role. The
+   * dump is sorted by hostname so it is deterministic; it is never written unless the property is
+   * set.
+   */
+  private static void dumpIfRequested(Map<String, Configuration> configs) {
+    String path = System.getProperty(DUMP_PROPERTY);
+    if (path == null || path.isEmpty()) {
+      return;
+    }
+    List<String> hosts = new ArrayList<>(configs.keySet());
+    hosts.sort(null);
+    StringBuilder sb = new StringBuilder();
+    sb.append("hostname\t").append(String.join("\t", Features.columnNames())).append("\tweight\n");
+    for (String host : hosts) {
+      Features f = features(configs.get(host));
+      sb.append(host);
+      for (int v : f.values()) {
+        sb.append('\t').append(v);
+      }
+      sb.append('\t').append(weightOf(f)).append('\n');
+    }
+    try {
+      Files.writeString(Paths.get(path), sb.toString());
+    } catch (IOException e) {
+      throw new UncheckedIOException("could not write node-weight dump " + path, e);
+    }
+  }
+
+  /**
+   * The per-node weight breakdown for logging/calibration, as an ordered list of {@code
+   * "term=count"} strings.
+   */
+  public static List<String> describe(Configuration c) {
+    Features f = features(c);
     List<String> terms = new ArrayList<>();
-    terms.add("interfaces=" + interfaces);
-    terms.add("peers=" + peers);
-    terms.add("originationPrefixes=" + originationPrefixes);
-    terms.add("aclLines=" + aclLines);
-    terms.add("policyStatements=" + policyLines);
-    terms.add("staticRoutes=" + staticRoutes);
-    terms.add("vrfs=" + vrfs);
+    terms.add("interfaces=" + f.interfaces);
+    terms.add("peers=" + f.peers);
+    terms.add("originationPrefixes=" + f.originationPrefixes);
+    terms.add("aclLines=" + f.aclLines);
+    terms.add("policyStatements=" + f.policyStatements);
+    terms.add("staticRoutes=" + f.staticRoutes);
+    terms.add("vrfs=" + f.vrfs);
     return terms;
   }
 }

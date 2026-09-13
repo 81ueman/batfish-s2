@@ -255,11 +255,89 @@ protocol ごとの対象 prefix を閉じる:
 悪化し、名前規則だけでは DCN で十分でないことを示す。3-node 網 × 3 worker は 1 node/worker
 で scheme 差が出ない（想定どおり）。
 
+### 6.7 O6 ノード重みの実測校准（2026-09-13）
+
+**動機.** v1 は全係数 1 の加算和で、FatTree では core/agg（peer 多・originate 少）と edge
+（peer 少・originate 多）が k=4 で同じ重みになり、k=2 では順序が逆転した。partition の balance
+は重みのノード間順序で決まるため、実測 route 数に合わせて係数を再フィットした。
+
+**計測法.**
+
+- **特徴量**は partitioner と同一の値を使う。`S2Main partition`（オフライン role）に
+  `-Ds2.nodeWeightsDump=<file>` を付けると `NodeWeights` が config から集計した 7 特徴
+  （interfaces / peers / originationPrefixes / aclLines / policyStatements / staticRoutes /
+  vrfs）をノード別 TSV に出す。dump は当該 property が設定された時だけ書く（既定 off）。
+- **測定コスト**は実 multi-worker 実行の controller が `result-<N>worker.txt` に書く
+  `--- distributed ---`（ノード別 main RIB）から数えた**ノード別 route 数**。これは owned
+  dataplane で partitioner が動かす retained `R_w` の支配項で、ノード単位・決定的に測れる。
+  同規模では per-worker peak heap は worker 非依存の config floor が支配的なので使わない
+  （このことは `s2-fat2`/`s2-fat4` の W=1 phase peak が `s2-line` と同程度であることが示す）。
+- **testbed**（13 サンプル, 89 ノード）: `s2-line` / `s2-big-bgp` / `s2-big2` / `s2-huge` /
+  `s2-mega`（line ladder）、`s2-fat2` / `s2-fat4`（DCN の role 差）、`s2-ospf` /
+  `s2-ospf-bgp` / `s2-redist` / `s2-static` / `s2-agg` / `s2-external`。`s2-fat4` は既知の tie
+  不安定（C1）で ribs=DIFF だが、コスト測定は partition 非依存なので使う。
+- **fit.** partitioner は同一ネットワーク内のノードを比べるだけなので、ネットワークごとに
+  特徴とコストの平均を引いてから非負 ridge 最小二乗する（within-network）。pooled fit だと
+  ネットワーク規模（＝分割に不要な cross-network scale）が支配してノード間順序を説明できない。
+  再現: `scripts/calibrate-weights.py fit --center --sample <name>:<result>:<features> ...`。
+
+**係数.** within-network 比は `interfaces : peers : static = 0.68 : 1.81 : 0.99`。
+
+| feature | v1 | fitted | calibrated (int) | 備考 |
+| --- | --- | --- | --- | --- |
+| interfaces | 1 | 0.683 | 1 | |
+| peers | 1 | 1.813 | 3 | |
+| originationPrefixes | 1 | 0.000 | 0 | 自ノードの originate 数は自 RIB をほとんど動かさない |
+| aclLines | 1 | (unidentifiable) | 1 | dataset で一定。`s2-acl` の phase peak (59→121 MiB) で BDD コストを確認 |
+| policyStatements | 1 | 0.000 | 0 | 生成 policy は BGP 構造の重複（v1 の支配項） |
+| staticRoutes | 1 | 0.989 | 1 | |
+| vrfs | 1 | (unidentifiable) | 1 | dataset で一定 |
+
+`NodeWeights` は v1 の「ACL/policy 共通係数」を `ACL_LINE` と `POLICY_STATEMENT` に分離した。
+
+**評価 (1): 相関**（weight vs 測定 route 数、ノード単位）。v1 → calibrated:
+
+| network | n | v1 Pearson / Spearman | cal Pearson / Spearman |
+| --- | --- | --- | --- |
+| s2-fat2 | 5 | **-1.000 / -1.000** | **+1.000 / +1.000** |
+| s2-fat4 | 20 | nan（重み一定） | +1.000 / +1.000 |
+| s2-static | 2 | nan（重み一定） | +1.000 / +1.000 |
+| s2-line | 6 | 1.000 / 1.000 | 1.000 / 1.000 |
+| s2-mega | 16 | 1.000 / 1.000 | 1.000 / 1.000 |
+| s2-redist | 4 | 0.845 / 0.894 | 0.845 / 0.894 |
+| s2-agg | 3 | 0.866 / 0.500 | 0.756 / 0.500 |
+| ALL (pooled) | 89 | 0.945 / 0.985 | 0.945 / **0.988** |
+
+負相関または未定義（重み一定）のネットワーク数は 1 → 0。
+
+**評価 (2): コスト考慮 imbalance**（`WEIGHTED_LPT_FM` の assignment を測定 route コストで
+評価、max/mean）。v1 → calibrated:
+
+| network | W | v1 | calibrated |
+| --- | --- | --- | --- |
+| s2-fat2 | 2 | 1.279 | **1.148** |
+| s2-fat4 | 2 | 1.000 | 1.000 |
+| s2-fat4 | 3 | 1.047 | 1.061 |
+| s2-line | 2 | 1.000 | 1.000 |
+| s2-line | 3 | 1.071 | 1.071 |
+| s2-mega | 3 | 1.125 | 1.125 |
+
+`s2-fat2` は改善。`s2-fat4` W=3 はわずかに悪化する: calibrated weight は peers を強く評価し
+core:edge の重み比 18:12=1.5 に対し実測コスト比は 44:40=1.10 のため。線形 config 特徴 1 本では
+core/edge のコスト比を表現できず、根本対策は §3.2 の topology 補正 (v2)（本タスクの範囲外）。
+
+**既定挙動.** 既定 scheme は `RANDOM` で重みを使わないため不変。`s2-line` / `s2-mega` のデモは
+MATCH のまま。calibrated `WEIGHTED_LPT_FM` でも `s2-line` / `s2-fat2` / `s2-mega` は MATCH
+（`s2-fat4` は C1 の tie 不安定で ribs のみ DIFF、reachability / symbolic / answer は MATCH）。
+
+変更ファイル: `NodeWeights.java`（`Features` + `-Ds2.nodeWeightsDump` + calibrated coefficients）、
+`NodePartitionerTest.java`、`scripts/calibrate-weights.py`（新規）。
+
 ---
 
 ## 7. マイルストーン
 
-- **P0 計測基盤**: **概ね実装済み** = `scripts/gen-topology.py`（FatTree/line）、`scripts/bench.sh`（＋phase 時刻）、`scripts/partition-metrics.py`（imbalance/cut）、`scripts/ci-matrix.sh`、sidecar RPC stats、`OPS.md`。残: 重み校准（O6）。知見: FatTree eBGP k≥4 は tie 不安定（C1）→ MATCH 検証は tie 安定網で。
+- **P0 計測基盤**: **完了** = `scripts/gen-topology.py`（FatTree/line）、`scripts/bench.sh`（＋phase 時刻）、`scripts/partition-metrics.py`（imbalance/cut）、`scripts/calibrate-weights.py`（O6 の特徴 dump・within-network フィット・コスト考慮 imbalance）、`scripts/ci-matrix.sh`、sidecar RPC stats、`OPS.md`。知見: FatTree eBGP k≥4 は tie 不安定（C1）→ MATCH 検証は tie 安定網で。
 - **P1 shadow lazy 化・boundary-only 化**: **概ね実装済み（opt-in）** = `-Ds2.ownedDataplane`（config 由来 stub FIB、`IncrementalBdpEngine.dataPlaneNodes` で最終 dataplane を owned 限定）。caveat は **M4 で堅牢化済み**（tracks/VNI/tunnel/IPsec は full にフォールバック）。加えて **M1 `-Ds2.descriptorShadows`** で remote の policy 本体を削減。
 - **P2 partitioner プラグイン化**: **完了（2026-09-13）**。新パッケージ `.../ibdp/partition/`
   に `NodePartitioner` + `RANDOM` / `NAME_ORDERED` / `WEIGHTED_LPT_FM` / `GREEDY_REGION` /
@@ -281,7 +359,7 @@ protocol ごとの対象 prefix を閉じる:
 - **決定性**: 乱択 scheme は controller 計算 + seed 固定で配布。worker 再計算をやめる。
 - **METIS 依存**: `gpmetis` 未インストール。評価環境への導入が必要。無い場合は純 Java scheme にフォールバック。
 - **BGP 多重固定点**: cyclic equal-cost 網の tie-break 非決定（`M5-SCALE.md` Known residual）と partition の影響を混同しない。partition 評価は tie が安定な testbed で行う。
-- **推定精度**: ノード/prefix 重みの推定が外れると scheme 比較が無意味化。P0 で係数を実測に合わせる。
+- **推定精度**: ノード/prefix 重みの推定が外れると scheme 比較が無意味化。**O6 で config 特徴の係数を実測 route 数に校准済み（§6.7）**。ただし config 特徴だけでは topology 由来のコスト（FatTree の core/edge 比、経路伝播閉包）を表現できないため、v2 topology 補正が残る。
 - **owned モードの caveat**: owned は opt-in で、Track/VXLAN/IPsec/tunnel/BGP reachability 未対応。partition 評価は対応済み網で行い、既定化は caveat 解消後（REMAINING の owned-mode hardening）。
 - **prefix closure（正しさ）**: `PrefixSharder.queryPrefixes` が aggregate / redistribution / external ads を落とすため、aggregate 入り網では (B) が経路欠落しうる。DPDG 着手前に修正 + aggregate snapshot で `MATCH` を確認する（section 4.5）。
 
@@ -290,7 +368,7 @@ protocol ごとの対象 prefix を閉じる:
 ## 9. 未決事項
 
 1. P1 相当は実装済み。残るのは owned-mode hardening の caveat（Track/VXLAN/tunnel/BGP reachability）を誰がいつ埋めるか。
-2. ノード重み推定の係数をどの testbed で校准するか。
+2. ノード重み推定の係数をどの testbed で校准するか: **解決（O6, §6.7）** = 13 testbed / 89 ノードのノード別 main-RIB route 数を測定コストとし、within-network 非負 ridge で `interfaces:peers:static = 1:3:1`、`originationPrefixes = policyStatements = 0` に校准。FatTree の順序逆転を解消（負相関 1→0）。残: core/edge のコスト比は config 特徴では表現できないため §3.2 v2 topology 補正が必要。
 3. METIS を評価環境に常設するか（Docker image に入れるか）。
 4. prefix shard 数を実行時にどう決めるか: **解決（P-X）** = `S2_PREFIX_SHARDS=auto` が DPDG の成分重みから決定的に N を選ぶ（`PrefixShardCountSelector`、予算 `-Ds2.prefixShardBudgetMiB`、上限 16）。`scripts/shard-sweep.sh` で peak-vs-N を測定し既定を正当化（`M5-SCALE.md`）。
 5. DCN 判定ヒューリスティクスの設計（名前規則に依存しすぎないか）。

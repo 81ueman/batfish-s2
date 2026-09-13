@@ -51,7 +51,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 | id | task | notes |
 | --- | --- | --- |
-| **P0** | measurement + testbed infrastructure | **Generator added**: `scripts/gen-topology.py` (`fattree --k`, `line --nodes`, `--originate`). **Metrics/baseline added**: `scripts/bench.sh "<workers>" "<networks>"` runs the matrix and emits a table (result / max peak MiB / controller MiB / engine s / wall s); phase output now carries elapsed time (`S2 phase ... t=..s`). **Finding**: FatTree eBGP with k>=4 is tie-unstable (multiple equal-cost BGP fixed points -> `ribs=DIFF` even at 1 worker; reachability/symbolic/answer MATCH), consistent with C1, so MATCH-verified partition evaluation must use tie-stable topologies (`line`, `fattree --k 2`) or a deterministic variant. `networks/s2-fat4` (20 switches) is a k=4 DCN testbed for throughput/memory. **Partition-quality metrics added**: `scripts/partition-metrics.py` (node weights, imbalance max/mean, weighted cut; default assignment ports `NetworkPartitioner`). **Boundary RPC counters added**: the sidecars print a per-worker `S2 rpc-stats` stderr summary at end of run. **CI matrix added**: `scripts/ci-matrix.sh` (opt-in; default/owned modes). **Ops notes added**: `docs/s2-port/OPS.md`. Still pending: weight calibration (O6). |
+| **P0** | measurement + testbed infrastructure | **Generator added**: `scripts/gen-topology.py` (`fattree --k`, `line --nodes`, `--originate`). **Metrics/baseline added**: `scripts/bench.sh "<workers>" "<networks>"` runs the matrix and emits a table (result / max peak MiB / controller MiB / engine s / wall s); phase output now carries elapsed time (`S2 phase ... t=..s`). **Finding**: FatTree eBGP with k>=4 is tie-unstable (multiple equal-cost BGP fixed points -> `ribs=DIFF` even at 1 worker; reachability/symbolic/answer MATCH), consistent with C1, so MATCH-verified partition evaluation must use tie-stable topologies (`line`, `fattree --k 2`) or a deterministic variant. `networks/s2-fat4` (20 switches) is a k=4 DCN testbed for throughput/memory. **Partition-quality metrics added**: `scripts/partition-metrics.py` (node weights, imbalance max/mean, weighted cut; default assignment ports `NetworkPartitioner`). **Boundary RPC counters added**: the sidecars print a per-worker `S2 rpc-stats` stderr summary at end of run. **CI matrix added**: `scripts/ci-matrix.sh` (opt-in; default/owned modes). **Weight calibration (O6) added**: `scripts/calibrate-weights.py` + the `-Ds2.nodeWeightsDump` hook; coefficients fitted in `PARTITIONING-PLAN.md` §6.7. **Ops notes added**: `docs/s2-port/OPS.md`. |
 | **C-PFX** | prefix closure fix | **Done.** Aggregates: universe inclusion + co-sharding with the prefixes they cover (`networks/s2-agg`, `testPrefixShardingWithAggregateMatchesVanilla`). Redistribution: static and kernel route networks added (`networks/s2-static`, `testPrefixShardingWithRedistributedStaticMatchesVanilla`). External announcements: runner loads `external_bgp_announcements.json`, the controller ships them (`Start.externalAdverts`), the universe includes their networks, and they are re-staged each shard round (`BgpRoutingProcess.restageExternalAdvertisements`) (`networks/s2-external`, `testPrefixShardingWithExternalAnnouncementMatchesVanilla`, `shards=1..4`). Prerequisite for (B)/DPDG. |
 
 ### Partitioning (see `PARTITIONING-PLAN.md`)
@@ -81,10 +81,14 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 ### Operations / packaging — section C
 
 - **O1** defaults; **O2** k8s resources / `-Xmx`; **O3** CI demo matrix; **O4** benchmark automation;
-  **O5** METIS in the eval environment; **O6** partitioner weight calibration (← P0): **v1 shipped**
-  (`NodeWeights`, documented additive feature sum; also added `--weights` to
-  `scripts/partition-metrics.py`); fitting the coefficients to single-worker phase peaks is still
-  pending; **O7** docs sync.
+  **O5** METIS in the eval environment; **O6** partitioner weight calibration (← P0): **done**
+  (2026-09-13). `NodeWeights` coefficients are fitted against measured per-node main-RIB route
+  counts from 13 testbeds (89 nodes) with within-network non-negative ridge; `interfaces:peers:static
+  = 1:3:1`, `origination=0`, generated `policyStatements=0`, `aclLines=1` (unidentifiable from RIBs,
+  corroborated by `s2-acl` phase peaks). FatTree core/edge ordering is fixed (negative correlations
+  1→0). `scripts/calibrate-weights.py` + `-Ds2.nodeWeightsDump` are the tooling; the calibration hook
+  and coefficients are in the `NodeWeights` diff. Residual: cross-shape cost *magnitudes* still need
+  the plan §3.2 v2 topology correction. See `PARTITIONING-PLAN.md` §6.7; **O7** docs sync.
 
 ### Dependency graph
 
@@ -100,12 +104,11 @@ M2 ⇄ P3                      (both target T_w)
 
 ### Recommended order
 
-Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0 (except weight calibration O6).
+Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6.
 
-1. **O6** weight calibration (v1 weights exist; calibrate against single-worker phase peaks)
-2. **O1** defaults (decide whether to make owned / descriptor / positive-cache default) / **O5** METIS install for real partitioner eval / **O3**/**O4** CI+bench automation
-3. **M5** (deferred)
-4. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
+1. **O1** defaults (decide whether to make owned / descriptor / positive-cache default) / **O5** METIS install for real partitioner eval / **O3**/**O4** CI+bench automation
+2. **M5** (deferred)
+3. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
 
 ## A. Memory / scale (ranked by expected payoff)
 

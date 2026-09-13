@@ -3,6 +3,7 @@ package org.batfish.dataplane.ibdp.partition;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 
@@ -242,6 +243,51 @@ public class NodePartitionerTest {
             + NodeWeights.VRF;
     assertThat(NodeWeights.compute(c), equalTo(expected));
     assertThat(NodeWeights.compute(ImmutableMap.of("r1", c)).get("r1"), equalTo(expected));
+  }
+
+  /** {@code compute(c)} is exactly {@code weightOf(features(c))}. */
+  @Test
+  public void testComputeEqualsWeightOfFeatures() {
+    Configuration c = configWithInterface("r1", "i1", "10.0.0.1/30");
+    assertThat(NodeWeights.compute(c), equalTo(NodeWeights.weightOf(NodeWeights.features(c))));
+  }
+
+  /**
+   * The calibrated model must rank the measured FatTree shapes correctly: the core/aggregation
+   * layer (more BGP peers) carries more routes than the edge layer even though the edge layer
+   * originates more prefixes. v1 (every coefficient = 1) weighed the k=4 layers the same and
+   * inverted the k=2 layers.
+   */
+  @Test
+  public void testCalibratedModelRanksFatTreeCoreAboveEdge() {
+    // k=4 shape: same interfaces and generated policies; core 4 peers / 1 prefix, edge 2 peers /
+    // 3 prefixes. Measured main-RIB routes: 44 vs 40.
+    NodeWeights.Features core = new NodeWeights.Features(5, 4, 1, 0, 9, 0, 1);
+    NodeWeights.Features edge = new NodeWeights.Features(5, 2, 3, 0, 9, 0, 1);
+    assertThat(NodeWeights.weightOf(core), greaterThan(NodeWeights.weightOf(edge)));
+  }
+
+  /**
+   * Generated routing-policy statements are collinear with the BGP peer/prefix structure and add no
+   * measured within-network RIB signal, so the calibrated model gives them zero weight. They were
+   * the dominant term in v1 and caused the FatTree inversion.
+   */
+  @Test
+  public void testCalibratedModelIgnoresGeneratedPolicyStatements() {
+    NodeWeights.Features withPolicies = new NodeWeights.Features(3, 2, 1, 0, 262, 0, 1);
+    NodeWeights.Features withoutPolicies = new NodeWeights.Features(3, 2, 1, 0, 0, 0, 1);
+    assertThat(NodeWeights.weightOf(withPolicies), equalTo(NodeWeights.weightOf(withoutPolicies)));
+  }
+
+  /**
+   * A line endpoint vs interior: the interior has one more interface and one more peer, and its
+   * measured main RIB is 2 routes larger; the calibrated model must rank it higher.
+   */
+  @Test
+  public void testCalibratedModelRanksLineInteriorAboveEndpoint() {
+    NodeWeights.Features endpoint = new NodeWeights.Features(2, 1, 1, 0, 6, 0, 1);
+    NodeWeights.Features interior = new NodeWeights.Features(3, 2, 1, 0, 7, 0, 1);
+    assertThat(NodeWeights.weightOf(interior), greaterThan(NodeWeights.weightOf(endpoint)));
   }
 
   private static Configuration configWithInterface(
