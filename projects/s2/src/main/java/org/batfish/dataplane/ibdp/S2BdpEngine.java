@@ -201,6 +201,17 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   }
 
   /**
+   * OSPF internal convergence must be phase-aligned across workers, so use the single-step {@link
+   * Schedule#ALL}. Unlike the EGP loop, the OSPF internal loop has no schedule-reconciliation
+   * fallback, and a worker colors its own (possibly shadowed) OSPF topology, so a NODE_COLORED
+   * schedule could yield a different number of steps per worker and desynchronize the barriers.
+   */
+  @Override
+  protected Schedule ospfInternalSchedule() {
+    return Schedule.ALL;
+  }
+
+  /**
    * Make the EGP schedule safe across workers. Each worker colors the full node set + topology it
    * holds; that is the same on every worker today, but if a future topology made it differ the
    * per-step barriers would stop lining up and the run would hang. Fingerprint the ordered color

@@ -1141,6 +1141,18 @@ public class IncrementalBdpEngine {
   }
 
   /**
+   * The schedule for the OSPF internal convergence loop. The stock engine uses the configured
+   * schedule, exactly as it did before the distributed hooks were introduced, so the loop converges
+   * in the same number of iterations. A distributed engine may instead return {@link Schedule#ALL}
+   * so every worker takes the same steps: a NODE_COLORED schedule colors the worker's own (possibly
+   * shadowed) topology and could yield a different number of steps per worker, which would
+   * desynchronize the phase barriers.
+   */
+  protected Schedule ospfInternalSchedule() {
+    return _settings.getScheduleName();
+  }
+
+  /**
    * Verify that every worker will take the same schedule steps for the current round, and if not,
    * return a schedule whose step count cannot differ across workers.
    *
@@ -1592,13 +1604,14 @@ public class IncrementalBdpEngine {
     while (dirty) {
       ospfInternalIterations++;
       LOGGER.info("OSPF internal: Iteration {}", ospfInternalIterations);
-      // Use a single-step schedule so every worker takes the same steps. NODE_COLORED colors the
+      // The schedule is a hook: stock uses the configured schedule, while the distributed engine
+      // uses a single-step schedule so every worker takes the same steps. NODE_COLORED colors the
       // worker's own (possibly shadowed) topology and can yield a different number of steps per
       // worker, which would desynchronize the phase barriers.
       IbdpSchedule schedule =
           IbdpSchedule.getSchedule(
               _settings,
-              Schedule.ALL,
+              ospfInternalSchedule(),
               allNodes,
               TopologyContext.builder().setOspfTopology(ospfTopology).build());
 
