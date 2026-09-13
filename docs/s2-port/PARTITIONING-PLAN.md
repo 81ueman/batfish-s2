@@ -664,6 +664,20 @@ python3 scripts/calibrate-weights.py imbalance \
 既定 demo `S2_BASE_PORT=23000 scripts/local-demo.sh 3 s2-line` は
 `ribs/reachability/symbolic/answer = MATCH`。
 
+### 6.13 予定している性能測定（未実施）
+
+現状の分割評価は**構造品質**（`imbalance` / `weighted-cut` / コスト考慮 imbalance）と MATCH のみで、
+**実性能（max per-worker peak・wall time）の scheme 比較は未実施**。
+
+- **ノード分割 scheme の性能 sweep（未実施）**: `RANDOM` / `NAME_ORDERED` / `WEIGHTED_LPT_FM` /
+  `GREEDY_REGION` / `METIS` を `-Ds2.partition=<scheme>` 付きで実行し、**max per-worker peak と
+  wall time** を記録。網は `s2-fat4`（20 ノード、ロール差が大きい）と `s2-mega`、workers は 3 と 6。
+  owned mode では per-worker peak が所有ノードのコストに比例するため、**コストを均す scheme が
+  max peak を下げる**はず（論文 §5.6 の「balance が支配」の実測再確認）。
+- **prefix shard の性能 sweep（peak は実測済み、時間は未収録）**: `scripts/shard-sweep.sh` が
+  `peak-vs-N`（`s2-big2` / `s2-mega`, N=1..32）を実測済み（`M5-SCALE.md`）。**wall time を追加**し、
+  現行既定（owned+descriptor+positive-cache）でも再測定する（同条件では peak は flat＝no-op の見込み）。
+
 ---
 
 ## 7. マイルストーン
