@@ -83,6 +83,27 @@ fixed/global data: all configs + the cluster-wide ARP-replies exchange). `s2-gig
 prefixes) vanilla peaks at **31796 MiB** in one JVM — beyond a normal node — while S2's per-worker
 share is `~(N×P)/W`, i.e. a few GiB.
 
+### Per-node budget demo (this PC, `s2-giga2`)
+
+The practical test is a **per-process heap budget** (what a k8s node gives a pod):
+
+| process | budget | result |
+| --- | --- | --- |
+| vanilla `ibdp` (1 JVM, whole network) | `-Xmx4g` | **OutOfMemoryError** |
+| vanilla `ibdp` (1 JVM) | `-Xmx6g` | **OutOfMemoryError** |
+| vanilla `ibdp` (1 JVM) | `-Xmx8g` | completes |
+| S2 controller (parse + ship) | `-Xmx4g` | completes (pool peak 2230.6 MiB) |
+| S2 W=6, each worker | `-Xmx4g` | completes (max worker 2734.8 MiB) |
+
+So with a **6 GiB-per-process budget**, vanilla cannot compute `s2-giga2` (65552 prefixes) while S2
+can: the controller and each worker fit well under 6 GiB, because no single process holds the whole
+data plane. (On one host the S2 processes total ~18 GiB > vanilla's ~10 GiB — the invariant above —
+so this only helps when the workers are on separate nodes.)
+
+Metric note: `peakHeapBytes()` sums each heap pool's *peak used* (an overestimate of the
+simultaneous heap peak, since Eden/Old peaks do not coincide), so judge a budget by `-Xmx`, not by
+that number.
+
 ### Single host vs multiple nodes
 
 On **one** host, S2's total across workers is **≥ vanilla's single-JVM peak** (same total work, plus
