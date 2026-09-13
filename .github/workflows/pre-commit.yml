@@ -141,9 +141,12 @@ jobs:
         with:
           distribution: "temurin"
           java-version: "25"
+      - name: Check for Codecov token
+        id: codecov
+        run: echo "enabled=${{ secrets.BATFISH_CODECOV_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
       - name: Bazel Junit Tests and Coverage
         # Needs the Codecov secret; skip on forks that do not configure it (e.g. 81ueman/batfish-s2).
-        if: ${{ secrets.BATFISH_CODECOV_TOKEN != '' }}
+        if: ${{ steps.codecov.outputs.enabled == 'true' }}
         run: |
           bazel coverage //projects/... \
             --instrumentation_filter="-//projects/batfish/src/main/java/org/batfish/representation/juniper/parboiled,-//projects/batfish/src/main/java/org/batfish/vendor/check_point_management/parsing/parboiled,-//projects/common/src/main/java:specifier_common,-//projects/batfish/src/main/antlr4[/:],-//projects/.*/src/test[/:]" \
@@ -151,7 +154,7 @@ jobs:
             --combined_report=lcov \
             --instrument_test_targets=false
       - name: Generate report
-        if: ${{ secrets.BATFISH_CODECOV_TOKEN != '' }}
+        if: ${{ steps.codecov.outputs.enabled == 'true' }}
         uses: codecov/codecov-action@v7
         env:
           CODECOV_TOKEN: ${{ secrets.BATFISH_CODECOV_TOKEN }}
