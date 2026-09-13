@@ -21,12 +21,21 @@ final class S2SidecarServer implements AutoCloseable {
   }
 
   private final ServerSocket _server;
-  private final Handler _handler;
+  private volatile Handler _handler;
   private final ExecutorService _pool = Executors.newCachedThreadPool();
   private volatile boolean _closed;
 
   S2SidecarServer(int port, Handler handler) throws IOException {
     _server = new ServerSocket(port);
+    _handler = handler;
+  }
+
+  /**
+   * Replace the request handler. The persistent worker service keeps one sidecar bound for the life
+   * of the process (peers dial its fixed port across snapshots) and installs the snapshot-specific
+   * handler here before each run.
+   */
+  void setHandler(Handler handler) {
     _handler = handler;
   }
 

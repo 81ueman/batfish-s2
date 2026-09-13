@@ -64,6 +64,22 @@ public final class S2DirectoryHostSlices implements S2HostSlices {
     return new S2DirectoryHostSlices(directory, hosts);
   }
 
+  /**
+   * Recursively delete a slice directory (slice GC). The engine registers this for the per-snapshot
+   * directory it created, so the shared volume does not accumulate one directory per snapshot.
+   * Missing files are ignored, so this is safe to call more than once.
+   */
+  public static void deleteRecursively(Path directory) throws IOException {
+    if (!Files.exists(directory)) {
+      return;
+    }
+    try (java.util.stream.Stream<Path> paths = Files.walk(directory)) {
+      for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+        Files.deleteIfExists(path);
+      }
+    }
+  }
+
   @Override
   public Set<String> hosts() {
     return _hosts;

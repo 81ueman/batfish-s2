@@ -2,8 +2,6 @@
 
 package org.batfish.dataplane.ibdp;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
@@ -46,7 +44,6 @@ import org.batfish.datamodel.Interface;
 import org.batfish.datamodel.Ip;
 import org.batfish.datamodel.IpProtocol;
 import org.batfish.datamodel.UniverseIpSpace;
-import org.batfish.datamodel.Vrf;
 import org.batfish.datamodel.flow.Trace;
 import org.batfish.dataplane.TracerouteEngineImpl;
 import org.batfish.dataplane.ibdp.partition.AutoSchemeSelector;
@@ -61,10 +58,18 @@ import org.batfish.symbolic.state.StateExpr;
  *
  * <pre>
  *   S2Main controller &lt;network&gt; &lt;numWorkers&gt; &lt;endpointsCsv&gt; &lt;controllerPort&gt;
+ *   S2Main controller-service &lt;numWorkers&gt; &lt;controllerPort&gt;
  *   S2Main worker &lt;network&gt; &lt;workerId&gt; &lt;numWorkers&gt; &lt;controllerHost&gt; &lt;controllerPort&gt; &lt;sidecarPort&gt;
+ *   S2Main worker-service &lt;workerId&gt; &lt;controllerHost&gt; &lt;controllerPort&gt; &lt;sidecarPort&gt; [advertisedHost]
  *   S2Main verify &lt;network&gt; &lt;numWorkers&gt;
  *   S2Main partition &lt;network&gt; &lt;numWorkers&gt;
  * </pre>
+ *
+ * <p>The {@code controller-service} / {@code worker-service} pair is the persistent pool (choice
+ * A): the workers register once and stay alive for many snapshots, and the controller accepts one
+ * compute request per snapshot from the dataplane engine (see {@link S2ControllerService} and
+ * {@link S2WorkerService}). The one-shot {@code controller} / {@code worker} roles remain for the
+ * scale/verify experiments.
  *
  * <p>The controller is a lightweight coordinator: it parses the snapshot, resolves the partition,
  * ships configs, and collects the workers' results, which it writes to {@code
@@ -83,21 +88,25 @@ public final class S2Main {
    */
   private static final int BDD_PORT_OFFSET = 1000;
 
-  /** Fixed partition seed: the controller computes the assignment once and ships it to workers. */
-  private static final long PARTITION_SEED = 0L;
-
   private S2Main() {}
 
   public static void main(String[] args) throws Exception {
     if (args.length == 0) {
-      throw new IllegalArgumentException("usage: S2Main controller|worker|verify|partition ...");
+      throw new IllegalArgumentException(
+          "usage: S2Main controller|controller-service|worker|worker-service|verify|partition ...");
     }
     switch (args[0]) {
       case "controller":
         runController(args);
         break;
+      case "controller-service":
+        runControllerService(args);
+        break;
       case "worker":
         runWorker(args);
+        break;
+      case "worker-service":
+        runWorkerService(args);
         break;
       case "verify":
         runVerify(args);
@@ -121,29 +130,6 @@ public final class S2Main {
   }
 
   /**
-   * Shadow nodes delegate BGP and OSPF; EIGRP/IS-IS/RIP are not distributed, so a multi-worker run
-   * of a snapshot that uses them would hit a null shadow process. Fail with a clear message.
-   */
-  private static void assertDistributedProtocolsSupported(S2Snapshot snap, int numWorkers) {
-    if (numWorkers <= 1) {
-      return;
-    }
-    for (Configuration c : snap.configs.values()) {
-      for (Vrf vrf : c.getVrfs().values()) {
-        if (!vrf.getEigrpProcesses().isEmpty()
-            || vrf.getIsisProcess() != null
-            || vrf.getRipProcess() != null) {
-          throw new UnsupportedOperationException(
-              "Multi-worker distributed routing supports only eBGP and OSPF: "
-                  + c.getHostname()
-                  + " uses EIGRP/IS-IS/RIP. Run with 1 worker or use the in-process "
-                  + "S2DistributedControlPlaneTest.");
-        }
-      }
-    }
-  }
-
-  /**
    * Whether the worker restricts its dataplane to owned nodes. Default on; disable with {@code
    * -Ds2.ownedDataplane=false}. Read here only to decide whether the worker can run the global
    * traceroute digest (it cannot in owned mode; see {@code runWorker}); the engine reads the same
@@ -151,69 +137,6 @@ public final class S2Main {
    */
   private static boolean ownedDataplaneMode() {
     return Boolean.parseBoolean(System.getProperty("s2.ownedDataplane", "true"));
-  }
-
-  /**
-   * Whether reduced shadow configs are safe for this snapshot. The descriptor drops remote ACL /
-   * policy bodies, so it is only sound while nothing needs a remote node's full policy or
-   * forwarding state on a non-owning worker:
-   *
-   * <ul>
-   *   <li>tracks: a {@code TrackReachability} traceroutes through possibly-remote nodes;
-   *   <li>IPsec / tunnel / VXLAN reachability: dataplane traceroutes prune the initial topology;
-   *   <li>(the global traceroute digest is skipped in descriptor mode — see {@code runWorker}).
-   * </ul>
-   */
-  private static boolean descriptorShadowsSafe(S2Snapshot snap) {
-    for (Configuration c : snap.configs.values()) {
-      if (S2BdpEngine.hasTrackReachability(c)) {
-        return false;
-      }
-      for (Vrf vrf : c.getVrfs().values()) {
-        if (!vrf.getLayer2Vnis().isEmpty() || !vrf.getLayer3Vnis().isEmpty()) {
-          return false;
-        }
-      }
-    }
-    TopologyContext tc = snap.topologyContext;
-    return tc.getIpsecTopology().getGraph().edges().isEmpty()
-        && tc.getTunnelTopology().getGraph().edges().isEmpty()
-        && tc.getVxlanTopology().getGraph().edges().isEmpty();
-  }
-
-  /** Serialize the controller's parsed configurations so workers can skip parsing. */
-  private static byte[] serializeConfigs(Map<String, Configuration> configs) throws IOException {
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
-      oos.writeObject(new TreeMap<>(configs));
-    }
-    return baos.toByteArray();
-  }
-
-  @SuppressWarnings("unchecked")
-  private static SortedMap<String, Configuration> deserializeConfigs(byte[] payload)
-      throws IOException, ClassNotFoundException {
-    try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(payload))) {
-      return (SortedMap<String, Configuration>) ois.readObject();
-    }
-  }
-
-  /** Serialize the snapshot's external BGP announcements so workers can inject them. */
-  private static byte[] serializeExternalAdverts(
-      java.util.Set<org.batfish.datamodel.BgpAdvertisement> adverts) throws IOException {
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
-      oos.writeObject(new java.util.HashSet<>(adverts));
-    }
-    return baos.toByteArray();
-  }
-
-  @SuppressWarnings("unchecked")
-  private static java.util.Set<org.batfish.datamodel.BgpAdvertisement> deserializeExternalAdverts(
-      byte[] payload) throws IOException, ClassNotFoundException {
-    try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(payload))) {
-      return (java.util.Set<org.batfish.datamodel.BgpAdvertisement>) ois.readObject();
-    }
   }
 
   /** Sum of the peak used bytes across all heap memory pools (for scale reporting). */
@@ -249,97 +172,39 @@ public final class S2Main {
 
     S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
     controllerPhase("after snapshot load");
-    assertDistributedProtocolsSupported(snap, numWorkers);
-
-    // The partition scheme is selected once on the controller and the assignment is computed here,
-    // then shipped to every worker (workers never recompute it). The code default RANDOM reproduces
-    // the historical hash-shuffle round-robin; the runner defaults -Ds2.partition=auto, which
-    // resolves to a concrete scheme from the graph shape (see AutoSchemeSelector).
-    PartitionScheme requested = PartitionScheme.fromSystemProperties();
-    CommunicationGraph graph =
-        CommunicationGraph.build(snap.configs, snap.topologyContext, snap.bgpTopology);
-    AutoSchemeSelector.Selection selection = AutoSchemeSelector.select(requested, graph);
-    PartitionScheme scheme = selection.scheme();
-    Map<String, Integer> assignment =
-        CommunicationGraph.canonicalAssignment(
-            scheme.partitioner().partition(graph, numWorkers, PARTITION_SEED), numWorkers);
-    {
-      long[] loads = CommunicationGraph.loads(graph, assignment, numWorkers);
-      long maxLoad = 0;
-      long totalLoad = 0;
-      for (long load : loads) {
-        maxLoad = Math.max(maxLoad, load);
-        totalLoad += load;
-      }
-      double meanLoad = totalLoad / (double) numWorkers;
-      String selectionNote =
-          selection.shape() == null
-              ? ""
-              : String.format(" (requested=AUTO, %s)", selection.describe());
-      System.out.printf(
-          "S2 controller: partition scheme=%s%s workers=%d nodes=%d weighted-cut=%d"
-              + " imbalance(max/mean)=%.3f%n",
-          scheme,
-          selectionNote,
-          numWorkers,
-          graph.nodes().size(),
-          CommunicationGraph.cutWeight(graph, assignment),
-          meanLoad == 0.0 ? 0.0 : maxLoad / meanLoad);
-    }
+    S2Sharding.assertDistributedProtocolsSupported(snap, numWorkers);
+    S2Sharding.Plan plan = S2Sharding.plan(snap, numWorkers);
+    System.out.printf("S2 controller: %s%n", S2Sharding.describe(plan, numWorkers));
 
     // Descriptor-shadow mode (default on; disable with -Ds2.descriptorShadows=false): ship each
     // worker only its owned configs plus a shared reduced descriptor for every remote node, instead
     // of the full snapshot. Also requires config shipping and a snapshot the shadow path can answer
-    // without remote policy/forwarding bodies (see descriptorShadowsSafe, which falls back to
-    // shipping full configs for tracks / VNI / tunnel / IPsec).
+    // without remote policy/forwarding bodies (see S2Sharding.descriptorShadowsSafe, which falls
+    // back to shipping full configs for tracks / VNI / tunnel / IPsec).
     boolean shipConfigs = !Boolean.getBoolean("s2.noShipConfigs");
-    boolean descriptorShadows =
-        shipConfigs
-            && Boolean.parseBoolean(System.getProperty("s2.descriptorShadows", "true"))
-            && numWorkers > 1
-            && descriptorShadowsSafe(snap);
-    byte[] serializedConfigs = null;
-    Map<Integer, byte[]> ownedConfigsByWorker = null;
-    byte[] serializedDescriptors = null;
-    if (descriptorShadows) {
-      Map<Integer, SortedMap<String, Configuration>> ownedByWorker = new HashMap<>();
-      Map<String, RemoteNodeDescriptor> descriptors = new TreeMap<>();
-      for (Map.Entry<String, Configuration> e : snap.configs.entrySet()) {
-        int owner = assignment.get(e.getKey());
-        ownedByWorker.computeIfAbsent(owner, w -> new TreeMap<>()).put(e.getKey(), e.getValue());
-        descriptors.put(e.getKey(), RemoteNodeDescriptor.of(e.getValue()));
-      }
-      // More workers than nodes is legal; make sure every worker has a (possibly empty) payload.
-      for (int w = 0; w < numWorkers; w++) {
-        ownedByWorker.computeIfAbsent(w, x -> new TreeMap<>());
-      }
-      ownedConfigsByWorker = new HashMap<>();
-      for (Map.Entry<Integer, SortedMap<String, Configuration>> e : ownedByWorker.entrySet()) {
-        ownedConfigsByWorker.put(e.getKey(), serializeConfigs(e.getValue()));
-      }
-      serializedDescriptors = RemoteNodeDescriptor.serialize(descriptors);
+    S2Sharding.Payload payload =
+        S2Sharding.preparePayload(
+            snap,
+            plan.assignment,
+            numWorkers,
+            shipConfigs,
+            Boolean.parseBoolean(System.getProperty("s2.descriptorShadows", "true")));
+    if (payload.descriptorShadows()) {
       System.out.printf(
           "S2 controller: descriptor shadows on (%d full configs + %d descriptors)%n",
-          numWorkers, descriptors.size());
-    } else {
-      // Serialize the parsed configs once so each worker can skip parsing the snapshot.
-      serializedConfigs = shipConfigs ? serializeConfigs(snap.configs) : null;
+          numWorkers, payload.numDescriptors);
     }
-    // Workers build from shipped configs, so they cannot load external announcements themselves.
-    byte[] serializedExternalAdverts =
-        serializeExternalAdverts(
-            snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
     controllerPhase("after serialize for shipping");
     try (S2ControllerServer server =
         new S2ControllerServer(
             port,
             numWorkers,
             endpoints,
-            assignment,
-            serializedConfigs,
-            serializedExternalAdverts,
-            ownedConfigsByWorker,
-            serializedDescriptors)) {
+            plan.assignment,
+            payload.configs,
+            payload.externalAdverts,
+            payload.ownedConfigsByWorker,
+            payload.descriptors)) {
       server.start();
       System.out.printf(
           "S2 controller listening on %d, waiting for %d workers%n", port, numWorkers);
@@ -557,10 +422,10 @@ public final class S2Main {
         SortedMap<String, Configuration> effective = new TreeMap<>();
         descriptors.forEach(
             (host, descriptor) -> effective.put(host, descriptor.shadowConfiguration()));
-        effective.putAll(deserializeConfigs(start.ownedConfigs));
+        effective.putAll(S2ControlMessages.deserializeConfigs(start.ownedConfigs));
         configs = effective;
       } else if (start.configs != null) {
-        configs = deserializeConfigs(start.configs);
+        configs = S2ControlMessages.deserializeConfigs(start.configs);
       }
       // The serialized payloads are no longer needed; drop them so they are not retained all run.
       start.clearConfigPayloads();
@@ -568,14 +433,15 @@ public final class S2Main {
           configs != null
               ? S2Snapshot.fromConfigs(configs)
               : S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
-      assertDistributedProtocolsSupported(snap, numWorkers);
+      S2Sharding.assertDistributedProtocolsSupported(snap, numWorkers);
       // The controller computes the assignment once and ships it; workers must use it verbatim
       // rather than recomputing. Fall back to the historical RANDOM partition only if an older
       // controller omitted it.
       Map<String, Integer> assignment =
           start.assignment != null
               ? start.assignment
-              : NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, PARTITION_SEED);
+              : NetworkPartitioner.partition(
+                  snap.configs.keySet(), numWorkers, S2Sharding.PARTITION_SEED);
       Set<String> ownedHosts = new HashSet<>();
       assignment.forEach(
           (host, owner) -> {
@@ -596,7 +462,7 @@ public final class S2Main {
       Map<String, Node> nodeMap = new HashMap<>(nodes);
       List<org.batfish.datamodel.BgpAdvertisement> adverts =
           start.externalAdverts != null
-              ? new ArrayList<>(deserializeExternalAdverts(start.externalAdverts))
+              ? new ArrayList<>(S2ControlMessages.deserializeExternalAdverts(start.externalAdverts))
               : new ArrayList<>(
                   snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
       // External announcements are injected into the BGP RIBs and are subject to prefix
@@ -650,11 +516,15 @@ public final class S2Main {
                 ._dataPlane;
 
         // Persist this worker's owned hosts' slices so an out-of-process engine (the s2 dataplane
-        // plugin, serving questions with s2slicedir) can read them lazily. S2_SLICE_DIR overrides
-        // the default under S2_OUTPUT_DIR (the Kubernetes shared volume).
-        String sliceDirEnv = System.getenv("S2_SLICE_DIR");
+        // plugin, serving questions with s2slicedir) can read them lazily. The controller names the
+        // directory per snapshot in the persistent-pool flow; the one-shot runner falls back to
+        // S2_SLICE_DIR, then <S2_OUTPUT_DIR>/slices (the Kubernetes shared volume).
         Path sliceDir =
-            sliceDirEnv != null ? Paths.get(sliceDirEnv) : outputDir().resolve("slices");
+            start.sliceDir != null
+                ? Paths.get(start.sliceDir)
+                : System.getenv("S2_SLICE_DIR") != null
+                    ? Paths.get(System.getenv("S2_SLICE_DIR"))
+                    : outputDir().resolve("slices");
         S2DirectoryHostSlices.write(sliceDir, S2InProcessHostSlices.of(List.of(dp)));
         System.out.printf("S2 worker %d wrote slices to %s%n", workerId, sliceDir);
 
@@ -740,6 +610,49 @@ public final class S2Main {
     }
   }
 
+  // ---------------------------------------------------------- persistent pool
+
+  /**
+   * Long-lived controller service role: {@code controller-service <numWorkers> <port>}. Workers
+   * register once (advertising their sidecar endpoints) and stay connected; the engine then drives
+   * one compute request per snapshot. Blocks until the JVM is shut down.
+   */
+  private static void runControllerService(String[] args) throws Exception {
+    int numWorkers = Integer.parseInt(args[1]);
+    int port = Integer.parseInt(args[2]);
+    S2ControllerService service = new S2ControllerService(port, numWorkers);
+    service.start();
+    System.out.printf(
+        "S2 controller-service listening on %d, waiting for %d workers%n",
+        service.getPort(), numWorkers);
+    if (!service.awaitWorkers(600)) {
+      throw new IllegalStateException("timed out waiting for the workers to register");
+    }
+    System.out.printf("S2 controller-service: all %d workers registered%n", numWorkers);
+    Thread.currentThread().join();
+  }
+
+  /**
+   * Long-lived worker service role: {@code worker-service <workerId> <controllerHost>
+   * <controllerPort> <sidecarPort> [advertisedHost]}. Registers with the controller once and then
+   * serves snapshots until shut down.
+   */
+  private static void runWorkerService(String[] args) throws Exception {
+    int workerId = Integer.parseInt(args[1]);
+    String controllerHost = args[2];
+    int controllerPort = Integer.parseInt(args[3]);
+    int sidecarPort = Integer.parseInt(args[4]);
+    String advertisedHost =
+        args.length > 5 ? args[5] : java.net.InetAddress.getLocalHost().getHostAddress();
+    S2WorkerService worker =
+        new S2WorkerService(workerId, controllerHost, controllerPort, sidecarPort, advertisedHost);
+    worker.start();
+    System.out.printf(
+        "S2 worker-service %d registered at %s (sidecar %d, controller %s:%d)%n",
+        workerId, advertisedHost, worker.getSidecarPort(), controllerHost, controllerPort);
+    Thread.currentThread().join();
+  }
+
   // ------------------------------------------------------------------- helpers
 
   /**
@@ -759,7 +672,8 @@ public final class S2Main {
     PartitionScheme scheme = selection.scheme();
     Map<String, Integer> assignment =
         CommunicationGraph.canonicalAssignment(
-            scheme.partitioner().partition(graph, numWorkers, PARTITION_SEED), numWorkers);
+            scheme.partitioner().partition(graph, numWorkers, S2Sharding.PARTITION_SEED),
+            numWorkers);
     Path out = outputDir();
     String base = network + "-" + scheme.name().toLowerCase(Locale.ROOT) + "-" + numWorkers + "w";
     Path assignmentFile = out.resolve("assignment-" + base + ".txt");
