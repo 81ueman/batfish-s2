@@ -1141,6 +1141,26 @@ public class IncrementalBdpEngine {
   }
 
   /**
+   * Verify that every worker will take the same schedule steps for the current round, and if not,
+   * return a schedule whose step count cannot differ across workers.
+   *
+   * <p>A colored schedule is computed from the topology the engine holds. A distributed engine
+   * whose workers hold different topologies could color differently, which would misalign the
+   * per-step phase barriers ({@link #synchronizeWorkers()}) and hang the run. A distributed engine
+   * must use this hook to either prove all workers agree or fall back to a schedule that has the
+   * same number of steps everywhere (e.g. {@link Schedule#ALL}). The stock single-engine
+   * computation returns {@code schedule} unchanged.
+   *
+   * @param schedule the schedule just computed
+   * @param scheduleSteps the schedule's ordered steps (each a map of node names to nodes)
+   * @return the schedule to use; may be a fallback that differs from {@code schedule}
+   */
+  protected Schedule reconcileEgpSchedule(
+      Schedule schedule, List<Map<String, Node>> scheduleSteps) {
+    return schedule;
+  }
+
+  /**
    * Prefix shards for the EGP computation (S2 prefix sharding). Empty means a single unsharded
    * pass. When non-empty, the EGP fixpoint runs once per shard with BGP restricted to that shard
    * and each shard's BGP routes are externalized before the next shard, so only one shard is live
@@ -1367,13 +1387,9 @@ public class IncrementalBdpEngine {
 
     // C1: on a cyclic equal-cost topology the EGP fixed point depends on the schedule, because the
     // default ARRIVAL_ORDER BGP tie-breaker consumes the order in which equal-cost advertisements
-    // are merged. Vanilla Batfish uses the deterministic NODE_COLORED schedule; the S2 engine
-    // hard-codes Schedule.ALL, which is itself run-to-run nondeterministic (all nodes pull in one
-    // concurrent round). -Ds2.egpSchedule=NODE_COLORED forces the deterministic schedule. It is
-    // safe
-    // for the S2 engine because every worker sees the same full node set and topology, so the color
-    // classes -- and therefore the per-step barriers -- are identical across workers. Default null
-    // preserves stock (and S2) behavior.
+    // are merged. Vanilla Batfish uses the deterministic NODE_COLORED schedule. The S2 engine
+    // defaults to NODE_COLORED too (initialSchedule); -Ds2.egpSchedule=ALL is the escape hatch that
+    // restores the historical single-round ALL schedule.
     String scheduleOverride = System.getProperty("s2.egpSchedule");
     Schedule currentSchedule =
         scheduleOverride == null ? initialSchedule() : Schedule.valueOf(scheduleOverride);
@@ -1391,6 +1407,21 @@ public class IncrementalBdpEngine {
         scheduleSteps =
             IbdpSchedule.getSchedule(_settings, currentSchedule, nodes, topologyContext)
                 .getAllRemaining();
+        // A distributed engine may have colored its own topology differently from its peers. Any
+        // such disagreement would give the workers different numbers of steps, so their per-step
+        // barriers would no longer line up. Reconcile before the first barrier of the round; a
+        // fallback must be a schedule whose step count is the same on every worker.
+        Schedule reconciled = reconcileEgpSchedule(currentSchedule, scheduleSteps);
+        if (reconciled != currentSchedule) {
+          LOGGER.warn(
+              "EGP schedule {} is not consistent across workers; falling back to {}",
+              currentSchedule,
+              reconciled);
+          currentSchedule = reconciled;
+          scheduleSteps =
+              IbdpSchedule.getSchedule(_settings, currentSchedule, nodes, topologyContext)
+                  .getAllRemaining();
+        }
         scheduleStepsFor = currentSchedule;
       }
 

@@ -1,7 +1,10 @@
 # C1 — FatTree eBGP equal-cost tie nondeterminism
 
-Status: **root cause identified with evidence; a small, default-off fix is implemented and
-verified** on `networks/s2-fat4` at 1 and 3 workers.
+Status: **resolved by default.** The S2 engine now uses vanilla's deterministic
+`NODE_COLORED` schedule, so `networks/s2-fat4` matches vanilla by default at 1 and 3
+workers; `-Ds2.egpSchedule=ALL` remains the escape hatch. Cross-worker coloring
+consistency is guaranteed (full node set + config-derived topology) and enforced by a
+cluster-wide fingerprint check that falls back to `ALL` instead of deadlocking.
 
 ## TL;DR
 
@@ -29,17 +32,19 @@ That makes the fixed point a function of the message-passing order:
 * **Vanilla Batfish** uses `Schedule.NODE_COLORED`. Color classes are independent sets of the BGP
   topology, processed one class at a time, so a node always reads a neighbor's advertisement in a
   fixed order and never concurrently. Deterministic (verified: two runs byte-identical).
-* **The S2 engine** forces `Schedule.ALL`: one step, every node pulling in the same concurrent
-  round (`S2BdpEngine.initialSchedule`). On a cyclic equal-cost topology this is **run-to-run
-  nondeterministic even in the stock engine** (verified: two stock-`ALL` runs differ), and it can
-  select a different — still valid — equal-cost fixed point than vanilla.
+* **The S2 engine** historically forced `Schedule.ALL`: one step, every node pulling in the same
+  concurrent round (`S2BdpEngine.initialSchedule`). On a cyclic equal-cost topology this is
+  **run-to-run nondeterministic even in the stock engine** (verified: two stock-`ALL` runs differ),
+  and it can select a different — still valid — equal-cost fixed point than vanilla.
 
-So the C1 residual is not just "ALL is a different deterministic schedule"; **ALL itself races on
-the route-arrival order**, which is why `ribs=DIFF` appears even at 1 worker.
+So the C1 residual was not just "ALL is a different deterministic schedule"; **ALL itself races on
+the route-arrival order**, which is why `ribs=DIFF` appeared even at 1 worker.
 
-Fix: give the S2 engine the same deterministic schedule vanilla uses —
-`-Ds2.egpSchedule=NODE_COLORED` (default off). With it, the S2 engine matches vanilla at 1 and 3
-workers.
+Fix (now the default): give the S2 engine the same deterministic schedule vanilla uses —
+`Schedule.NODE_COLORED`, returned by `S2BdpEngine.initialSchedule()`. With it, the S2 engine
+matches vanilla at 1 and 3 workers. `-Ds2.egpSchedule=ALL` restores the historical single-round
+schedule. The C1 concern that motivated `ALL` (different workers coloring different topologies)
+is handled as described in "The fix" below.
 
 ## Topology and the disagreeing routes
 
@@ -140,41 +145,42 @@ bazel test //projects/s2:s2_tests \
 
 The test runs, each on a **freshly parsed snapshot** (so no cross-run config mutation):
 vanilla (public API), the stock engine forced to `ALL`, the stock engine forced to `NODE_COLORED`
-(twice each for determinism), the S2 engine (twice, 1 worker), and an S2 engine variant using
-`NODE_COLORED` at 1 and 3 workers. Observed:
+(twice each for determinism), and the unmodified S2 engine (whose default is now `NODE_COLORED`)
+twice at 1 worker and once at 3 workers. Observed:
 
 ```
 vanilla == stock(NODE_COLORED):    true
 stock(NODE_COLORED) run1 == run2:  true
 vanilla == stock(ALL):             false
 stock(ALL) run1 == run2:           false     <-- ALL is nondeterministic by itself
-s2(1w, ALL) run1 == run2:          false
-vanilla == s2(1w, NODE_COLORED):   true      <-- the fix
-vanilla == s2(3w, NODE_COLORED):   true      <-- the fix, distributed
-vanilla == s2(3w, ALL):            false
+s2(1w, default) run1 == run2:      true      <-- default is NODE_COLORED
+vanilla == s2(1w, default):        true      <-- the fix
+vanilla == s2(3w, default):        true      <-- the fix, distributed
 stock(ALL, ROUTER_ID) run1==run2:  false     <-- the other tie-breaker does not pin it down
 vanilla == stock(ALL, ROUTER_ID):  false
-  (66 differing routes)
+  (hundreds of differing routes; the exact set varies run to run)
 ```
 
 This separates the facts:
 * schedule choice causes the fixed point to differ (`vanilla != stock(ALL)`);
 * `ALL` is not merely "different" — it is not reproducible run to run, which is why even a
-  1-worker S2 run cannot be compared against vanilla;
+  1-worker S2 run under `ALL` cannot be compared against vanilla;
 * forcing the alternative `ROUTER_ID` tie-breaker (`bestPathComparator` prefers the lower
   `originatorIp`) still leaves `ALL` nondeterministic. `ROUTER_ID` is only consulted after the
   `compareRouteAsPath` check, which preempts it for equal-length, different-AS-path routes; so the
   order sensitivity is the first-arrival rule, not the choice of `bestPathComparator`.
 
 The test asserts the stable facts (`vanilla == stock(NODE_COLORED)`, the two `NODE_COLORED` runs are
-equal, `vanilla != stock(ALL)`) and the fix (`vanilla == s2(1w/3w, NODE_COLORED)`); the
+equal, `vanilla != stock(ALL)`) and the fix (`vanilla == s2(1w/3w, default)`); the `stock(ALL)`
 nondeterminism lines are printed, not asserted, to avoid a flaky test.
 
 ### 3. The fix end to end (multi-process runner)
 
+By default (no property), `s2-fat4` now matches vanilla:
+
 ```sh
-JAVA_TOOL_OPTIONS=-Ds2.egpSchedule=NODE_COLORED S2_BASE_PORT=19350 scripts/local-demo.sh 1 s2-fat4
-JAVA_TOOL_OPTIONS=-Ds2.egpSchedule=NODE_COLORED S2_BASE_PORT=19370 scripts/local-demo.sh 3 s2-fat4
+JAVA_TOOL_OPTIONS=-Xmx4g S2_BASE_PORT=20100 scripts/local-demo.sh 1 s2-fat4
+JAVA_TOOL_OPTIONS=-Xmx4g S2_BASE_PORT=20110 scripts/local-demo.sh 3 s2-fat4
 ```
 
 Observed:
@@ -184,76 +190,105 @@ S2 MATCH (1 workers): ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH
 S2 MATCH (3 workers): ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH
 ```
 
-No regression on the existing demos with the flag off (default behavior unchanged by the added
-property read):
+The escape hatch still restores the old behavior (and the old nondeterminism):
+
+```sh
+JAVA_TOOL_OPTIONS="-Xmx4g -Ds2.egpSchedule=ALL" S2_BASE_PORT=20500 scripts/local-demo.sh 1 s2-fat4
+-> S2 DIFF (1 workers): ribs=DIFF reachability=DIFF symbolic=MATCH answer=MATCH
+```
+
+No regression on the tie-stable demos (3 workers unless noted), all with the default schedule:
 
 ```
-S2_BASE_PORT=19390 scripts/local-demo.sh 3 s2-line   -> S2 MATCH (3 workers): ribs=MATCH ...
-S2_BASE_PORT=19410 scripts/local-demo.sh 1 s2-fat4   -> S2 DIFF  (1 workers): ribs=DIFF ...
+s2-triangle, s2-line, s2-ospf, s2-ospf-bgp, s2-redist, s2-big2, s2-mega  -> MATCH
+s2-triangle, s2-line (6 workers)                                          -> MATCH
 ```
-
-The second run confirms the residual is still there by default; the first confirms the engine change
-did not disturb a tie-stable snapshot.
 
 ## The fix
 
-`IncrementalBdpEngine.runEgpFixpoint` now honors an optional system property:
+Two parts, both in the engine (no controller/protocol change):
 
-```java
-String scheduleOverride = System.getProperty("s2.egpSchedule");
-Schedule currentSchedule =
-    scheduleOverride == null ? initialSchedule() : Schedule.valueOf(scheduleOverride);
-```
+1. **Default to vanilla's schedule.** `S2BdpEngine.initialSchedule()` now returns
+   `Schedule.NODE_COLORED`. `IncrementalBdpEngine.runEgpFixpoint` still honors the
+   override property, so `-Ds2.egpSchedule=ALL` is the escape hatch:
 
-* Default `null` ⇒ `initialSchedule()`, so stock Batfish and the current S2 behavior are unchanged.
-* `-Ds2.egpSchedule=NODE_COLORED` makes the S2 engine use vanilla's deterministic schedule.
+   ```java
+   String scheduleOverride = System.getProperty("s2.egpSchedule");
+   Schedule currentSchedule =
+       scheduleOverride == null ? initialSchedule() : Schedule.valueOf(scheduleOverride);
+   ```
 
-Why this is safe for the S2 engine: every worker builds the schedule from the same full node map
-(all real + shadow nodes) and the same topology context, so `NodeColoredSchedule` produces the same
-color classes and therefore the same number of per-step barriers on every worker. (This is the
-opposite direction from the M5 #4 decision to force `ALL`; that decision was motivated by the risk
-of *differing* per-worker colorings. With the current runner the node set and topology are global,
-and the test validates the barriers line up at 3 workers. If a future topology made a worker's
-BGP topology differ, the flag should be turned off or the coloring shipped by the controller — see
-below.)
+2. **Make cross-worker coloring safe by construction.** Right after the schedule is
+   computed, `runEgpFixpoint` calls a new engine hook
+   `reconcileEgpSchedule(Schedule, List<Map<String, Node>>)` (default: return the
+   schedule unchanged). `S2BdpEngine` overrides it to fingerprint the ordered color
+   classes and exchange both the fingerprint and the worker count with the coordinator
+   (`S2Coordinator.sumAll`). If `sum(fingerprint) == fingerprint * workers` on every
+   worker, they all colored identically and the schedule is kept; otherwise every worker
+   sees the disagreement and falls back cluster-wide to the single-step `ALL`, whose step
+   count is worker-independent. A coloring mismatch therefore cannot desynchronize the
+   per-step barriers and hang the run.
 
-The test `S2FatTreeTieBreakTest#testEgpScheduleOverrideReproducesVanilla` sets the property around
-the unmodified S2 engine and asserts `vanilla == s2(1w)` and `vanilla == s2(3w)`.
+Why the coloring is in fact identical across workers (so the fallback should never fire):
 
-`bazel test //projects/s2:s2_tests` passes with the change (all existing tests plus the two new
-ones). Because the flag is default off, the existing demo matrix is unaffected; the demos can be
-re-run with `-Ds2.egpSchedule=NODE_COLORED` to opt in.
+* Every worker is built over the **full node set**: `S2Main` constructs a `DistributedNode`
+  (real or shadow) for every host in `snap.configs`, and
+  `IncrementalBdpEngine.computeDataPlane` builds its `nodes` map from all `configurations`.
+* `NodeColoredSchedule` colors the `BGP` + `OSPF` topology of the `TopologyContext`
+  computed in `nextTopologyContext` from that same full config set. In descriptor-shadow
+  mode the reduced remote configs still carry interfaces/addresses and the BGP and OSPF
+  processes the topology read needs (`RemoteNodeDescriptorTest#testDescriptorKeepsTopology`
+  covers L3/OSPF/IP ownership), and BGP session establishment runs with reachability
+  checks off, so the graph is the same on every worker.
+* The coloring algorithm defaults to deterministic `SATURATION`; given the same graph the
+  color classes (and their order) are identical.
+
+`S2FatTreeTieBreakTest` covers the mechanics:
+
+* `testDefaultScheduleReproducesVanilla` asserts `vanilla == s2(1w)` and `vanilla == s2(3w)`
+  with the unmodified engine (the 3-worker run also exercises the new exchange barriers and
+  would hang on a mismatch).
+* `testAllScheduleEscapeHatch` sets `-Ds2.egpSchedule=ALL` and asserts the result differs
+  from vanilla.
+* `testScheduleIsTheCause` keeps the stock-engine evidence (`vanilla == stock(NODE_COLORED)`,
+  `vanilla != stock(ALL)`).
+
+`bazel test //projects/s2:s2_tests` passes (78 tests).
 
 ## Recommended path to full determinism
 
-1. **Short term (done).** `-Ds2.egpSchedule=NODE_COLORED`, opt-in, verified on the FatTree.
-2. **Default it for cyclic equal-cost topologies.** Once the "colors are identical cluster-wide"
-   invariant is checked (assert all workers agree on `scheduleSteps.size()` and, ideally, on the
-   class contents for each step), make the distributed engine prefer `NODE_COLORED` by default and
-   keep `ALL` for acyclic/tie-free snapshots where it is faster.
-3. **Robust version.** Have the controller compute the coloring once from the full snapshot and
-   ship the color assignment in `Start` (like the node→worker `assignment`), so it cannot depend on
-   per-worker topology at all. This removes the M5 #4 risk entirely and is the recommended
-   long-term design.
-4. **Do not try to fix this with the tie-breaker.** Forcing `ROUTER_ID`/`ReceivedFrom` does not even
-   make `ALL` deterministic here (the equal-length-AS-path check in `comparePreference` runs first),
-   and changing it would alter Batfish's vendor-faithful behavior without reproducing vanilla's
-   choice. Schedule sequencing is the correct lever.
+1. **Short term (done).** `Schedule.NODE_COLORED` is the S2 default; `ALL` is the opt-out.
+2. **Cluster-wide consistency (done).** `reconcileEgpSchedule` fingerprints the schedule and
+   falls back cluster-wide to `ALL` on disagreement, so a difference cannot deadlock.
+3. **Robust version (future).** Have the controller compute the coloring once from the full
+   snapshot and ship the color classes in `Start` (like the node→worker `assignment`), so the
+   schedule cannot depend on per-worker topology at all and the fallback is unnecessary. This
+   is still the recommended long-term design and is the only way to keep `NODE_COLORED` if a
+   future feature ever makes a worker's derived topology diverge.
+4. **Do not try to fix this with the tie-breaker.** Forcing `ROUTER_ID`/`ReceivedFrom` does not
+   even make `ALL` deterministic here (the equal-length-AS-path check in `comparePreference`
+   runs first), and changing it would alter Batfish's vendor-faithful behavior without
+   reproducing vanilla's choice. Schedule sequencing is the correct lever.
 
 ## Residual / not addressed
 
-* The flag helps only when all workers see the same node set and topology. Enforcing that invariant
-  (assertion or controller-shipped coloring) is future work; until then the flag is opt-in.
-* `NODE_COLORED` uses more schedule steps than `ALL`, so the EGP transient may grow (relevant to the
-  A2 memory work). On `s2-fat4` the added cost is small; no memory numbers were collected here.
-* Other vendors' tie-breakers (`ROUTER_ID` for `bgp bestpath compare-routerid`, etc.) do not change
-  the conclusion: on this topology the equal-length-AS-path `comparePreference` check decides before
-  any `bestPathComparator` tie-breaker is reached.
+* `NODE_COLORED` uses more schedule steps than `ALL`, so the EGP transient may grow (relevant
+  to the A2 memory work). On `s2-fat4` the added cost is small; no memory numbers were collected
+  here.
+* The fingerprint guard falls back to `ALL` if a future topology ever makes workers color
+  differently; that fallback would reintroduce run-to-run nondeterminism on a cyclic
+  equal-cost topology. No such divergence has been observed (the full-node-set/topology
+  invariant holds today), and the controller-shipped coloring (#3 above) is the robust
+  long-term fix.
+* Other vendors' tie-breakers (`ROUTER_ID` for `bgp bestpath compare-routerid`, etc.) do not
+  change the conclusion: on this topology the equal-length-AS-path `comparePreference` check
+  decides before any `bestPathComparator` tie-breaker is reached.
 
 ## Key files
 
-* Schedule choice: `projects/batfish/.../dataplane/ibdp/IncrementalBdpEngine.java#runEgpFixpoint`
-  (`s2.egpSchedule`), `.../schedule/NodeColoredSchedule.java`, `.../S2BdpEngine.java#initialSchedule`
+* Schedule choice: `projects/batfish/.../dataplane/ibdp/IncrementalBdpEngine.java`
+  (`runEgpFixpoint`, `reconcileEgpSchedule`), `.../schedule/NodeColoredSchedule.java`,
+  `.../S2BdpEngine.java` (`initialSchedule`, `reconcileEgpSchedule`, `scheduleFingerprint`)
 * Tie-break: `projects/batfish/.../dataplane/rib/BgpRib.java` (`bestPathComparator`,
   `mergeRouteGetDelta`/`_logicalArrivalTime`), `.../BgpRoutingProcess.java` (default
   `ARRIVAL_ORDER`)

@@ -105,11 +105,16 @@ before any symbolic reachability), which are now fixed:
    hashes across workers (`S2Coordinator.sumAll`), so the switch is cluster-wide. The
    remote controller implements this with a `SumRequest`/`SumResponse` round.
 4. **Deterministic schedule.** The default `NODE_COLORED` schedule colors a worker's own
-   (partially shadowed) BGP topology, so different workers can get a different number of
-   color classes and therefore a different number of schedule steps — which breaks any
-   per-step phase barrier. `S2BdpEngine.initialSchedule` starts from `ALL` (one step);
-   the oscillation fallback `NODE_SERIALIZED` has one step per node. Both have a step
-   count that is identical across workers.
+   topology, so different workers could get a different number of color classes and
+   therefore a different number of schedule steps — which breaks any per-step phase
+   barrier. Every worker is built over the *full* node set (real + shadow) and derives
+   its topology from that full config set, so the coloring is the same on every worker;
+   on top of that, `S2BdpEngine.reconcileEgpSchedule` fingerprints the ordered color
+   classes and exchanges it cluster-wide (`S2Coordinator.sumAll`), falling back to the
+   single-step `ALL` if any worker disagrees. A coloring mismatch therefore cannot
+   deadlock the run. The oscillation fallback `NODE_SERIALIZED` is one step per node,
+   also identical across workers. (C1 turned this on by default; see
+   `C1-TIE-BREAK.md`.)
 5. **IGP phases (OSPF / EIGRP / IS-IS / RIP).** The same phase barriers are applied to
    the IGP portions of the engine (`initForIgpComputation`, `initOspfInternalRoutes`,
    `initRipInternalRoutes`, and the EIGRP/IS-IS/OSPF-external phases in
@@ -481,13 +486,16 @@ Verified on `s2-triangle`, `s2-line`, `s2-ospf`, `s2-ospf-bgp`, `s2-redist`, `s2
 ## Known residual
 
 On a **cyclic equal-cost** topology (e.g. a 6-node ring), the distributed BGP fixpoint
-can occasionally pick a different valid route than single-machine Batfish where two
-paths tie on AS-path length. The root cause is the S2 engine forcing `Schedule.ALL`
-while vanilla uses `NODE_COLORED`, combined with the default `ARRIVAL_ORDER` BGP
-tie-breaker; `Schedule.ALL` is run-to-run nondeterministic on these topologies. Use
-`-Ds2.egpSchedule=NODE_COLORED` to reproduce vanilla (verified on `networks/s2-fat4`
-at 1 and 3 workers). Full analysis and design in `C1-TIE-BREAK.md`. The handoff's
-acyclic topologies are unaffected.
+used to pick a different valid route than single-machine Batfish where two paths tie on
+AS-path length, because the S2 engine forced `Schedule.ALL` while vanilla uses
+`NODE_COLORED` (and `Schedule.ALL` is itself run-to-run nondeterministic on these
+topologies because the default `ARRIVAL_ORDER` tie-breaker consumes the concurrent merge
+order). **Resolved:** S2 now defaults to `NODE_COLORED` (C1), so `networks/s2-fat4`
+matches vanilla by default at 1 and 3 workers; `-Ds2.egpSchedule=ALL` remains the escape
+hatch. Coloring consistency across workers is guaranteed by construction (full node set +
+full config-derived topology) and enforced by `reconcileEgpSchedule`'s cluster-wide
+fingerprint check, which falls back to `ALL` on any disagreement. Full analysis and design
+in `C1-TIE-BREAK.md`. Acyclic topologies are unaffected.
 
 ## Commands
 

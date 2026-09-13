@@ -3,7 +3,9 @@ package org.batfish.dataplane.ibdp;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -176,16 +178,58 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   }
 
   /**
-   * Start with the {@link Schedule#ALL} schedule (one step) rather than the default {@code
-   * NODE_COLORED} schedule. A worker computes its coloring from its own (partially shadowed)
-   * topology, so different workers can get a different number of color classes; that would make the
-   * per-step phase barriers line up incorrectly and deadlock. {@code ALL} has a single step and the
-   * oscillation fallback {@code NODE_SERIALIZED} has one step per node, both of which are identical
-   * across workers.
+   * Use the same deterministic schedule vanilla Batfish uses. The S2 engine previously started from
+   * {@link Schedule#ALL} because a worker colored its own (partially shadowed) topology and workers
+   * could then disagree on the number of color classes, misaligning the per-step phase barriers.
+   * That is handled two ways now:
+   *
+   * <ol>
+   *   <li>Every worker is built over the <em>full</em> node set (real + shadow) and computes its
+   *       topology from that full config set, so {@link Schedule#NODE_COLORED}'s color classes are
+   *       identical across workers.
+   *   <li>{@link #reconcileEgpSchedule} fingerprints the schedule and exchanges it with the
+   *       coordinator, falling back cluster-wide to {@link Schedule#ALL} if the workers ever
+   *       disagree, so a mismatch can never deadlock the run.
+   * </ol>
+   *
+   * <p>{@code -Ds2.egpSchedule=ALL} remains the escape hatch.
    */
   @Override
   protected Schedule initialSchedule() {
-    return Schedule.ALL;
+    return Schedule.NODE_COLORED;
+  }
+
+  /**
+   * Make the EGP schedule safe across workers. Each worker colors the full node set + topology it
+   * holds; that is the same on every worker today, but if a future topology made it differ the
+   * per-step barriers would stop lining up and the run would hang. Fingerprint the ordered color
+   * classes and exchange both the fingerprint and the worker count with the coordinator. If every
+   * worker agrees, keep the schedule; otherwise fall back cluster-wide to the single-step {@link
+   * Schedule#ALL}, whose step count is worker-independent.
+   *
+   * <p>All workers reach this at the same point in the round (the schedule is recomputed only on
+   * the first iteration and on the synchronized oscillation switch), so the two exchange barriers
+   * line up. The fingerprint is forced non-zero so a zero fingerprint cannot mask a disagreement.
+   */
+  @Override
+  protected Schedule reconcileEgpSchedule(
+      Schedule schedule, List<Map<String, Node>> scheduleSteps) {
+    int fingerprint = scheduleFingerprint(scheduleSteps);
+    int workers = _coordinator.sumAll(1);
+    int sum = _coordinator.sumAll(fingerprint);
+    return sum == fingerprint * workers ? schedule : Schedule.ALL;
+  }
+
+  /** Order-sensitive fingerprint of a schedule's per-step node-name groups. */
+  private static int scheduleFingerprint(List<Map<String, Node>> scheduleSteps) {
+    List<List<String>> groups = new ArrayList<>();
+    for (Map<String, Node> step : scheduleSteps) {
+      List<String> names = new ArrayList<>(step.keySet());
+      Collections.sort(names);
+      groups.add(names);
+    }
+    // Force the low bit so the fingerprint is never zero.
+    return groups.hashCode() | 1;
   }
 
   @Override
