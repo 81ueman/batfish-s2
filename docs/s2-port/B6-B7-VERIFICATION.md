@@ -49,6 +49,19 @@ Two questions to answer:
    whole-network question materializes the union. Measure the engine's peak heap for
    `routes` on one node vs all nodes with `-s2storedataplane=false`.
 
-Pending: the owned-only *forwarding-exact* fix (distributed `unownedArpIps`) must land before the
-owned-vs-full comparison is meaningful, since the pool currently defaults to the full dataplane
-(a remote shadow's stub FIB otherwise changes owned nodes' forwarding analysis).
+### Worker memory: owned-only vs full (measured 2026-09-14)
+
+`task/s2-dpv` made owned-only forwarding-exact, so the pool now defaults to it. The controller
+reports the workers' combined peak per snapshot. On `s2-mega` (16 nodes / 4096 prefixes) with 3
+worker-services:
+
+| mode | ribs | forwarding | total peak (3 workers) |
+| --- | --- | --- | --- |
+| owned-only (now default) | MATCH | MATCH | **1054.7 MiB** |
+| full (`-Ds2.ownedDataplane=false`) | MATCH | MATCH | 1125.6 MiB |
+
+Owned-only is forwarding-exact (distributed `unownedArpIps` + remote `arpReplies`) and no higher
+than full here (~6% lower). The gap grows with how much of a worker's materialized FIB/ARP state
+belongs to nodes it does not own (denser / role-diverse fabrics).
+
+Engine-side laziness (question-scoped) is still to be measured.
