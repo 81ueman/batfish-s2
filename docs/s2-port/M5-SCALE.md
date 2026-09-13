@@ -172,11 +172,21 @@ workers):
 | 8 | 48 | 291.6 MiB |
 | 16 | 24 | 334.2 MiB |
 
+Measured on a larger topology, `networks/s2-big2` (10-router eBGP line, 640 origination
+prefixes, 3 workers):
+
+| shards | live BGP routes / worker / round | max peak heap / worker |
+| --- | --- | --- |
+| 1 | 1920 (total) | 649.6 MiB |
+| 8 | 320 | 478.1 MiB |
+| 16 | 160 | 510.8 MiB |
+
 All runs report `ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`. The live BGP
-RIB size is exactly `total/N`, and the worst-worker peak heap drops ~25-30% (noisy, since
-the heap is also dominated by the full distributed dataplane/FIBs and OSPF). So B does
-bound the controlling RIB memory as intended; the end-to-end heap win is modest on these
-topologies and would grow with the number of prefixes.
+RIB is bounded to roughly `total/N`, and the worst-worker peak heap drops ~20-25%
+(649.6 → 478.1 MiB at N=8). The heap win plateaus because the heap is also dominated by
+the full distributed dataplane/FIBs and OSPF; the RIB bound itself keeps improving with N.
+So B bounds the controlling RIB memory as intended; the end-to-end heap win is modest on
+these routing topologies.
 
 A query/header-space variant (sharding the reachability query by destination prefix) was
 also prototyped and measured: it shrank the symbolic result ~20% but saturated and did not
@@ -207,6 +217,7 @@ scripts/local-demo.sh 3 s2-ospf-bgp   # eBGP + OSPF
 scripts/local-demo.sh 3 s2-redist     # OSPF<->BGP redistribution
 # control-plane prefix sharding (B): N rounds + each round's BGP RIB externalized
 JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/local-demo.sh 3 s2-big-bgp
+JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/local-demo.sh 3 s2-big2
 
 # Kubernetes (OrbStack) — <workers> [network]
 scripts/build-s2.sh --image
