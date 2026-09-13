@@ -2,7 +2,7 @@
 
 Operational defaults for running the distributed S2 runner (local or Kubernetes), and how to
 install the tools the partition evaluation needs. Companion to `M5-SCALE.md` (measurements),
-`PARTITIONING-PLAN.md` (§6 evaluation), and `REMAINING.md` (ops items O2/O3/O5/O6).
+`PARTITIONING-PLAN.md` (§6 evaluation), and `REMAINING.md` (ops items O2/O3/O5/O6/O7).
 
 ## Default heap (`-Xmx`)
 
@@ -22,9 +22,10 @@ Recommended values, from the measured per-worker peaks in `M5-SCALE.md` (3 worke
 | `s2-mega` | 4096 | 436.4 MiB (owned 301.1) | `2g`–`4g` |
 | `s2-giga` | 32768 | 2226.1 MiB (owned 1938.1; parse path 2513.1) | **`4g`** |
 
-* **Default: `-Xmx4g`.** It covers the largest verified snapshot (`s2-giga`) with headroom. The
-  measured peak there is ~2.5 GiB, so 4g leaves room for non-heap (metaspace, code cache,
-  thread stacks) and GC churn.
+* **Default: `-Xmx4g`.** With the O1 defaults on (owned + descriptor shadows), the measured peak on
+  the largest verified snapshot (`s2-giga`) is **1938.1 MiB**; the ~2.5 GiB figure is the pre-O1
+  per-worker-parse fallback. 4g covers both with room for non-heap (metaspace, code cache, thread
+  stacks) and GC churn. This is the heap the k8s manifests carry.
 * Use `-Xmx2g` for the demo matrix and anything up to a few hundred MiB; the smaller cap lowers
   the *observed* peak (the metric is used-heap peak) by forcing GC earlier, e.g. `s2-mega` at
   `-Xmx1g` measured 595.4 MiB with prefix sharding (`M5-SCALE.md`).
@@ -74,18 +75,25 @@ The digest check returns when both are disabled with the `=false` flags above (C
 ## Kubernetes resource requests/limits
 
 `k8s/base/{controller,worker}.yaml` set the defaults; `k8s/overlays/{1,3}pod` only change the
-worker replica count and `WORKERS`.
+worker replica count and `WORKERS` (they do not touch resources or `JAVA_TOOL_OPTIONS`, so the
+base values apply to both overlays).
 
 | container | request | limit | heap | why |
 | --- | --- | --- | --- | --- |
-| `worker` | `memory: 2Gi`, `cpu: 1` | `memory: 6Gi` | `-Xmx4g` | measured worst-worker peak 2.5 GiB at `s2-giga`; limit = heap + ~2 GiB non-heap/GC headroom |
+| `worker` | `memory: 2Gi`, `cpu: 1` | `memory: 6Gi` | `-Xmx4g` | measured worst-worker peak **1938.1 MiB** on `s2-giga` with the O1 defaults (owned-only dataplane + descriptor shadows) on; 4g covers that and the pre-O1 fallback (owned/descriptor off: 2226.1 MiB shipped, 2513.1 MiB per-worker-parse) with headroom |
 | `controller` | `memory: 2Gi`, `cpu: 1` | `memory: 6Gi` | `-Xmx4g` | also builds the vanilla dataplane and the reference reachability analysis, so it uses the worker heap budget |
 
 Notes:
 
-* The request (2Gi) reflects a typical steady working set; the limit (6Gi) is what prevents an
-  OOM-kill on the large snapshots. CPU requests are 1 because the run is mostly single-threaded
-  per phase (the fixpoint barriers serialize workers).
+* **Limit vs. request.** The 6Gi limit is the 4g heap plus ~2Gi of non-heap (metaspace, code
+  cache, thread stacks, GC) headroom; it is what prevents an OOM-kill on the large snapshots. The
+  2Gi request is a scheduling floor: the retained set after a GC is small (tens of MiB, see
+  `M5-SCALE.md`), and the measured peak is *transient* control-plane/FIB allocation, so the limit
+  absorbs the peak and a larger request would only reduce scheduling density.
+* **Why no CPU limit.** Only a request (`cpu: 1`) is set: the dataplane/symbolic phases burst
+  across cores, so a CFS quota would throttle them without protecting anything (there is one heavy
+  Pod per run on the demo cluster). The fixpoint barriers serialize the distributed control plane,
+  which is what the 1-core request reflects.
 * The heap is set by the `JAVA_TOOL_OPTIONS` env in both base manifests, so it is visible and
   overridable (`kubectl set env` / `kubectl edit` / an overlay patch). The worker value also
   carries the O1 runner default `-Ds2.prefixSpacePositiveCacheOnly=true`; append
@@ -176,20 +184,42 @@ Numbers are host- and JVM-dependent; use them for relative comparisons, not as a
 
 ## CI entry point (O3)
 
-`scripts/ci.sh` is the conservative CI entry point. By default it runs only the unit tests; the
-demo matrix is opt-in:
+`scripts/ci.sh` is the conservative CI entry point. It has three stages, cheapest first, and runs
+only the first by default:
+
+| stage | command | when |
+| --- | --- | --- |
+| unit | `bazel test //projects/s2:s2_tests` | default (stage 1) |
+| upstream | shared-code suites + public-API e2e (`--upstream`) | opt-in |
+| demo matrix | `scripts/ci-matrix.sh` (`--matrix`) | opt-in |
 
 ```sh
-scripts/ci.sh                              # bazel test //projects/s2:s2_tests
+scripts/ci.sh                              # unit tests only (default, fast)
 scripts/ci.sh --list                       # print the plan, run nothing
+scripts/ci.sh --upstream                   # unit tests, then the upstream regression stage
+scripts/ci.sh --upstream-only              # just the upstream regression stage
+scripts/ci.sh --all                        # unit tests + upstream + demo matrix
 scripts/ci.sh --matrix                     # unit tests, then the demo matrix
 scripts/ci.sh --matrix --workers 3 --networks "s2-triangle s2-ospf"
-S2_CI_MATRIX=1 scripts/ci.sh               # same as --matrix (still runs the unit tests)
+S2_CI_UPSTREAM=1 scripts/ci.sh             # same as --upstream
+S2_CI_MATRIX=1 scripts/ci.sh               # same as --matrix
 ```
 
+The **upstream regression** stage runs the shared-code packages that S2 patches — so an S2 change
+cannot silently regress stock Batfish — plus the public-API end-to-end and coordinator suites. The
+fixed list is `//projects/batfish/src/test/java/org/batfish/dataplane:tests`,
+`.../dataplane/ibdp:tests`, `.../dataplane/traceroute:tests`, `.../bddreachability:tests`,
+`.../bddreachability/transition:tests`, and
+`//projects/common/src/test/java/org/batfish/datamodel:tests`; the e2e/coordinator targets are
+resolved at run time with
+`bazel query 'tests(//projects/allinone/... + //projects/coordinator/...)'`, minus the
+`_pmd`/`:pmd` lint targets, so new e2e targets are picked up automatically. It is **opt-in**
+because it compiles and runs large upstream suites.
+
 `.github/workflows/s2-ci.yml` wraps it as a **manual-only** (`workflow_dispatch`) workflow: the
-default run does the unit tests, and ticking `run_matrix` (plus an optional worker count) adds the
-demo matrix on a second job. It never runs on push/PR.
+default run does the unit tests; ticking `run_upstream` adds the upstream stage on a second job,
+and ticking `run_matrix` (plus an optional worker count) adds the demo matrix on a third. It never
+runs on push/PR.
 
 The matrix itself is `scripts/ci-matrix.sh`: it runs the full tie-stable demo matrix
 (`s2-triangle s2-line s2-ospf s2-ospf-bgp s2-redist s2-agg s2-static s2-external`) at 3 workers

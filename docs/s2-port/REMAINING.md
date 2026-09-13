@@ -100,10 +100,13 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 - **O1** defaults — **Done (2026-09-13)**: owned-only dataplane and descriptor shadows are on by
   default (each disabled with `=false`); the positive-only `PrefixSpace` memo is a **runner**
   default (shared-code default stays off); `-Ds2.partition` stays RANDOM and `S2_PREFIX_SHARDS`
-  stays off. **O2** k8s resources / `-Xmx` (the worker `JAVA_TOOL_OPTIONS` now also carries
-  `-Ds2.prefixSpacePositiveCacheOnly=true`); **O3** CI demo matrix — **Done**:
-  `scripts/ci.sh` (unit tests by default, `--matrix` opt-in) + manual-only
-  `.github/workflows/s2-ci.yml`; **O4** benchmark automation — **Done**:
+  stays off. **O2** k8s resources / `-Xmx` — **Done (2026-09-13)**: `k8s/base/{controller,worker}.yaml`
+  pin `requests {memory: 2Gi, cpu: 1}` / `limits {memory: 6Gi}` and `-Xmx4g` (the worker also
+  carries `-Ds2.prefixSpacePositiveCacheOnly=true`); the measured-peak rationale is in `OPS.md`.
+  **O3** CI — **Done (2026-09-13)**: `scripts/ci.sh` stages unit tests by default, the shared-code
+  + public-API e2e regression stage with `--upstream`, and the demo matrix with `--matrix` (`--all`
+  runs everything); the manual-only `.github/workflows/s2-ci.yml` exposes both heavier stages via
+  `workflow_dispatch`; **O4** benchmark automation — **Done**:
   `scripts/bench-table.sh` (cached size-ladder x mode markdown table);
   **O5** METIS in the eval environment — **Done**: `gpmetis` (METIS 5.1.0) is installed and the real
   sweep is recorded in `PARTITIONING-PLAN.md` §6.7 (`MetisPartitioner` keeps the pure-Java fallback,
@@ -123,7 +126,9 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
   sweep of the coefficient (0..20) is identical. Pooled weight/route correlation rises 0.945→1.000
   (cross-network scale only; per-network unchanged). Left gated, default off; §6.9. The remaining
   lever is a role-level scale (or a cost-aware partitioner), not a component constant.
-  **O7** docs sync.
+  **O7** docs sync — **Done (2026-09-13)**: `OPS.md`/`REMAINING.md` reflect the O1 defaults
+  (owned + descriptor on, runner positive-cache on, `-Ds2.partition=RANDOM`), the finalized k8s
+  resources, and the staged CI (`--upstream`/`--matrix`).
 
 ### Dependency graph
 
@@ -139,11 +144,11 @@ M2 ⇄ P3                      (both target T_w)
 
 ### Recommended order
 
-Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1.
+Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1, O2, O3, O7.
 
-1. **O2** k8s resources/`-Xmx` defaults; **O7** docs sync.
-2. **M5** (deferred)
-3. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
+1. **M5** (deferred)
+2. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
+3. Keep the O3 upstream stage (`scripts/ci.sh --upstream`) green as shared code changes.
 
 (O5 METIS install is done — see the sweep in `PARTITIONING-PLAN.md` §6.7.)
 
@@ -242,14 +247,22 @@ Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1.
   (`S2_PREFIX_SHARDS` default off). Every feature is individually disabled with `=false` (see
   `OPS.md`); owned/descriptor mode replaces the per-worker traceroute digest with the exact RIB +
   distributed symbolic checks.
-* **C2. Kubernetes resources.** Set worker/controller memory requests and limits from the measured
-  peaks (e.g. `s2-giga` at `-Xmx4g`), and pick a default `-Xmx`. Rebuild the image
-  (`scripts/build-s2.sh --image`) after any runner change and re-run `scripts/k8s-demo.sh` +
+* **C2. Kubernetes resources — done (O2).** `k8s/base/{controller,worker}.yaml` pin the final
+  defaults: `requests: {memory: 2Gi, cpu: 1}`, `limits: {memory: 6Gi}` and `-Xmx4g` (the worker
+  value also carries the runner positive-cache `-D`). The limit is the 4g heap plus ~2Gi non-heap
+  headroom, covering the measured `s2-giga` peak with the O1 defaults on (1938.1 MiB) and the
+  owned/descriptor-off fallback (~2.5 GiB); the 2Gi request is a scheduling floor. Rebuild the
+  image (`scripts/build-s2.sh --image`) after any runner change and re-run `scripts/k8s-demo.sh` +
   `scripts/compare-answers.sh`.
-* **C3. CI matrix.** Run the full local demo matrix on every change:
-  `s2-triangle`, `s2-line`, `s2-ospf`, `s2-ospf-bgp`, `s2-redist`, `s2-mega`, `s2-giga` (the last
-  two with `-Xmx4g`). `scripts/ci-matrix.sh` now covers the O1 default mode (owned + descriptor
-  shadows) and the pre-O1 `full` mode (`-Ds2.ownedDataplane=false -Ds2.descriptorShadows=false`).
+* **C3. CI — done (O3), extended.** `scripts/ci.sh` stages the checks: unit tests by default, the
+  upstream regression (shared-code suites + `tests(//projects/allinone/... +
+  //projects/coordinator/...)`) with `--upstream`, and the full demo matrix with `--matrix`
+  (`--all` for both). The demo matrix itself (`scripts/ci-matrix.sh`) runs every tie-stable network
+  (`s2-triangle`, `s2-line`, `s2-ospf`, `s2-ospf-bgp`, `s2-redist`, `s2-agg`, `s2-static`,
+  `s2-external`) in the O1 default mode (owned + descriptor shadows) and the pre-O1 `full` mode
+  (`-Ds2.ownedDataplane=false -Ds2.descriptorShadows=false`). `.github/workflows/s2-ci.yml` is
+  manual-only and exposes both heavier stages via `workflow_dispatch`. (`s2-mega`/`s2-giga` are
+  excluded from the matrix: they need `-Xmx4g` and are covered by `M5-SCALE.md` benchmarks.)
 * **C4. Benchmark/reporting.** The phase attribution (`S2BdpEngine.reportPhase`) and per-worker
   peak reporting already exist; consider a script that runs the size ladder and emits the table in
   `M5-SCALE.md` automatically.

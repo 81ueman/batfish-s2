@@ -21,12 +21,21 @@ spec:
               value: "1"
             - name: NETWORK_NAME
               value: "s2-triangle"
-            # Default controller heap (docs/s2-port/OPS.md); the controller also builds
-            # the vanilla dataplane, so it uses the same 4g as the workers.
+            # Default controller heap (docs/s2-port/OPS.md; peaks in M5-SCALE.md).
+            # The controller also builds the vanilla dataplane and the reference
+            # reachability analysis, so it uses the same heap budget as a worker:
+            # -Xmx4g covers the largest verified snapshot (s2-giga) with headroom.
+            # Override per run via JAVA_TOOL_OPTIONS.
             - name: JAVA_TOOL_OPTIONS
               value: "-Xmx4g"
           ports:
             - containerPort: 4090
+          # Request is a scheduling floor; the transient peak is absorbed by the limit.
+          # 2Gi is above the retained working set (tens of MiB after GC) and near the
+          # typical transient; 6Gi = 4g heap + ~2Gi non-heap/GC headroom, which also
+          # covers the pre-O1 fallback (owned/descriptor off, ~2.5 GiB). No CPU limit:
+          # the dataplane/symbolic phases burst across cores, so a CFS quota would only
+          # throttle them.
           resources:
             requests: {memory: "2Gi", cpu: "1"}
             limits: {memory: "6Gi"}

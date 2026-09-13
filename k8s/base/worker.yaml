@@ -28,8 +28,11 @@ spec:
               value: "4090"
             - name: SIDECAR_PORT
               value: "4091"
-            # Default worker heap (docs/s2-port/OPS.md). Override per run via the
-            # JAVA_TOOL_OPTIONS env; 4g covers the largest verified snapshot (s2-giga).
+            # Default worker heap (docs/s2-port/OPS.md; peaks in M5-SCALE.md).
+            # Owned-only dataplane + descriptor shadows are on by default (O1), so the
+            # largest verified snapshot (s2-giga) peaks at 1938.1 MiB per worker;
+            # -Xmx4g covers that, and the pre-O1 fallback (owned/descriptor off,
+            # ~2.5 GiB) with headroom. Override per run via JAVA_TOOL_OPTIONS.
             # The S2 positive-only PrefixSpace memoization is a runner default (pure
             # memoization; the shared-code default stays off so stock Batfish is
             # unaffected). Append -Ds2.prefixSpacePositiveCacheOnly=false to disable.
@@ -38,6 +41,11 @@ spec:
           ports:
             - containerPort: 4091
             - containerPort: 5091
+          # Request is a scheduling floor; the transient peak is absorbed by the limit.
+          # 2Gi is above the retained working set (tens of MiB after GC) and near the
+          # typical transient; 6Gi = 4g heap + ~2Gi non-heap/GC headroom, which also
+          # covers the pre-O1 fallback. No CPU limit: the BDD/symbolic phases burst
+          # across cores, so a CFS quota would only throttle them.
           resources:
             requests: {memory: "2Gi", cpu: "1"}
             limits: {memory: "6Gi"}

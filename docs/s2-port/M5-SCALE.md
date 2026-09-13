@@ -503,8 +503,11 @@ JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench.sh "3" "s2-mega s2-giga"
 # "default" is O1's owned+descriptor mode, "full" disables both (pre-O1 behavior)
 scripts/bench-table.sh --list
 JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench-table.sh --workers 3 --modes "default full"
-# conservative CI: unit tests only by default; --matrix adds the demo matrix (O3)
+# conservative CI (O3): unit tests only by default; --upstream adds the shared-code
+# + public-API e2e regression stage, --matrix adds the demo matrix, --all runs both
 scripts/ci.sh
+scripts/ci.sh --upstream
+scripts/ci.sh --all
 scripts/ci.sh --matrix --workers 3
 
 # local multi-process (workers, optional network; defaults to s2-triangle)

@@ -1,12 +1,18 @@
 name: S2 CI
 
-# Manual-only by design: the S2 unit tests are cheap-ish, but the demo matrix
-# (scripts/ci-matrix.sh) launches many full multi-JVM runs and is slow, so this
-# workflow never runs on push/PR. Trigger it from the Actions UI (or `gh workflow
-# run "S2 CI"`) and tick "run_matrix" to include the demos.
+# Manual-only by design: the S2 unit tests are cheap-ish, but the upstream
+# regression suites and the demo matrix (scripts/ci-matrix.sh) launch many full
+# multi-JVM runs and are slow, so this workflow never runs on push/PR. Trigger it
+# from the Actions UI (or `gh workflow run "S2 CI"`) and tick the stages to run:
+# "run_upstream" for the shared-code suites + allinone/coordinator e2e, and
+# "run_matrix" for the demos.
 on:
   workflow_dispatch:
     inputs:
+      run_upstream:
+        description: "Also run the upstream regression stage (shared-code suites + allinone/coordinator e2e)"
+        type: boolean
+        default: false
       run_matrix:
         description: "Also run the slow demo matrix (scripts/ci-matrix.sh)"
         type: boolean
@@ -44,6 +50,32 @@ jobs:
           java-version: "25"
       - name: Run S2 unit tests
         run: scripts/ci.sh --tests-only --test-args "--test_output=errors"
+
+  upstream-regression:
+    name: "S2 upstream regression"
+    if: ${{ inputs.run_upstream }}
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bazelisk cache
+        uses: actions/cache@v6
+        with:
+          path: "~/.cache/bazelisk"
+          key: ${{runner.os}}-bazelisk-${{ hashFiles('.bazelversion') }}
+      - name: Bazel cache
+        uses: actions/cache@v6
+        with:
+          path: "~/.cache/bazel"
+          key: ${{runner.os}}-bazel-s2-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'maven_install.json') }}
+          restore-keys: |
+            ${{runner.os}}-bazel-s2-
+      - uses: actions/setup-java@v6
+        with:
+          distribution: "temurin"
+          java-version: "25"
+      - name: Run upstream regression suites
+        run: scripts/ci.sh --upstream-only --test-args "--test_output=errors"
 
   demo-matrix:
     name: "S2 demo matrix"
