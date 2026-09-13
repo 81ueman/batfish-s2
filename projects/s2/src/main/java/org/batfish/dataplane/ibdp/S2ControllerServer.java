@@ -29,6 +29,8 @@ public final class S2ControllerServer implements AutoCloseable {
   private final List<S2WorkerEndpoint> _endpoints;
   private final byte[] _configs;
   private final byte[] _externalAdverts;
+  private final Map<Integer, byte[]> _ownedConfigsByWorker;
+  private final byte[] _descriptors;
   private final ServerSocket _server;
   private final ExecutorService _pool = Executors.newCachedThreadPool();
 
@@ -97,17 +99,26 @@ public final class S2ControllerServer implements AutoCloseable {
     }
   }
 
+  /**
+   * @param configs full snapshot configs for the stock path, or null in descriptor-shadow mode
+   * @param ownedConfigsByWorker per-worker full configs for owned nodes, or null in the stock path
+   * @param descriptors shared reduced shadow configs, or null in the stock path
+   */
   public S2ControllerServer(
       int port,
       int numWorkers,
       List<S2WorkerEndpoint> endpoints,
       byte[] configs,
-      byte[] externalAdverts)
+      byte[] externalAdverts,
+      Map<Integer, byte[]> ownedConfigsByWorker,
+      byte[] descriptors)
       throws IOException {
     _numWorkers = numWorkers;
     _endpoints = endpoints;
     _configs = configs;
     _externalAdverts = externalAdverts;
+    _ownedConfigsByWorker = ownedConfigsByWorker;
+    _descriptors = descriptors;
     _server = new ServerSocket(port);
     _rounds = new RoundCoordinator(numWorkers);
     _sums = new SumCoordinator(numWorkers);
@@ -151,9 +162,15 @@ public final class S2ControllerServer implements AutoCloseable {
         allRegistered = _registered == _numWorkers;
       }
       if (allRegistered) {
-        for (ObjectOutputStream workerOut : _streams.values()) {
+        // In descriptor mode each worker gets only its owned configs; the reduced remote configs
+        // are shared. In the stock path every worker gets the full snapshot (or null).
+        for (Map.Entry<Integer, ObjectOutputStream> entry : _streams.entrySet()) {
+          ObjectOutputStream workerOut = entry.getValue();
+          byte[] ownedConfigs =
+              _descriptors == null ? null : _ownedConfigsByWorker.get(entry.getKey());
           workerOut.writeObject(
-              new S2ControlMessages.Start(_endpoints, _configs, _externalAdverts));
+              new S2ControlMessages.Start(
+                  _endpoints, _configs, _externalAdverts, ownedConfigs, _descriptors));
           workerOut.flush();
         }
       }
