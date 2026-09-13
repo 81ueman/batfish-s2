@@ -9,17 +9,15 @@ import com.google.common.collect.ImmutableTable;
 import com.google.common.collect.Table;
 import com.google.common.collect.Table.Cell;
 import java.util.AbstractMap;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.function.Function;
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import org.batfish.datamodel.Bgpv4Route;
 import org.batfish.datamodel.DataPlane;
 import org.batfish.datamodel.EvpnRoute;
@@ -31,146 +29,142 @@ import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.VrfForwardingBehavior;
 import org.batfish.datamodel.vxlan.Layer2Vni;
 import org.batfish.datamodel.vxlan.Layer3Vni;
+import org.batfish.storage.HostDataPlaneSlice;
 
 /**
- * A {@link DataPlane} assembled lazily from the per-worker data planes of a distributed S2 run.
+ * A {@link DataPlane} assembled lazily from the per-host slices of a distributed S2 run.
  *
  * <p>In the default owned-only mode each worker computes full RIBs/FIBs only for the nodes it owns,
- * so the workers' data planes are disjoint and their union is the global data plane. Node-local
- * access (a specific row/host, which is what a node-scoped stock answerer uses) is served directly
- * from the owning worker without materializing the other nodes; whole-network iteration falls back
- * to a cached materialized union.
+ * so the worker slices are disjoint and their union is the global data plane. Node-local access (a
+ * specific row/host, which is what a node-scoped stock answerer uses) is resolved directly from the
+ * owning host's slice without materializing the others; whole-network iteration falls back to a
+ * cached materialized union.
  *
- * <p>Today the parts are the in-process workers, so this bounds the <em>container</em> memory but
- * not the node data (which lives in the same JVM). When the workers become remote (Kubernetes), the
- * same views fetch a host's slice from its owner on demand, which is what makes a data plane that
- * does not fit in one JVM possible.
+ * <p>The slices come from a pluggable {@link S2HostSlices}: today the in-process workers, and once
+ * the workers are remote (Kubernetes), a shared-storage source that fetches a host's slice on
+ * demand. That is what makes a data plane that does not fit in one JVM answerable.
  */
 final class S2LazyDataPlane implements DataPlane {
 
-  private final @Nonnull List<DataPlane> _parts;
+  private final @Nonnull S2HostSlices _slices;
 
-  private S2LazyDataPlane(List<DataPlane> parts) {
-    _parts = parts;
+  private transient @Nullable SortedMap<
+          String, SortedMap<String, Map<Prefix, Map<String, Set<String>>>>>
+      _prefixTracingInfoSummary;
+
+  private S2LazyDataPlane(S2HostSlices slices) {
+    _slices = slices;
   }
 
-  static @Nonnull DataPlane of(List<DataPlane> parts) {
-    return new S2LazyDataPlane(parts);
+  static @Nonnull DataPlane of(S2HostSlices slices) {
+    return new S2LazyDataPlane(slices);
   }
 
   @Override
   public @Nonnull Table<String, String, Set<Bgpv4Route>> getBgpRoutes() {
-    List<Table<String, String, Set<Bgpv4Route>>> tables = new ArrayList<>();
-    _parts.forEach(p -> tables.add(p.getBgpRoutes()));
-    return new S2LazyTable<>(tables);
+    return new S2LazyTable<>(_slices, HostDataPlaneSlice::getBgpRoutes);
   }
 
   @Override
   public @Nonnull Table<String, String, Set<Bgpv4Route>> getBgpBackupRoutes() {
-    List<Table<String, String, Set<Bgpv4Route>>> tables = new ArrayList<>();
-    _parts.forEach(p -> tables.add(p.getBgpBackupRoutes()));
-    return new S2LazyTable<>(tables);
+    return new S2LazyTable<>(_slices, HostDataPlaneSlice::getBgpBackupRoutes);
   }
 
   @Override
   public @Nonnull Table<String, String, Set<EvpnRoute<?, ?>>> getEvpnRoutes() {
-    List<Table<String, String, Set<EvpnRoute<?, ?>>>> tables = new ArrayList<>();
-    _parts.forEach(p -> tables.add(p.getEvpnRoutes()));
-    return new S2LazyTable<>(tables);
+    return new S2LazyTable<>(_slices, HostDataPlaneSlice::getEvpnRoutes);
   }
 
   @Override
   public @Nonnull Table<String, String, Set<EvpnRoute<?, ?>>> getEvpnBackupRoutes() {
-    List<Table<String, String, Set<EvpnRoute<?, ?>>>> tables = new ArrayList<>();
-    _parts.forEach(p -> tables.add(p.getEvpnBackupRoutes()));
-    return new S2LazyTable<>(tables);
+    return new S2LazyTable<>(_slices, HostDataPlaneSlice::getEvpnBackupRoutes);
   }
 
   @Override
   public @Nonnull Map<String, Map<String, Fib>> getFibs() {
-    List<Map<String, Map<String, Fib>>> maps = new ArrayList<>();
-    _parts.forEach(p -> maps.add(p.getFibs()));
-    return new S2LazyMap<>(maps);
+    return new S2LazyMap<>(_slices, HostDataPlaneSlice::getFibs);
   }
 
   @Override
   public @Nonnull ForwardingAnalysis getForwardingAnalysis() {
-    List<ForwardingAnalysis> analyses = new ArrayList<>();
-    _parts.forEach(p -> analyses.add(p.getForwardingAnalysis()));
-    return new S2LazyForwardingAnalysis(analyses);
+    return new S2LazyForwardingAnalysis(_slices);
   }
 
   @Override
   public @Nonnull Table<String, String, Set<Layer2Vni>> getLayer2Vnis() {
-    List<Table<String, String, Set<Layer2Vni>>> tables = new ArrayList<>();
-    _parts.forEach(p -> tables.add(p.getLayer2Vnis()));
-    return new S2LazyTable<>(tables);
+    return new S2LazyTable<>(_slices, HostDataPlaneSlice::getLayer2Vnis);
   }
 
   @Override
   public @Nonnull Table<String, String, Set<Layer3Vni>> getLayer3Vnis() {
-    List<Table<String, String, Set<Layer3Vni>>> tables = new ArrayList<>();
-    _parts.forEach(p -> tables.add(p.getLayer3Vnis()));
-    return new S2LazyTable<>(tables);
+    return new S2LazyTable<>(_slices, HostDataPlaneSlice::getLayer3Vnis);
   }
 
   @Override
   public @Nonnull SortedMap<String, SortedMap<String, Map<Prefix, Map<String, Set<String>>>>>
       getPrefixTracingInfoSummary() {
-    // Route tracing is off by default and the summary is small; union it eagerly.
-    SortedMap<String, SortedMap<String, Map<Prefix, Map<String, Set<String>>>>> merged =
-        new TreeMap<>();
-    _parts.forEach(p -> merged.putAll(p.getPrefixTracingInfoSummary()));
-    return merged;
+    // Route tracing is off by default and the summary is small; union it once, on demand.
+    SortedMap<String, SortedMap<String, Map<Prefix, Map<String, Set<String>>>>> summary =
+        _prefixTracingInfoSummary;
+    if (summary == null) {
+      SortedMap<String, SortedMap<String, Map<Prefix, Map<String, Set<String>>>>> merged =
+          new TreeMap<>();
+      for (String host : _slices.hosts()) {
+        HostDataPlaneSlice slice = _slices.get(host);
+        if (slice != null) {
+          merged.put(host, slice.getPrefixTracingInfoSummary());
+        }
+      }
+      summary = merged;
+      _prefixTracingInfoSummary = summary;
+    }
+    return summary;
   }
 
   @Override
   public @Nonnull Table<String, String, FinalMainRib> getRibs() {
-    List<Table<String, String, FinalMainRib>> tables = new ArrayList<>();
-    _parts.forEach(p -> tables.add(p.getRibs()));
-    return new S2LazyTable<>(tables);
+    return new S2LazyTable<>(_slices, HostDataPlaneSlice::getRibs);
   }
 
   /**
-   * A read-only {@link Table} that is the union of several tables. Point/row lookups resolve
-   * directly against the owning table; aggregate views fall back to a cached materialized union.
+   * A read-only {@link Table} keyed by host, whose per-column content comes from the owning host's
+   * slice. Point/row lookups resolve only the addressed host; aggregate views fall back to a cached
+   * materialized union.
    */
-  private static final class S2LazyTable<R, C, V> implements Table<R, C, V> {
-    private final @Nonnull List<Table<R, C, V>> _tables;
-    private transient Table<R, C, V> _materialized;
+  private static final class S2LazyTable<C, V> implements Table<String, C, V> {
+    private final @Nonnull S2HostSlices _slices;
+    private final @Nonnull Function<HostDataPlaneSlice, Map<C, V>> _byHost;
+    private transient @Nullable Table<String, C, V> _materialized;
 
-    S2LazyTable(List<Table<R, C, V>> tables) {
-      _tables = tables;
+    S2LazyTable(S2HostSlices slices, Function<HostDataPlaneSlice, Map<C, V>> byHost) {
+      _slices = slices;
+      _byHost = byHost;
+    }
+
+    /** The addressed host's column map, or {@code null} if it has no slice. */
+    private @Nullable Map<C, V> rowOf(Object rowKey) {
+      if (!(rowKey instanceof String)) {
+        return null;
+      }
+      HostDataPlaneSlice slice = _slices.get((String) rowKey);
+      return slice == null ? null : _byHost.apply(slice);
     }
 
     @Override
     public boolean contains(Object rowKey, Object columnKey) {
-      for (Table<R, C, V> table : _tables) {
-        if (table.contains(rowKey, columnKey)) {
-          return true;
-        }
-      }
-      return false;
+      Map<C, V> row = rowOf(rowKey);
+      return row != null && row.containsKey(columnKey);
     }
 
     @Override
     public boolean containsRow(Object rowKey) {
-      for (Table<R, C, V> table : _tables) {
-        if (table.containsRow(rowKey)) {
-          return true;
-        }
-      }
-      return false;
+      Map<C, V> row = rowOf(rowKey);
+      return row != null && !row.isEmpty();
     }
 
     @Override
     public boolean containsColumn(Object columnKey) {
-      for (Table<R, C, V> table : _tables) {
-        if (table.containsColumn(columnKey)) {
-          return true;
-        }
-      }
-      return false;
+      return materialized().containsColumn(columnKey);
     }
 
     @Override
@@ -179,13 +173,9 @@ final class S2LazyDataPlane implements DataPlane {
     }
 
     @Override
-    public V get(Object rowKey, Object columnKey) {
-      for (Table<R, C, V> table : _tables) {
-        if (table.contains(rowKey, columnKey)) {
-          return table.get(rowKey, columnKey);
-        }
-      }
-      return null;
+    public @Nullable V get(Object rowKey, Object columnKey) {
+      Map<C, V> row = rowOf(rowKey);
+      return row == null ? null : row.get(columnKey);
     }
 
     @Override
@@ -204,12 +194,12 @@ final class S2LazyDataPlane implements DataPlane {
     }
 
     @Override
-    public V put(R rowKey, C columnKey, V value) {
+    public V put(String rowKey, C columnKey, V value) {
       throw new UnsupportedOperationException("S2 data plane is read-only");
     }
 
     @Override
-    public void putAll(Table<? extends R, ? extends C, ? extends V> table) {
+    public void putAll(Table<? extends String, ? extends C, ? extends V> table) {
       throw new UnsupportedOperationException("S2 data plane is read-only");
     }
 
@@ -219,18 +209,9 @@ final class S2LazyDataPlane implements DataPlane {
     }
 
     @Override
-    public Map<C, V> row(R rowKey) {
-      Map<C, V> merged = null;
-      for (Table<R, C, V> table : _tables) {
-        if (table.containsRow(rowKey)) {
-          if (merged == null) {
-            merged = new LinkedHashMap<>(table.row(rowKey));
-          } else {
-            merged.putAll(table.row(rowKey));
-          }
-        }
-      }
-      return merged == null ? ImmutableMap.of() : merged;
+    public Map<C, V> row(String rowKey) {
+      Map<C, V> row = rowOf(rowKey);
+      return row == null ? ImmutableMap.of() : ImmutableMap.copyOf(row);
     }
 
     @Override
@@ -239,29 +220,27 @@ final class S2LazyDataPlane implements DataPlane {
     }
 
     @Override
-    public Map<R, Map<C, V>> rowMap() {
+    public Map<String, Map<C, V>> rowMap() {
       return materialized().rowMap();
     }
 
     @Override
-    public Map<C, Map<R, V>> columnMap() {
+    public Map<C, Map<String, V>> columnMap() {
       return materialized().columnMap();
     }
 
     @Override
-    public Set<Cell<R, C, V>> cellSet() {
+    public Set<Cell<String, C, V>> cellSet() {
       return materialized().cellSet();
     }
 
     @Override
-    public Set<R> rowKeySet() {
-      Set<R> rows = new LinkedHashSet<>();
-      _tables.forEach(t -> rows.addAll(t.rowKeySet()));
-      return ImmutableSet.copyOf(rows);
+    public Set<String> rowKeySet() {
+      return materialized().rowKeySet();
     }
 
     @Override
-    public Map<R, V> column(C columnKey) {
+    public Map<String, V> column(C columnKey) {
       return materialized().column(columnKey);
     }
 
@@ -285,54 +264,58 @@ final class S2LazyDataPlane implements DataPlane {
       return materialized().toString();
     }
 
-    private Table<R, C, V> materialized() {
-      if (_materialized == null) {
-        Table<R, C, V> union = HashBasedTable.create();
-        _tables.forEach(union::putAll);
-        _materialized = ImmutableTable.copyOf(union);
+    private Table<String, C, V> materialized() {
+      Table<String, C, V> materialized = _materialized;
+      if (materialized == null) {
+        Table<String, C, V> union = HashBasedTable.create();
+        for (String host : _slices.hosts()) {
+          HostDataPlaneSlice slice = _slices.get(host);
+          if (slice != null) {
+            _byHost.apply(slice).forEach((column, value) -> union.put(host, column, value));
+          }
+        }
+        materialized = ImmutableTable.copyOf(union);
+        _materialized = materialized;
       }
-      return _materialized;
+      return materialized;
     }
   }
 
-  /** A read-only {@link Map} that is the union of several maps, resolved lazily per key. */
-  private static final class S2LazyMap<K, V> extends AbstractMap<K, V> {
-    private final @Nonnull List<Map<K, V>> _maps;
-    private transient Map<K, V> _materialized;
+  /**
+   * A read-only {@link Map} keyed by host, whose values come from the owning host's slice. Point
+   * lookups resolve only the addressed host; aggregate views fall back to a materialized union.
+   */
+  private static final class S2LazyMap<V> extends AbstractMap<String, V> {
+    private final @Nonnull S2HostSlices _slices;
+    private final @Nonnull Function<HostDataPlaneSlice, V> _byHost;
+    private transient @Nullable Map<String, V> _materialized;
 
-    S2LazyMap(List<Map<K, V>> maps) {
-      _maps = maps;
+    S2LazyMap(S2HostSlices slices, Function<HostDataPlaneSlice, V> byHost) {
+      _slices = slices;
+      _byHost = byHost;
     }
 
     @Override
-    public V get(Object key) {
-      for (Map<K, V> map : _maps) {
-        if (map.containsKey(key)) {
-          return map.get(key);
-        }
+    public @Nullable V get(Object key) {
+      if (!(key instanceof String)) {
+        return null;
       }
-      return null;
+      HostDataPlaneSlice slice = _slices.get((String) key);
+      return slice == null ? null : _byHost.apply(slice);
     }
 
     @Override
     public boolean containsKey(Object key) {
-      for (Map<K, V> map : _maps) {
-        if (map.containsKey(key)) {
-          return true;
-        }
-      }
-      return false;
+      return key instanceof String && _slices.get((String) key) != null;
     }
 
     @Override
-    public Set<K> keySet() {
-      Set<K> keys = new LinkedHashSet<>();
-      _maps.forEach(m -> keys.addAll(m.keySet()));
-      return ImmutableSet.copyOf(keys);
+    public Set<String> keySet() {
+      return ImmutableSet.copyOf(_slices.hosts());
     }
 
     @Override
-    public Set<Entry<K, V>> entrySet() {
+    public Set<Entry<String, V>> entrySet() {
       return materialized().entrySet();
     }
 
@@ -341,36 +324,39 @@ final class S2LazyDataPlane implements DataPlane {
       return materialized().size();
     }
 
-    private Map<K, V> materialized() {
-      if (_materialized == null) {
-        Map<K, V> union = new LinkedHashMap<>();
-        _maps.forEach(union::putAll);
-        _materialized = union;
+    private Map<String, V> materialized() {
+      Map<String, V> materialized = _materialized;
+      if (materialized == null) {
+        Map<String, V> union = new LinkedHashMap<>();
+        for (String host : _slices.hosts()) {
+          HostDataPlaneSlice slice = _slices.get(host);
+          if (slice != null) {
+            union.put(host, _byHost.apply(slice));
+          }
+        }
+        materialized = union;
+        _materialized = materialized;
       }
-      return _materialized;
+      return materialized;
     }
   }
 
-  /** The union of several per-worker forwarding analyses, resolved lazily per host. */
+  /** The per-host forwarding analysis assembled from the host slices. */
   private static final class S2LazyForwardingAnalysis implements ForwardingAnalysis {
-    private final @Nonnull List<ForwardingAnalysis> _parts;
+    private final @Nonnull S2HostSlices _slices;
 
-    S2LazyForwardingAnalysis(List<ForwardingAnalysis> parts) {
-      _parts = parts;
+    S2LazyForwardingAnalysis(S2HostSlices slices) {
+      _slices = slices;
     }
 
     @Override
     public Map<String, Map<String, IpSpace>> getArpReplies() {
-      List<Map<String, Map<String, IpSpace>>> maps = new ArrayList<>();
-      _parts.forEach(p -> maps.add(p.getArpReplies()));
-      return new S2LazyMap<>(maps);
+      return new S2LazyMap<>(_slices, HostDataPlaneSlice::getArpReplies);
     }
 
     @Override
     public @Nonnull Map<String, Map<String, VrfForwardingBehavior>> getVrfForwardingBehavior() {
-      List<Map<String, Map<String, VrfForwardingBehavior>>> maps = new ArrayList<>();
-      _parts.forEach(p -> maps.add(p.getVrfForwardingBehavior()));
-      return new S2LazyMap<>(maps);
+      return new S2LazyMap<>(_slices, HostDataPlaneSlice::getVrfForwardingBehavior);
     }
   }
 }
