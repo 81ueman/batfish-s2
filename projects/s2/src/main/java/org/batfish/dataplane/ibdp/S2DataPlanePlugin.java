@@ -138,8 +138,11 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
       ComputeDataPlaneResult first = results.get(0);
       List<DataPlane> dataPlanes =
           results.stream().map(r -> r._dataPlane).collect(Collectors.toList());
+      // In-process workers today; the remote worker pool swaps this for a shared-storage source.
       return new ComputeDataPlaneResult(
-          first._answerElement, S2LazyDataPlane.of(dataPlanes), first._topologies);
+          first._answerElement,
+          S2LazyDataPlane.of(S2InProcessHostSlices.of(dataPlanes)),
+          first._topologies);
     } catch (InterruptedException | ExecutionException e) {
       Thread.currentThread().interrupt();
       throw new IllegalStateException("S2 distributed data plane computation failed", e);
