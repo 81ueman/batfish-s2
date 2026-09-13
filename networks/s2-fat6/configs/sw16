@@ -1,0 +1,32 @@
+hostname sw16
+
+interface Loopback0
+ ip address 10.0.17.1 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.19.2 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.22.2 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.25.2 255.255.255.252
+
+interface GigabitEthernet0/3
+ ip address 10.1.75.1 255.255.255.252
+
+interface GigabitEthernet0/4
+ ip address 10.1.76.1 255.255.255.252
+
+interface GigabitEthernet0/5
+ ip address 10.1.77.1 255.255.255.252
+
+router bgp 65016
+ bgp router-id 10.0.17.1
+ network 10.0.17.1 mask 255.255.255.255
+ neighbor 10.1.19.1 remote-as 65033
+ neighbor 10.1.22.1 remote-as 65034
+ neighbor 10.1.25.1 remote-as 65035
+ neighbor 10.1.75.2 remote-as 65003
+ neighbor 10.1.76.2 remote-as 65004
+ neighbor 10.1.77.2 remote-as 65005

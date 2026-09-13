@@ -1,0 +1,32 @@
+hostname sw21
+
+interface Loopback0
+ ip address 10.0.22.1 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.36.2 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.39.2 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.42.2 255.255.255.252
+
+interface GigabitEthernet0/3
+ ip address 10.1.90.1 255.255.255.252
+
+interface GigabitEthernet0/4
+ ip address 10.1.91.1 255.255.255.252
+
+interface GigabitEthernet0/5
+ ip address 10.1.92.1 255.255.255.252
+
+router bgp 65021
+ bgp router-id 10.0.22.1
+ network 10.0.22.1 mask 255.255.255.255
+ neighbor 10.1.36.1 remote-as 65039
+ neighbor 10.1.39.1 remote-as 65040
+ neighbor 10.1.42.1 remote-as 65041
+ neighbor 10.1.90.2 remote-as 65000
+ neighbor 10.1.91.2 remote-as 65001
+ neighbor 10.1.92.2 remote-as 65002

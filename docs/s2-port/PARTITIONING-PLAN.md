@@ -1,6 +1,6 @@
 # S2 ネットワーク分割（ノード割当・prefix sharding）設計メモ & 評価計画
 
-- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）。P2 は完了し、`gpmetis` 導入後の実測を §6.7 に記録（METIS = 品質参照、既定は RANDOM）。O6 ノード重み校准（§6.8）と v2 トポロジ補正（§6.9, opt-in）を実装・測定。§3.4 の `AUTO`（DCN/WAN 自動選択）を実装し runner 既定を `auto` に変更（コード既定は RANDOM のまま）。O6 residual の role-level peer scaling は opt-in で正の結果（§6.10）**
+- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）。P2 は完了し、`gpmetis` 導入後の実測を §6.7 に記録（METIS = 品質参照、既定は RANDOM）。O6 ノード重み校准（§6.8）と v2 トポロジ補正（§6.9, opt-in）を実装・測定。§3.4 の `AUTO`（DCN/WAN 自動選択）を実装し runner 既定を `auto` に変更（コード既定は RANDOM のまま）。O6 residual の role-level peer scaling は opt-in で正の結果（§6.10）だが、k=6 FatTree と WAN star を加えた追試で FatTree k=6 に退行があり **gate 維持**（§6.12）**
 - Date: 2026-09-13（更新）
 - 対象リポジトリ: `batfish-s2`（branch `master`）
 - 関連: `docs/s2-port/M5-SCALE.md`, `docs/s2-port/REMAINING.md`, `nv-papers/papers/s2-2025.pdf`, `XJTU-NetVerify/s2`（参考実装）
@@ -564,6 +564,105 @@ S2 controller: partition scheme=METIS (requested=AUTO, shape=WAN (sparse/irregul
 **正しさ（1 / 3 worker, runner 既定 auto と `-Ds2.partition=WEIGHTED_LPT_FM`）**: `s2-line` /
 `s2-ospf-bgp` / `s2-big2` / `s2-triangle` の全 16 run が
 `ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`。
+
+### 6.12 O6 residual 追試: role-level peer scaling の形状一般化（2026-09-13）
+
+**目的.** §6.10 の adaptive peer rule は fat2/fat4 の 2 形状でしか検証しておらず、「より広い
+DCN/WAN testbed で退行がないことを確認してから既定 on」としていた。本節は k=6 FatTree と
+hub/route-reflector 星を加え、既定 on へ昇格できるかを判定する。
+
+**testbed 追加.**
+
+- `networks/s2-fat6` = `scripts/gen-topology.py fattree --k 6 --originate 2`。45 switches
+  （core 9 / agg 18 / edge 18。依頼時の「54」は標準 3 層の別の数え方で、本 generator は 45）。
+  core/agg は 6 peer・7 interface、edge は 3 peer・6 interface で、rule は §6.10 と同じ
+  「busiest tier の interface が最多 → peer 項を落とす」(coeff 0) 分岐に入る。
+- `scripts/gen-topology.py` に `hub` サブコマンドを追加し `networks/s2-hub`（spokes 8,
+  originate 2, 9 switches）を生成。hub は 8 peer・9 interface、leaf は 1 peer・4 interface。
+  WAN の検証が line 系だけにならないようにするための star/RR 形状。
+
+**方法.**
+
+- **オフライン role**（軽量）: `S2Main partition <net> <W>` を
+  `-Ds2.partition=WEIGHTED_LPT_FM` と `-Ds2.nodeWeightsRoleScale={true,false}` で W=2,3,4 実行し、
+  controller が報告する `weighted-cut` と weight ベース `imbalance(max/mean)` を記録。
+- **cost-aware**（O6 と同一手法）: 1-worker `result-1worker.txt` の per-node main-RIB route 数を
+  測定コストとし、その run の assignment を `scripts/calibrate-weights.py imbalance` /
+  `scripts/partition-metrics.py --weights` で採点（両者は同値を再現）。s2-mega の 1-worker run は
+  host 高負荷のため省略し、mega はオフラインのみ（cost-aware は未測定と明記）。他の 6 網は
+  1-worker が 5–6 秒で `MATCH`。fat6 も軽量だった（依頼時の想定よりはるかに小さく、skip 不要）。
+
+**オフライン（重みベース、`cut / imbalance`; off → on）.**
+
+| network (shapes) | W | off | on |
+| --- | --- | --- | --- |
+| s2-fat2 (DCN k=2, 5) | 2 / 3 / 4 | 4/1.130 · 4/1.174 · 8/1.391 | 4/1.130 · 4/1.174 · 8/1.391 |
+| s2-fat4 (DCN k=4, 20) | 2 / 3 / 4 | 16/1.000 · 24/1.096 · 36/1.077 | 16/1.000 · 24/**1.050** · 36/**1.000** |
+| s2-fat6 (DCN k=6, 45) | 2 / 3 / 4 | 54/**1.026** · 104/1.079 · 84/1.099 | 54/1.070 · 102/1.079 · 84/**1.076** |
+| s2-line (WAN line, 6) | 2 / 3 / 4 | 2/1.000 · 4/1.154 · 8/1.231 | 2/1.000 · 4/**1.091** · 6/1.273 |
+| s2-big2 (WAN, 10) | 2 / 3 / 4 | 2/1.000 · 14/1.180 · 12/1.191 | 2/1.000 · 14/1.195 · 12/1.198 |
+| s2-mega (WAN, 16) | 2 / 3 / 4 | 6/1.000 · 18/1.121 · 14/1.002 | 6/1.000 · 18/1.124 · 14/1.000 |
+| s2-hub (WAN star, 9) | 2 / 3 / 4 | 12/1.020 · 16/1.041 · 16/1.388 | 10/1.000 · 12/1.200 · 14/1.200 |
+
+重みベースの imbalance は role が重み自体を変えるため自己言及的で、**hub W=3 のように
+重みベースでは悪化 (1.041→1.200) でも測定コストでは改善 (後述 1.261→1.109)** する例がある。
+判定には次表を使う。
+
+**cost-aware（測定 main-RIB route 数, `imbalance(max/mean)`; off → on）.**
+
+| network | W=2 | W=3 | W=4 |
+| --- | --- | --- | --- |
+| s2-fat2 | 1.148 → 1.148 | 1.180 → 1.180 | 1.443 → 1.443 |
+| s2-fat4 | 1.000 → 1.000 | 1.061 → **1.047** | 1.019 → 1.019 |
+| s2-fat6 | **1.023 → 1.068** | 1.068 → 1.073 | 1.071 → 1.071 |
+| s2-line | 1.000 → 1.000 | 1.071 → 1.071 | 1.286 → 1.286 |
+| s2-hub | **1.261 → 1.051** | **1.261 → 1.109** | 1.261 → 1.261 |
+| s2-big2 | 1.000 → 1.000 | 1.199 → 1.199 | 1.200 → 1.200 |
+| s2-mega | —（未測定） | — | — |
+
+**知見.**
+
+- **fat2 は完全に不変**: rule は §6.10 どおり peer 項 3 を維持し、assignment も測定コストも同一。
+- **fat4 W=3 は 1.061→1.047**（§6.10 を再現）。W=2/4 は測定コスト同一（assignment は変わる）。
+- **fat6 は退行**: W=2 が 1.023→1.068、W=3 が 1.068→1.073。rule は fat6 でも coeff 0 を選ぶ
+  （core/agg 7 iface ≥ edge 6 iface）。重みは core/agg=8, edge=7 で実測比（heavy 93 : light 87 =
+  1.069）に近いにもかかわらず、`WEIGHTED_LPT_FM` は heavy 27 ノードを off の 14/13 ではなく
+  **15/12** に割り（per-worker コスト 2178/1899 vs off 2085/1992）、imbalance を悪化させる。
+  すなわち重み*比*が実測に近づいても partitioner の balance 目的が max/mean コスト最小と一致
+  せず、coeff 0 が割当を悪い側に倒す。fat4 で改善したのは interface が完全に一様（重み一定）に
+  なる偶然に近い。
+- **WAN star は改善**: hub W=2 1.261→1.051、W=3 1.261→1.109。peer 項 3 は hub の重みを
+  34 : 8（≈4.3 倍）と過大評価し、coeff 0 が 10 : 5（2.0 倍）に緩める（実測コスト比 41 : 27 ≈ 1.5）。
+  方向性は正しい。
+- line / big2 / mega は assignment がほぼ不変で、測定コストも不変。
+
+**判定: 既定 on へ昇格しない（gate 維持）.** 改善 3 件（fat4 W=3, hub W=2/W=3）に対し、
+**狙った形状である FatTree の k=6 で有意な退行 1 件（fat6 W=2, +0.045）** と軽微な退行 1 件
+（fat6 W=3, +0.005）がある。「より広い形状で退行なし」という昇格条件を満たさないため、
+`-Ds2.nodeWeightsRoleScale` は**既定 off のまま**とする（`-Ds2.nodeWeightsRoleScale=true` で
+opt-in）。runner 既定は `auto`→`METIS`（重み非依存）なので demo への影響はない。
+WAN star の改善は「peer 項が role を過大評価する」という方向性の正しさを示すので、将来は
+形状ごとの静的係数ではなく、伝播閉包/実測に基づく cost-aware partitioner（§3.2 v2 の延長、
+FM 目的関数に測定コストを入れる等）で扱うのが筋。
+
+**再現.**
+
+```
+# オフライン (on/off)。出力の weighted-cut / imbalance を記録。
+S2_INPUT_DIR=$PWD/networks S2_OUTPUT_DIR=/tmp/rs-<net>-<W>-<on|off> \
+  JAVA_TOOL_OPTIONS="-Ds2.partition=WEIGHTED_LPT_FM -Ds2.nodeWeightsRoleScale=<true|false>" \
+  java -jar bazel-bin/projects/s2/s2_main_deploy.jar partition <net> <W>
+# cost-aware: 1-worker の per-node route 数を測定コストにする。
+S2_BASE_PORT=23100 scripts/local-demo.sh 1 <net>
+python3 scripts/calibrate-weights.py imbalance \
+  --sample <net>:results/local-<net>-1/result-1worker.txt:/tmp/rs-features/features-<net>.tsv \
+  --assignment ON=<on assignment> --assignment OFF=<off assignment> --workers <W>
+```
+
+**検証.** `bazel test //projects/s2:s2_tests`（fat6 / hub 形状が coeff 0 分岐に入ることを
+`NodePartitionerTest#testAdaptivePeerCoefficientOnFat6AndHubShapes` に追加）。
+既定 demo `S2_BASE_PORT=23000 scripts/local-demo.sh 3 s2-line` は
+`ribs/reachability/symbolic/answer = MATCH`。
 
 ---
 

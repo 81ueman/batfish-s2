@@ -1,0 +1,28 @@
+hostname sw34
+
+interface Loopback0
+ ip address 10.0.35.1 255.255.255.255
+
+interface Loopback1
+ ip address 10.100.35.1 255.255.255.255
+
+interface Loopback2
+ ip address 10.100.35.2 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.21.1 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.22.1 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.23.1 255.255.255.252
+
+router bgp 65034
+ bgp router-id 10.0.35.1
+ network 10.0.35.1 mask 255.255.255.255
+ network 10.100.35.1 mask 255.255.255.255
+ network 10.100.35.2 mask 255.255.255.255
+ neighbor 10.1.21.2 remote-as 65015
+ neighbor 10.1.22.2 remote-as 65016
+ neighbor 10.1.23.2 remote-as 65017

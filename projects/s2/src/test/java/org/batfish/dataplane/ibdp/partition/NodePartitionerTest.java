@@ -627,6 +627,28 @@ public class NodePartitionerTest {
         equalTo(0));
   }
 
+  /**
+   * The same role rule fires on the two shapes added for the §6.12 generalization check: a k=6
+   * FatTree (core/agg 6 peers / 7 interfaces, edge 3 peers / 6 interfaces) and a
+   * hub/route-reflector star (hub 8 peers / 9 interfaces, leaf 1 peer / 4 interfaces). Both have a
+   * busier tier with at least as many interfaces, so the peer term is dropped.
+   */
+  @Test
+  public void testAdaptivePeerCoefficientOnFat6AndHubShapes() {
+    assertThat(
+        NodeWeights.adaptivePeerCoefficient(
+            ImmutableList.of(
+                new NodeWeights.Features(7, 6, 1, 0, 11, 0, 1),
+                new NodeWeights.Features(6, 3, 3, 0, 14, 0, 1))),
+        equalTo(0));
+    assertThat(
+        NodeWeights.adaptivePeerCoefficient(
+            ImmutableList.of(
+                new NodeWeights.Features(9, 8, 1, 0, 16, 0, 1),
+                new NodeWeights.Features(4, 1, 3, 0, 8, 0, 1))),
+        equalTo(0));
+  }
+
   /** Role scaling is off by default; the peer-scale override wins when set. */
   @Test
   public void testEffectivePeerCoefficientPrecedence() {

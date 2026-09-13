@@ -1,0 +1,32 @@
+hostname sw20
+
+interface Loopback0
+ ip address 10.0.21.1 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.29.2 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.32.2 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.35.2 255.255.255.252
+
+interface GigabitEthernet0/3
+ ip address 10.1.87.1 255.255.255.252
+
+interface GigabitEthernet0/4
+ ip address 10.1.88.1 255.255.255.252
+
+interface GigabitEthernet0/5
+ ip address 10.1.89.1 255.255.255.252
+
+router bgp 65020
+ bgp router-id 10.0.21.1
+ network 10.0.21.1 mask 255.255.255.255
+ neighbor 10.1.29.1 remote-as 65036
+ neighbor 10.1.32.1 remote-as 65037
+ neighbor 10.1.35.1 remote-as 65038
+ neighbor 10.1.87.2 remote-as 65006
+ neighbor 10.1.88.2 remote-as 65007
+ neighbor 10.1.89.2 remote-as 65008

@@ -1,0 +1,32 @@
+hostname sw23
+
+interface Loopback0
+ ip address 10.0.24.1 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.38.2 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.41.2 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.44.2 255.255.255.252
+
+interface GigabitEthernet0/3
+ ip address 10.1.96.1 255.255.255.252
+
+interface GigabitEthernet0/4
+ ip address 10.1.97.1 255.255.255.252
+
+interface GigabitEthernet0/5
+ ip address 10.1.98.1 255.255.255.252
+
+router bgp 65023
+ bgp router-id 10.0.24.1
+ network 10.0.24.1 mask 255.255.255.255
+ neighbor 10.1.38.1 remote-as 65039
+ neighbor 10.1.41.1 remote-as 65040
+ neighbor 10.1.44.1 remote-as 65041
+ neighbor 10.1.96.2 remote-as 65006
+ neighbor 10.1.97.2 remote-as 65007
+ neighbor 10.1.98.2 remote-as 65008
