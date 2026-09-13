@@ -128,9 +128,14 @@ public final class S2Main {
     }
   }
 
-  /** Whether the worker restricts its dataplane to owned nodes ({@code -Ds2.ownedDataplane}). */
+  /**
+   * Whether the worker restricts its dataplane to owned nodes. Default on; disable with {@code
+   * -Ds2.ownedDataplane=false}. Read here only to decide whether the worker can run the global
+   * traceroute digest (it cannot in owned mode; see {@code runWorker}); the engine reads the same
+   * property for the owned-vs-full decision.
+   */
   private static boolean ownedDataplaneMode() {
-    return Boolean.getBoolean("s2.ownedDataplane");
+    return Boolean.parseBoolean(System.getProperty("s2.ownedDataplane", "true"));
   }
 
   /**
@@ -252,14 +257,15 @@ public final class S2Main {
           meanLoad == 0.0 ? 0.0 : maxLoad / meanLoad);
     }
 
-    // Descriptor-shadow mode (-Ds2.descriptorShadows=true): ship each worker only its owned configs
-    // plus a shared reduced descriptor for every remote node, instead of the full snapshot. Stays
-    // off by default; also requires config shipping and a snapshot the shadow path can answer
-    // without remote policy/forwarding bodies (see descriptorShadowsSafe).
+    // Descriptor-shadow mode (default on; disable with -Ds2.descriptorShadows=false): ship each
+    // worker only its owned configs plus a shared reduced descriptor for every remote node, instead
+    // of the full snapshot. Also requires config shipping and a snapshot the shadow path can answer
+    // without remote policy/forwarding bodies (see descriptorShadowsSafe, which falls back to
+    // shipping full configs for tracks / VNI / tunnel / IPsec).
     boolean shipConfigs = !Boolean.getBoolean("s2.noShipConfigs");
     boolean descriptorShadows =
         shipConfigs
-            && Boolean.getBoolean("s2.descriptorShadows")
+            && Boolean.parseBoolean(System.getProperty("s2.descriptorShadows", "true"))
             && numWorkers > 1
             && descriptorShadowsSafe(snap);
     byte[] serializedConfigs = null;
@@ -332,6 +338,11 @@ public final class S2Main {
         // change its FIB. The union therefore has the same forwarding behaviour as vanilla.
         reachMatch = match;
       }
+      System.out.printf(
+          "S2 controller: worker traceroute digest %s%n",
+          anyWorkerDigest
+              ? "compared"
+              : "skipped (owned/descriptor mode); implying forwarding from the exact RIB match");
 
       // Distributed symbolic reachability (M5). First compare the workers' reachable BDDs
       // state-by-state against the reference. This is strict: the answer check below re-runs the
@@ -699,6 +710,13 @@ public final class S2Main {
         ownedHosts == null
             ? dp.getForwardingAnalysis()
             : new OwnedForwardingAnalysis(dp.getForwardingAnalysis(), ownedHosts);
+    // A worker can own zero nodes when there are more workers than switches (small demo
+    // networks). It still has to take part in the distributed fixpoint: it owns the global
+    // disposition / Query states that every node's edges feed into, and the factory cannot build
+    // a scoped view with zero source configs (BDDSourceManager requires at least one). Fall back
+    // to an unscoped factory for this degenerate worker; it generates the global disposition
+    // edges, and S2ReachabilityWorker keeps only those whose post state this worker owns.
+    Set<String> factoryLocalNodes = ownedHosts != null && ownedHosts.isEmpty() ? null : ownedHosts;
     BDDReachabilityAnalysisFactory factory =
         new BDDReachabilityAnalysisFactory(
             packet,
@@ -707,7 +725,7 @@ public final class S2Main {
             new IpsRoutedOutInterfacesFactory(dp.getFibs()),
             false,
             false,
-            ownedHosts);
+            factoryLocalNodes);
     IpSpaceAssignment.Builder builder = IpSpaceAssignment.builder();
     for (Configuration c : snap.configs.values()) {
       for (Interface i : c.getAllInterfaces().values()) {

@@ -15,15 +15,30 @@ Knobs added for scale work:
 | --- | --- | --- |
 | (none) | controller ships parsed configs; workers do not re-parse | on |
 | `-Ds2.noShipConfigs=true` | worker parses the snapshot itself (reproduce the old floor) | off |
-| `-Ds2.ownedDataplane=true` | worker keeps full RIBs/FIBs only for owned nodes (remote get stub FIBs) | off |
-| `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies) | off |
+| `-Ds2.ownedDataplane=true` | worker keeps full RIBs/FIBs only for owned nodes (remote get stub FIBs) | **on** (`-Ds2.ownedDataplane=false` disables) |
+| `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies); still gated by `descriptorShadowsSafe` (tracks / VNI / tunnel / IPsec fall back to full configs) | **on** (`-Ds2.descriptorShadows=false` disables) |
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
-| `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM (default) / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) | RANDOM |
-| `-Ds2.prefixSpacePositiveCacheOnly=true` | memoize only positive `PrefixSpace.containsPrefix` results (cuts the EGP transient; pure memoization) | off |
+| `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM (default) / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) | RANDOM (unchanged) |
+| `-Ds2.prefixSpacePositiveCacheOnly=true` | memoize only positive `PrefixSpace.containsPrefix` results (cuts the EGP transient; pure memoization) | off in shared code (stock unchanged); **on in the runner** (`scripts/local-demo.sh`, k8s worker manifest; `-Ds2.prefixSpacePositiveCacheOnly=false` disables) |
 | `S2_PREFIX_SHARDS=N` | control-plane (BGP RIB) prefix sharding, N rounds | 1 (off) |
 | `S2_PREFIX_SHARDS=auto` | auto shard count from the DPDG component weights (alias `-Ds2.prefixShardCount=auto`) | — |
 | `-Ds2.prefixShardBudgetMiB=M` | per-shard live-BGP-RIB budget used by `auto` (smaller ⇒ more shards, cap 16) | 192 |
 | `-Ds2.prefixShardExternalize=true` | serialize each shard's BGP RIB between rounds | off |
+
+**O1 defaults (2026-09-13).** The two S2 memory features are now on by default (S2-only
+system properties, so stock Batfish is unaffected): owned-only dataplane and descriptor
+shadows, each disabled with `=false`. The positive-only `PrefixSpace` memo is the one
+feature whose shared-code default stays **off** (it lives in `projects/common`), so the
+*runner* turns it on: `scripts/local-demo.sh` exports it and the k8s worker manifest sets
+it in `JAVA_TOOL_OPTIONS` (append `-Ds2.prefixSpacePositiveCacheOnly=false` to disable).
+`-Ds2.partition` stays RANDOM and `S2_PREFIX_SHARDS` stays off — unchanged.
+
+With owned/descriptor mode on, workers no longer hold complete remote FIBs, so they cannot
+run the per-worker traceroute digest. The verification checks are therefore the **exact
+RIB match** (`ribs=MATCH`) plus the **distributed symbolic reachability** comparison
+(`symbolic=MATCH`) and the public-API answer check (`answer=MATCH`); the controller no
+longer compares a worker digest (it implies forwarding equality from the exact RIB match —
+see C3 and `OPS.md`). Disable owned and descriptor mode to restore the digest check.
 
 Headline peak-heap per worker (3 workers, `-Xmx4g`):
 
@@ -37,7 +52,7 @@ phase peaks are `building nodes` 413 MiB, `EGP iteration 1` 1595 MiB, `nextDatap
 The remaining cost is the held configurations and the BGP control-plane transient. The FIB axis is
 considered done for now.
 
-Descriptor mode (`-Ds2.descriptorShadows`, opt-in) further trims remote policy bodies. On the
+Descriptor mode (`-Ds2.descriptorShadows`, default on) further trims remote policy bodies. On the
 ACL-heavy `networks/s2-acl` (3000-line ACLs), owned+descriptor drops the `after building nodes`
 phase from 125.7 to 81.4 MiB and the max worker peak from 183.9 to 154.7 MiB; on `s2-mega` it is
 modest (~10%/~6%) because its configs are mostly loopback interfaces, which must be retained.
@@ -51,7 +66,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 | id | task | notes |
 | --- | --- | --- |
-| **P0** | measurement + testbed infrastructure | **Generator added**: `scripts/gen-topology.py` (`fattree --k`, `line --nodes`, `--originate`). **Metrics/baseline added**: `scripts/bench.sh "<workers>" "<networks>"` runs the matrix and emits a table (result / max peak MiB / controller MiB / engine s / wall s); phase output now carries elapsed time (`S2 phase ... t=..s`). **Finding**: FatTree eBGP with k>=4 is tie-unstable (multiple equal-cost BGP fixed points -> `ribs=DIFF` even at 1 worker; reachability/symbolic/answer MATCH), consistent with C1, so MATCH-verified partition evaluation must use tie-stable topologies (`line`, `fattree --k 2`) or a deterministic variant. `networks/s2-fat4` (20 switches) is a k=4 DCN testbed for throughput/memory. **Partition-quality metrics added**: `scripts/partition-metrics.py` (node weights, imbalance max/mean, weighted cut; default assignment ports `NetworkPartitioner`). **Boundary RPC counters added**: the sidecars print a per-worker `S2 rpc-stats` stderr summary at end of run. **CI matrix added**: `scripts/ci-matrix.sh` (opt-in; default/owned modes). **Weight calibration (O6) added**: `scripts/calibrate-weights.py` + the `-Ds2.nodeWeightsDump` hook; coefficients fitted in `PARTITIONING-PLAN.md` §6.7. **Ops notes added**: `docs/s2-port/OPS.md`. |
+| **P0** | measurement + testbed infrastructure | **Generator added**: `scripts/gen-topology.py` (`fattree --k`, `line --nodes`, `--originate`). **Metrics/baseline added**: `scripts/bench.sh "<workers>" "<networks>"` runs the matrix and emits a table (result / max peak MiB / controller MiB / engine s / wall s); phase output now carries elapsed time (`S2 phase ... t=..s`). **Finding**: FatTree eBGP with k>=4 is tie-unstable (multiple equal-cost BGP fixed points -> `ribs=DIFF` even at 1 worker; reachability/symbolic/answer MATCH), consistent with C1, so MATCH-verified partition evaluation must use tie-stable topologies (`line`, `fattree --k 2`) or a deterministic variant. `networks/s2-fat4` (20 switches) is a k=4 DCN testbed for throughput/memory. **Partition-quality metrics added**: `scripts/partition-metrics.py` (node weights, imbalance max/mean, weighted cut; default assignment ports `NetworkPartitioner`). **Boundary RPC counters added**: the sidecars print a per-worker `S2 rpc-stats` stderr summary at end of run. **CI matrix added**: `scripts/ci-matrix.sh` (opt-in; default/full modes). **Weight calibration (O6) added**: `scripts/calibrate-weights.py` + the `-Ds2.nodeWeightsDump` hook; coefficients fitted in `PARTITIONING-PLAN.md` §6.7. **Ops notes added**: `docs/s2-port/OPS.md`. |
 | **C-PFX** | prefix closure fix | **Done.** Aggregates: universe inclusion + co-sharding with the prefixes they cover (`networks/s2-agg`, `testPrefixShardingWithAggregateMatchesVanilla`). Redistribution: static and kernel route networks added (`networks/s2-static`, `testPrefixShardingWithRedistributedStaticMatchesVanilla`). External announcements: runner loads `external_bgp_announcements.json`, the controller ships them (`Start.externalAdverts`), the universe includes their networks, and they are re-staged each shard round (`BgpRoutingProcess.restageExternalAdvertisements`) (`networks/s2-external`, `testPrefixShardingWithExternalAnnouncementMatchesVanilla`, `shards=1..4`). Prerequisite for (B)/DPDG. |
 
 ### Partitioning (see `PARTITIONING-PLAN.md`)
@@ -66,8 +81,8 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 | id | task | section | depends / competes |
 | --- | --- | --- | --- |
-| **M1** | remote configuration descriptor | A1 | **Done (opt-in)**: `-Ds2.descriptorShadows=true`, `RemoteNodeDescriptor`; ACL-heavy testbed `networks/s2-acl` |
-| **M2** | control-plane transient reduction | A2 | **Done**: root cause was an unbounded negative-result memo in `PrefixSpace.containsPrefix` (O(N^2) per router); opt-in positive-only cache (`-Ds2.prefixSpacePositiveCacheOnly`) cuts the s2-giga EGP peak ~40-48%; default off (stock unchanged) |
+| **M1** | remote configuration descriptor | A1 | **Done (default on)**: `-Ds2.descriptorShadows` (disable with `=false`), `RemoteNodeDescriptor`; ACL-heavy testbed `networks/s2-acl` |
+| **M2** | control-plane transient reduction | A2 | **Done**: root cause was an unbounded negative-result memo in `PrefixSpace.containsPrefix` (O(N^2) per router); positive-only cache (`-Ds2.prefixSpacePositiveCacheOnly`) cuts the s2-giga EGP peak ~40-48%; shared-code default off (stock unchanged), runner default on |
 | **M3** | BDD factory owned scoping | A3 | **Done**: nullable `localNodes` on `BDDReachabilityAnalysisFactory`, wired from `S2Main` |
 | **M4** | owned-mode hardening (Track / VXLAN / tunnel / BGP reachability) | A4 | **Done**: owned mode falls back to full configs when tracks/VNIs/tunnel/IPsec are present; BGP reachability disabled in owned mode |
 | **M5** | dataplane prefix sharding / on-disk RIB+FIB | A5 | deferred |
@@ -80,7 +95,11 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 ### Operations / packaging — section C
 
-- **O1** defaults; **O2** k8s resources / `-Xmx`; **O3** CI demo matrix — **Done**:
+- **O1** defaults — **Done (2026-09-13)**: owned-only dataplane and descriptor shadows are on by
+  default (each disabled with `=false`); the positive-only `PrefixSpace` memo is a **runner**
+  default (shared-code default stays off); `-Ds2.partition` stays RANDOM and `S2_PREFIX_SHARDS`
+  stays off. **O2** k8s resources / `-Xmx` (the worker `JAVA_TOOL_OPTIONS` now also carries
+  `-Ds2.prefixSpacePositiveCacheOnly=true`); **O3** CI demo matrix — **Done**:
   `scripts/ci.sh` (unit tests by default, `--matrix` opt-in) + manual-only
   `.github/workflows/s2-ci.yml`; **O4** benchmark automation — **Done**:
   `scripts/bench-table.sh` (cached size-ladder x mode markdown table);
@@ -103,16 +122,15 @@ P0 ────┬─> P2  (evaluate H1 with owned on/off)
        └─> M2  (measure, then choose vs P3)
 C-PFX ─> P3 ─> P-X
 M1 (independent)             => lowers M3's value
-M4 (owned opt-in done)       => defaulting owned (O1); makes P2's memory payoff general
+M4 (owned hardening done)   => owned default on (O1, done); makes P2's memory payoff general
 M2 ⇄ P3                      (both target T_w)
 ```
 
 ### Recommended order
 
-Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6.
+Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1.
 
-1. **O1** defaults (decide whether to make owned / descriptor / positive-cache default); **O2** k8s
-   defaults; **O7** docs sync.
+1. **O2** k8s resources/`-Xmx` defaults; **O7** docs sync.
 2. **M5** (deferred)
 3. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
 
@@ -206,15 +224,19 @@ Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6.
 
 ## C. Operations / packaging
 
-* **C1. Defaults.** Config shipping is on. Decide whether to make owned mode (and maybe prefix
-  sharding) default after A4 lands; otherwise keep them opt-in and documented.
+* **C1. Defaults.** Config shipping, owned-only dataplane, and descriptor shadows are on by default
+  (O1); the runner also enables the positive-only `PrefixSpace` memo. Prefix sharding stays off
+  (`S2_PREFIX_SHARDS` default off). Every feature is individually disabled with `=false` (see
+  `OPS.md`); owned/descriptor mode replaces the per-worker traceroute digest with the exact RIB +
+  distributed symbolic checks.
 * **C2. Kubernetes resources.** Set worker/controller memory requests and limits from the measured
   peaks (e.g. `s2-giga` at `-Xmx4g`), and pick a default `-Xmx`. Rebuild the image
   (`scripts/build-s2.sh --image`) after any runner change and re-run `scripts/k8s-demo.sh` +
   `scripts/compare-answers.sh`.
 * **C3. CI matrix.** Run the full local demo matrix on every change:
   `s2-triangle`, `s2-line`, `s2-ospf`, `s2-ospf-bgp`, `s2-redist`, `s2-mega`, `s2-giga` (the last
-  two with `-Xmx4g`), each in both default and `-Ds2.ownedDataplane=true` modes.
+  two with `-Xmx4g`). `scripts/ci-matrix.sh` now covers the O1 default mode (owned + descriptor
+  shadows) and the pre-O1 `full` mode (`-Ds2.ownedDataplane=false -Ds2.descriptorShadows=false`).
 * **C4. Benchmark/reporting.** The phase attribution (`S2BdpEngine.reportPhase`) and per-worker
   peak reporting already exist; consider a script that runs the size ladder and emits the table in
   `M5-SCALE.md` automatically.

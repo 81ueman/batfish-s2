@@ -2,8 +2,9 @@
 # Full local demo correctness matrix (P0 / ops O3).
 #
 # Runs every "tie-stable" demo network through the multi-process runner at a fixed
-# worker count, in both the default and the owned-dataplane
-# (-Ds2.ownedDataplane=true) modes, and prints a pass/fail summary by grepping the
+# worker count, in both the new default mode (O1: owned-only dataplane + descriptor
+# shadows) and the pre-O1 "full" mode (-Ds2.ownedDataplane=false
+# -Ds2.descriptorShadows=false), and prints a pass/fail summary by grepping the
 # per-run result for MATCH.
 #
 # This is SLOW (each cell is a full multi-JVM run), so it is OPT-IN: it refuses to
@@ -13,7 +14,7 @@
 #   scripts/ci-matrix.sh --run
 #   scripts/ci-matrix.sh --run --workers 3
 #   scripts/ci-matrix.sh --run --networks "s2-triangle s2-ospf"
-#   scripts/ci-matrix.sh --run --modes "default owned"
+#   scripts/ci-matrix.sh --run --modes "default full"
 #   scripts/ci-matrix.sh --list          # print the matrix, run nothing
 #
 # Environment:
@@ -29,7 +30,7 @@ cd "$(git rev-parse --show-toplevel)"
 DEFAULT_NETWORKS="s2-triangle s2-line s2-ospf s2-ospf-bgp s2-redist s2-agg s2-static s2-external"
 NETWORKS="$DEFAULT_NETWORKS"
 WORKERS="${S2_CI_WORKERS:-3}"
-MODES="default owned"
+MODES="default full"
 RUN=0
 LIST=0
 
@@ -80,8 +81,11 @@ fail=0
 for mode in $MODES; do
   case "$mode" in
     default) JAVA_TOOL_OPTIONS="$BASE_JAVA_TOOL_OPTIONS" ;;
+    # Pre-O1 behavior: full per-worker dataplane + full remote configs.
+    full)    JAVA_TOOL_OPTIONS="$BASE_JAVA_TOOL_OPTIONS -Ds2.ownedDataplane=false -Ds2.descriptorShadows=false" ;;
+    # Explicit alias for the (now default) owned-only dataplane.
     owned)   JAVA_TOOL_OPTIONS="$BASE_JAVA_TOOL_OPTIONS -Ds2.ownedDataplane=true" ;;
-    *) echo "unknown mode '$mode' (expected default or owned)" >&2; exit 2 ;;
+    *) echo "unknown mode '$mode' (expected default, full, or owned)" >&2; exit 2 ;;
   esac
   export JAVA_TOOL_OPTIONS
 

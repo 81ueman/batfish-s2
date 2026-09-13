@@ -51,16 +51,20 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   private final Set<Prefix> _externalAdvertPrefixes;
 
   /**
-   * With {@code -Ds2.ownedDataplane=true}, a worker builds and retains full tables (RIBs, FIBs)
-   * only for the nodes it owns. Remote (shadow) nodes get a cheap config-only "stub" FIB so the
-   * forwarding analysis can still compute the cross-node ARP state, but no full remote routing
-   * table is ever built. Default off preserves stock behavior.
+   * Whether a worker builds and retains full tables (RIBs, FIBs) only for the nodes it owns. Remote
+   * (shadow) nodes get a cheap config-only "stub" FIB so the forwarding analysis can still compute
+   * the cross-node ARP state, but no full remote routing table is ever built.
+   *
+   * <p><b>Default on.</b> This is an S2-only mode: it is read here (and in {@code S2Main}) so it
+   * never affects stock Batfish. Disable with {@code -Ds2.ownedDataplane=false} to restore the old
+   * full-dataplane-per-worker behavior.
    *
    * <p>This is the *requested* mode. It is turned off for a run (see {@link #prepareDataPlane})
    * when the snapshot contains features that need complete remote FIBs (tracks, VXLAN/IPsec/tunnel
    * reachability pruning), because owned-only FIBs would give silently wrong answers there.
    */
-  private final boolean _ownedDataplaneRequested = Boolean.getBoolean("s2.ownedDataplane");
+  private final boolean _ownedDataplaneRequested =
+      Boolean.parseBoolean(System.getProperty("s2.ownedDataplane", "true"));
 
   /**
    * The effective owned mode for the current run. Equals {@link #_ownedDataplaneRequested} unless
@@ -69,11 +73,11 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   private boolean _ownedDataplane = _ownedDataplaneRequested;
 
   /**
-   * Whether this run materializes reduced shadow configs from remote descriptors ({@code
-   * -Ds2.descriptorShadows=true}). Remote shadow configs then carry no ACL / policy bodies, so
-   * consumers that need a remote node's full forwarding state (the dataplane-level BGP session
-   * reachability check) are disabled; {@code S2Main} gates the mode on the snapshot being free of
-   * tracks and IPsec / tunnel / VXLAN reachability.
+   * Whether this run materializes reduced shadow configs from remote descriptors (default on,
+   * disable with {@code -Ds2.descriptorShadows=false}). Remote shadow configs then carry no ACL /
+   * policy bodies, so consumers that need a remote node's full forwarding state (the
+   * dataplane-level BGP session reachability check) are disabled; {@code S2Main} gates the mode on
+   * the snapshot being free of tracks and IPsec / tunnel / VXLAN reachability.
    */
   private final boolean _descriptorShadows;
 

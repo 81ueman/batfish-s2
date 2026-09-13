@@ -30,8 +30,11 @@ spec:
               value: "4091"
             # Default worker heap (docs/s2-port/OPS.md). Override per run via the
             # JAVA_TOOL_OPTIONS env; 4g covers the largest verified snapshot (s2-giga).
+            # The S2 positive-only PrefixSpace memoization is a runner default (pure
+            # memoization; the shared-code default stays off so stock Batfish is
+            # unaffected). Append -Ds2.prefixSpacePositiveCacheOnly=false to disable.
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xmx4g"
+              value: "-Xmx4g -Ds2.prefixSpacePositiveCacheOnly=true"
           ports:
             - containerPort: 4091
             - containerPort: 5091

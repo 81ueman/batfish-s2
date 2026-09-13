@@ -7,6 +7,12 @@ W="${1:?usage: local-demo.sh <numWorkers> [network]}"
 NETWORK="${2:-s2-triangle}"
 cd "$(git rev-parse --show-toplevel)"
 
+# Runner default: enable the S2 positive-only PrefixSpace memoization, which bounds the EGP
+# control-plane transient (pure memoization; never changes results). The shared-code default stays
+# off so stock Batfish is unaffected. Put your own -D later in JAVA_TOOL_OPTIONS to override
+# (e.g. JAVA_TOOL_OPTIONS=-Ds2.prefixSpacePositiveCacheOnly=false); the JVM honors the last one.
+export JAVA_TOOL_OPTIONS="-Ds2.prefixSpacePositiveCacheOnly=true ${JAVA_TOOL_OPTIONS:-}"
+
 # Free only the ports this run will use, so concurrent runs (other worktrees/agents) are not
 # disturbed. Override the base port with S2_BASE_PORT to run several demos at once.
 BASE_PORT="${S2_BASE_PORT:-14090}"

@@ -75,6 +75,16 @@ And on the 3-node `s2-triangle`:
 Note: each worker additionally holds the few terminal-state edges (owner `""`, assigned
 to worker 0), which is why worker 0's count is larger.
 
+**More workers than switches.** On a small demo network run with more workers than
+switches (e.g. `s2-static`/`s2-external` with 3 workers and 2 nodes), some workers own no
+switch. The scoped BDD factory cannot be built with zero source configs
+(`BDDSourceManager` requires at least one), so such a worker falls back to an unscoped
+factory for the symbolic phase: it generates the global disposition / `Query` edges it
+must own and then keeps only the edges whose post state it owns (worker 0 keeps the
+dispositions; any other empty worker keeps nothing and returns an empty result). It
+participates in the same barriers either way. This makes the small end of the demo matrix
+(`s2-static`, `s2-external`) `MATCH` at 3 workers.
+
 ## Distributed control-plane synchronization (found while verifying)
 
 Multi-hop topologies exposed three ordering bugs in the distributed control plane (all
@@ -376,10 +386,14 @@ worker currently builds and keeps, for **all** nodes (owned and shadow):
 
 ## Reduction roadmap
 
-Ordered by expected payoff at scale. Every item should stay behind a default-off switch until
-it is verified to match vanilla.
+Ordered by expected payoff at scale. Items stayed behind a default-off switch until verified to
+match vanilla. **O1 (2026-09-13)** has since promoted the verified memory features to default on:
+owned-only dataplane and descriptor shadows (each disabled with `=false`), while prefix sharding
+stays off. The runner (`scripts/local-demo.sh`, k8s worker) also enables the positive-only
+`PrefixSpace` memo; its shared-code default stays off.
 
-1. **Owned-only dataplane (FIB / main RIB). — implemented behind `-Ds2.ownedDataplane`.**
+1. **Owned-only dataplane (FIB / main RIB). — default on (O1); disable with
+   `-Ds2.ownedDataplane=false`.**
    See "Owned-only dataplane (stub FIBs)" below. A worker builds and retains full FIBs/RIBs only
    for its owned nodes; remote (shadow) nodes get a config-only *stub* FIB (connected / kernel /
    local / unconditional-static routes) so the forwarding analysis can still compute the
@@ -398,11 +412,12 @@ it is verified to match vanilla.
    owned FIBs, drop the `DataPlane` reference so the symbolic phase does not carry remote
    tables. Cheap; helps the symbolic peak (item 1 is what helps the dataplane-loop peak).
 
-4. **Lightweight remote descriptor.** Replace each remote `Configuration` with a descriptor
+4. **Lightweight remote descriptor. — implemented (M1) and default on (O1); disable with
+   `-Ds2.descriptorShadows=false`.** Replaces each remote `Configuration` with a descriptor
    holding only what edge generation needs (interface name / addresses / L3 flags / OSPF
    settings, BGP peer config), dropping remote ACL / policy / route-map / community bodies.
-   Payoff tracks policy size, not prefix count; it is also the prerequisite for not holding
-   remote configs at all.
+   Payoff tracks policy size, not prefix count; the controller falls back to shipping full
+   configs for snapshots with tracks / VNI / tunnel / IPsec. See `OPS.md`.
 
 5. **Prefix-shard the dataplane (on-demand RIB / FIB).** Extend B from the control-plane BGP
    RIB to the main RIB / FIB: build and serialize one prefix shard at a time and page the rest
@@ -419,9 +434,11 @@ it is verified to match vanilla.
 
 7. **Heap cap (`-Xmx`).** Already used; bounds transient headroom, not the retained floor.
 
-## Owned-only dataplane (stub FIBs, `-Ds2.ownedDataplane=true`)
+## Owned-only dataplane (stub FIBs, default on)
 
-Default off. When on, a worker keeps full routing/forwarding tables only for the nodes it owns:
+**Default on since O1**; disable with `-Ds2.ownedDataplane=false` to restore the full
+per-worker dataplane. When on, a worker keeps full routing/forwarding tables only for the
+nodes it owns:
 
 * `S2BdpEngine.nextDataplane` no longer pulls remote main RIBs (`ShadowMainRibSync`) and does not
   run `computeFib` on shadows. A shadow instead gets `VirtualRouter.initStubFib()`, which
@@ -436,8 +453,11 @@ Default off. When on, a worker keeps full routing/forwarding tables only for the
 * `unownedArpIps` is not a blocker: stock Batfish computes it by walking every FIB, but only the
   node's own routes' ARP IPs matter for its ARP-false classification, and those live in the owned
   FIB, so the remote stub does not change owned behavior.
-* The global traceroute digest (`reachabilityDigest`) cannot run with stub remote FIBs; workers
-  return an empty digest and the controller implies forwarding equality from the exact RIB match.
+* The global traceroute digest (`reachabilityDigest`) cannot run with stub remote FIBs (nor with
+  descriptor shadows, whose remote configs omit ACL bodies). Workers return an empty digest and the
+  controller implies forwarding equality from the **exact RIB match**; the distributed symbolic
+  reachability comparison and the public-API answer check still run. These are the direct checks in
+  default mode since O1; disable owned and descriptor mode to restore the digest comparison.
 
 Measured (3 workers, `-Xmx4g`, controller-shipped configs, all
 `ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`):
@@ -476,10 +496,11 @@ bazel test //projects/s2:s2_tests
 # metrics matrix (result / max peak MiB / controller MiB / engine s / wall s)
 # env (JAVA_TOOL_OPTIONS, S2_PREFIX_SHARDS) is forwarded to each run
 scripts/bench.sh "1 3" "s2-line s2-mega"
-JAVA_TOOL_OPTIONS="-Xmx4g -Ds2.ownedDataplane=true" scripts/bench.sh "3" "s2-mega s2-giga"
-# full size ladder x mode(s), cached so the table regenerates incrementally (O4)
+JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench.sh "3" "s2-mega s2-giga"
+# full size ladder x mode(s), cached so the table regenerates incrementally (O4);
+# "default" is O1's owned+descriptor mode, "full" disables both (pre-O1 behavior)
 scripts/bench-table.sh --list
-JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench-table.sh --workers 3 --modes "default owned"
+JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench-table.sh --workers 3 --modes "default full"
 # conservative CI: unit tests only by default; --matrix adds the demo matrix (O3)
 scripts/ci.sh
 scripts/ci.sh --matrix --workers 3
@@ -507,8 +528,11 @@ S2_BASE_PORT=18300 scripts/shard-sweep.sh 3 s2-mega "1 4 8 16 32" "-Ds2.noShipCo
 JAVA_TOOL_OPTIONS=-Xmx4g scripts/local-demo.sh 3 s2-giga
 # reproduce the per-worker snapshot parse (disable controller-shipped configs)
 JAVA_TOOL_OPTIONS=-Xmx4g scripts/local-demo.sh 3 s2-giga -Ds2.noShipConfigs=true
-# owned-only dataplane: remote nodes get stub FIBs, worker retains only owned RIBs/FIBs
-JAVA_TOOL_OPTIONS="-Xmx4g -Ds2.ownedDataplane=true" scripts/local-demo.sh 3 s2-mega
+# default (O1): owned-only dataplane + descriptor shadows + runner positive cache
+JAVA_TOOL_OPTIONS=-Xmx4g scripts/local-demo.sh 3 s2-mega
+# restore the pre-O1 full dataplane / full remote configs
+JAVA_TOOL_OPTIONS="-Xmx4g -Ds2.ownedDataplane=false -Ds2.descriptorShadows=false" \
+  scripts/local-demo.sh 3 s2-mega
 
 # Kubernetes (OrbStack) — <workers> [network]
 scripts/build-s2.sh --image

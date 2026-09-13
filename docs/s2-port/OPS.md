@@ -34,9 +34,42 @@ Recommended values, from the measured per-worker peaks in `M5-SCALE.md` (3 worke
 The local scripts forward `JAVA_TOOL_OPTIONS` to every JVM:
 
 ```sh
-JAVA_TOOL_OPTIONS="-Xmx4g -Ds2.ownedDataplane=true" scripts/local-demo.sh 3 s2-mega
+JAVA_TOOL_OPTIONS="-Xmx4g" scripts/local-demo.sh 3 s2-mega
 scripts/bench.sh "3" "s2-mega s2-giga"          # honours JAVA_TOOL_OPTIONS too
 ```
+
+## S2 memory-feature defaults (O1)
+
+The S2 memory features are **on by default** as of 2026-09-13. They are S2-only (read in
+`S2BdpEngine`/`S2Main`) or, for the memo, set by the runner, so **stock Batfish is
+unaffected**. Each has a documented `=false` override:
+
+| feature | default | disable | notes |
+| --- | --- | --- | --- |
+| owned-only dataplane | **on** | `-Ds2.ownedDataplane=false` | `S2BdpEngine`/`S2Main` (S2-only). Remote nodes get stub FIBs; a run automatically falls back to full RIBs/FIBs for tracks / VNI / IPsec / tunnel. |
+| descriptor shadows | **on** | `-Ds2.descriptorShadows=false` | `S2Main` (S2-only), multi-worker only, and gated by `descriptorShadowsSafe` (same tracks / VNI / tunnel / IPsec fallback: the controller then ships full configs). |
+| positive-only `PrefixSpace` memo | off in shared code, **on in the runner** | `-Ds2.prefixSpacePositiveCacheOnly=false` | pure memoization, never changes results; `scripts/local-demo.sh` exports it and the k8s worker manifest carries it in `JAVA_TOOL_OPTIONS`. |
+| node→worker partitioner | RANDOM | `-Ds2.partition=<scheme>` | unchanged. |
+| prefix sharding | off (`S2_PREFIX_SHARDS` unset) | — | unchanged. |
+
+The runner flag is prepended to any existing `JAVA_TOOL_OPTIONS`, so a later user `-D` wins:
+
+```sh
+# default: owned + descriptor shadows + positive cache
+scripts/local-demo.sh 3 s2-mega
+# restore the pre-O1 full dataplane / full remote configs
+JAVA_TOOL_OPTIONS="-Ds2.ownedDataplane=false -Ds2.descriptorShadows=false" \
+  scripts/local-demo.sh 3 s2-ospf-bgp
+JAVA_TOOL_OPTIONS="-Ds2.prefixSpacePositiveCacheOnly=false" scripts/local-demo.sh 3 s2-triangle
+```
+
+**Verification implication.** With owned or descriptor shadows on, a worker holds no complete
+remote FIB (stub FIBs / reduced configs), so it cannot run the global per-worker traceroute
+digest. The controller therefore does not require a worker digest; it asserts forwarding
+equality from the **exact RIB match** (each worker returns its owned nodes' complete final
+main RIBs, checked against vanilla) plus the **distributed symbolic reachability**
+comparison and the public-API **answer** check (`ribs=MATCH symbolic=MATCH answer=MATCH`).
+The digest check returns when both are disabled with the `=false` flags above (C3).
 
 ## Kubernetes resource requests/limits
 
@@ -53,10 +86,11 @@ Notes:
 * The request (2Gi) reflects a typical steady working set; the limit (6Gi) is what prevents an
   OOM-kill on the large snapshots. CPU requests are 1 because the run is mostly single-threaded
   per phase (the fixpoint barriers serialize workers).
-* The heap is set by the `JAVA_TOOL_OPTIONS: "-Xmx4g"` env in both base manifests, so it is
-  visible and overridable (`kubectl set env` / `kubectl edit` / an overlay patch). The JVM would
-  otherwise derive its max heap from the limit (~1.5 GiB at 6Gi), which is too small for
-  `s2-giga`.
+* The heap is set by the `JAVA_TOOL_OPTIONS` env in both base manifests, so it is visible and
+  overridable (`kubectl set env` / `kubectl edit` / an overlay patch). The worker value also
+  carries the O1 runner default `-Ds2.prefixSpacePositiveCacheOnly=true`; append
+  `-Ds2.prefixSpacePositiveCacheOnly=false` to disable it. The JVM would otherwise derive its
+  max heap from the limit (~1.5 GiB at 6Gi), which is too small for `s2-giga`.
 * The entrypoints still pass `-XX:-UseCompressedOops` (as measured). Do not remove it when
   comparing against the `M5-SCALE.md` numbers.
 * `scripts/k8s-demo.sh <1|3> [network]` renders the overlays and substitutes the snapshot name;
@@ -121,8 +155,8 @@ S2_BASE_PORT=19000 scripts/bench-table.sh \
   --ladder "s2-triangle s2-line" --modes "default" --workers 3
 
 # the full ladder: forward the heap, or sweep shard counts
-JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench-table.sh --workers 3 --modes "default owned"
-scripts/bench-table.sh --workers 3 --shards "1 8" --modes "owned"
+JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench-table.sh --workers 3 --modes "default full"
+scripts/bench-table.sh --workers 3 --shards "1 8" --modes "default"
 ```
 
 The base `JAVA_TOOL_OPTIONS` and the per-cell `S2_PREFIX_SHARDS` are forwarded to every
@@ -159,8 +193,9 @@ demo matrix on a second job. It never runs on push/PR.
 
 The matrix itself is `scripts/ci-matrix.sh`: it runs the full tie-stable demo matrix
 (`s2-triangle s2-line s2-ospf s2-ospf-bgp s2-redist s2-agg s2-static s2-external`) at 3 workers
-in both default and `-Ds2.ownedDataplane=true` modes, and prints a pass/fail summary grepped from
-the `MATCH` result. It is **opt-in** because it is slow:
+in both the new default mode (O1: owned + descriptor shadows) and the pre-O1 `full` mode
+(`-Ds2.ownedDataplane=false -Ds2.descriptorShadows=false`), and prints a pass/fail summary grepped
+from the `MATCH` result. It is **opt-in** because it is slow:
 
 ```sh
 scripts/ci-matrix.sh --run                 # run the matrix

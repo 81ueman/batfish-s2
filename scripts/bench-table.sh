@@ -10,9 +10,9 @@
 #
 # Usage:
 #   scripts/bench-table.sh --list
-#   scripts/bench-table.sh --workers 3 --modes "default owned"
+#   scripts/bench-table.sh --workers 3 --modes "default full"
 #   scripts/bench-table.sh --ladder "s2-big2:640 s2-mega:4096 s2-giga:32768"
-#   scripts/bench-table.sh --shards "1 8" --modes "default owned"
+#   scripts/bench-table.sh --shards "1 8" --modes "default full"
 #   JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench-table.sh --workers 3
 #
 # Options:
@@ -20,9 +20,12 @@
 #   --ladder "<list>"    size ladder; each item is <network>[:<prefixes>]
 #                        (default: s2-big-bgp s2-big2 s2-huge s2-mega s2-giga)
 #   --networks "<list>"  alias for --ladder
-#   --modes "<list>"     mode labels to run (default: "default owned"). A token
-#                        may be a built-in name (default, owned, no-ship,
+#   --modes "<list>"     mode labels to run (default: "default full"). A token
+#                        may be a built-in name (default, full, no-ship, owned,
 #                        owned+descriptor) or "label=<JAVA_TOOL_OPTIONS>".
+#                        "default" is O1's owned+descriptor mode; "full" disables
+#                        both to reproduce the pre-O1 full dataplane/configs.
+#                        "owned"/"owned+descriptor" are kept as explicit aliases.
 #   --shards "<list>"    S2_PREFIX_SHARDS values to sweep (default: $S2_PREFIX_SHARDS or 1)
 #   --cache <file>       cache file (default: results/bench-table.cache.tsv)
 #   --out <file>         also write the markdown table to <file>
@@ -49,7 +52,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 WORKERS_LIST="3"
 LADDER="s2-big-bgp s2-big2 s2-huge s2-mega s2-giga"
-MODES="default owned"
+MODES="default full"
 SHARDS="${S2_PREFIX_SHARDS:-1}"
 CACHE="results/bench-table.cache.tsv"
 OUT=""
@@ -99,8 +102,11 @@ BASE_JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-}"
 builtin_mode_opts() {
   case "$1" in
     default)          echo "" ;;
-    owned)            echo "-Ds2.ownedDataplane=true" ;;
+    # Pre-O1 behavior: full per-worker dataplane + full remote configs.
+    full)             echo "-Ds2.ownedDataplane=false -Ds2.descriptorShadows=false" ;;
     no-ship)          echo "-Ds2.noShipConfigs=true" ;;
+    # Explicit aliases for the (now default) owned / owned+descriptor modes.
+    owned)            echo "-Ds2.ownedDataplane=true" ;;
     owned+descriptor) echo "-Ds2.ownedDataplane=true -Ds2.descriptorShadows=true" ;;
     *) return 1 ;;
   esac

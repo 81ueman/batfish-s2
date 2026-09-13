@@ -142,6 +142,52 @@ public class S2OwnedDataplaneHardeningTest {
     }
   }
 
+  /**
+   * O1: owned mode is on by default (no system property set), and remote shadows therefore have
+   * stub FIBs.
+   */
+  @Test
+  public void testOwnedModeIsDefaultOn() {
+    Configuration r1 = plainConfig(R1);
+    Configuration r2 = plainConfig(R2);
+    Map<String, DistributedNode> nodes = new HashMap<>();
+    nodes.put(R1, DistributedNode.real(r1));
+    nodes.put(R2, DistributedNode.shadow(r2));
+
+    System.clearProperty("s2.ownedDataplane");
+    S2BdpEngine e = engine(nodes);
+    e.prepareDataPlane(ImmutableMap.of(R1, r1, R2, r2), TopologyContext.builder().build());
+    assertThat(
+        "owned mode is on by default", e.canUseTracerouteForDataplaneTopologyPruning(), is(false));
+    assertThat(
+        "a remote node's FIB is a stub by default",
+        e.hasCompleteFibForTrackReachability(R2),
+        is(false));
+  }
+
+  /** {@code -Ds2.ownedDataplane=false} restores the pre-O1 full dataplane. */
+  @Test
+  public void testOwnedModeCanBeDisabled() {
+    Configuration r1 = plainConfig(R1);
+    Configuration r2 = plainConfig(R2);
+    Map<String, DistributedNode> nodes = new HashMap<>();
+    nodes.put(R1, DistributedNode.real(r1));
+    nodes.put(R2, DistributedNode.shadow(r2));
+
+    System.setProperty("s2.ownedDataplane", "false");
+    try {
+      S2BdpEngine e = engine(nodes);
+      e.prepareDataPlane(ImmutableMap.of(R1, r1, R2, r2), TopologyContext.builder().build());
+      assertThat(
+          "owned mode is off when explicitly disabled",
+          e.canUseTracerouteForDataplaneTopologyPruning(),
+          is(true));
+      assertThat(e.hasCompleteFibForTrackReachability(R2), is(true));
+    } finally {
+      System.clearProperty("s2.ownedDataplane");
+    }
+  }
+
   /** With no tracks, VNIs, or overlay topologies, owned mode stays on. */
   @Test
   public void testPlainSnapshotKeepsOwnedMode() {
