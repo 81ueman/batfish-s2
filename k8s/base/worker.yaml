@@ -28,12 +28,16 @@ spec:
               value: "4090"
             - name: SIDECAR_PORT
               value: "4091"
+            # Default worker heap (docs/s2-port/OPS.md). Override per run via the
+            # JAVA_TOOL_OPTIONS env; 4g covers the largest verified snapshot (s2-giga).
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx4g"
           ports:
             - containerPort: 4091
             - containerPort: 5091
           resources:
             requests: {memory: "2Gi", cpu: "1"}
-            limits: {memory: "8Gi"}
+            limits: {memory: "6Gi"}
 ---
 apiVersion: v1
 kind: Service

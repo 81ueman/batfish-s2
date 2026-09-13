@@ -56,10 +56,20 @@ final class S2SidecarServer implements AutoCloseable {
   private void serve(Socket socket) {
     try (Socket s = socket) {
       // Flush both headers before either side blocks on a read.
-      ObjectOutputStream out = new ObjectOutputStream(s.getOutputStream());
+      ObjectOutputStream out =
+          new ObjectOutputStream(
+              new S2Messages.CountingOutputStream(
+                  s.getOutputStream(), S2Messages.RpcStats.routeServedRespBytes));
       out.flush();
-      ObjectInputStream in = new ObjectInputStream(s.getInputStream());
+      ObjectInputStream in =
+          new ObjectInputStream(
+              new S2Messages.CountingInputStream(
+                  s.getInputStream(), S2Messages.RpcStats.routeServedReqBytes));
       Object request = in.readObject();
+      S2Messages.RpcStats.routeServed.incrementAndGet();
+      if (request instanceof S2Messages.BoundaryEdgesRequest) {
+        S2Messages.RpcStats.routeServedBoundary.incrementAndGet();
+      }
       Object response;
       try {
         response = _handler.handle(request);
@@ -68,6 +78,10 @@ final class S2SidecarServer implements AutoCloseable {
         System.err.println("S2 sidecar handler failed for " + request.getClass() + ": " + e);
         e.printStackTrace();
         throw e;
+      }
+      if (response instanceof S2Messages.BoundaryEdgesResponse) {
+        S2Messages.RpcStats.routeServedBoundaryEdges.addAndGet(
+            ((S2Messages.BoundaryEdgesResponse) response).edges.size());
       }
       out.writeObject(response);
       out.flush();
@@ -85,5 +99,8 @@ final class S2SidecarServer implements AutoCloseable {
     } catch (IOException e) {
       // ignore
     }
+    // The route sidecar lives for the whole run and closes last, so this is the worker's
+    // end-of-run hook for the shared RPC counters (route + BDD).
+    S2Messages.RpcStats.printSummary();
   }
 }
