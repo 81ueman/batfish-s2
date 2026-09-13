@@ -3,10 +3,13 @@ package org.batfish.dataplane.ibdp;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import org.batfish.datamodel.BgpProcess;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.Interface;
 import org.batfish.datamodel.Prefix;
@@ -19,14 +22,16 @@ import org.batfish.datamodel.Vrf;
  * control-plane BGP variant): each shard is appointed for one EGP prefix round so only that shard's
  * BGP routes are materialized at a time.
  *
- * <p>The shards partition the prefixes that can be originated (interface addresses and BGP
- * origination networks).
+ * <p>The shards partition the prefixes that can be originated (interface addresses, BGP origination
+ * networks, unconditional network statements and BGP aggregate networks). Prefixes that depend on
+ * one another -- an aggregate and the prefixes it covers -- stay in the same shard, because an
+ * aggregate is only generated while one of its more-specifics is present.
  */
 final class PrefixSharder {
 
   private PrefixSharder() {}
 
-  /** Prefixes of interest: connected interface addresses plus BGP origination networks. */
+  /** All prefixes of interest for sharding (see the class doc). */
   static List<Prefix> queryPrefixes(Map<String, Configuration> configs) {
     Set<Prefix> prefixes = new LinkedHashSet<>();
     for (Configuration c : configs.values()) {
@@ -36,10 +41,15 @@ final class PrefixSharder {
         }
       }
       for (Vrf vrf : c.getVrfs().values()) {
-        if (vrf.getBgpProcess() != null) {
-          vrf.getBgpProcess().getOriginationSpace().getPrefixRanges().stream()
+        BgpProcess proc = vrf.getBgpProcess();
+        if (proc != null) {
+          proc.getOriginationSpace().getPrefixRanges().stream()
               .map(PrefixRange::getPrefix)
               .forEach(prefixes::add);
+          prefixes.addAll(proc.getUnconditionalNetworkStatements());
+          // Aggregates are generated from other routes, but must themselves be appointed in some
+          // shard; otherwise they are filtered out of every round.
+          prefixes.addAll(proc.getAggregates().keySet());
         }
       }
     }
@@ -47,19 +57,107 @@ final class PrefixSharder {
   }
 
   /**
-   * Partition {@code prefixes} into at most {@code n} balanced shards (round-robin over a
-   * deterministic ordering) as {@link PrefixSpace}s. With {@code n <= 1} there is a single shard.
+   * Partition the snapshot's prefixes into at most {@code n} shards. An aggregate and the prefixes
+   * it covers stay in the same shard; groups are assigned largest-first (LPT) to the lightest
+   * shard.
    */
-  static List<PrefixSpace> prefixSpaces(List<Prefix> prefixes, int n) {
+  static List<PrefixSpace> shards(Map<String, Configuration> configs, int n) {
+    List<Prefix> prefixes = queryPrefixes(configs);
+    List<List<Prefix>> groups = dependencyGroups(prefixes, aggregatePrefixes(configs));
+    return assignGroups(groups, n);
+  }
+
+  /** The networks of all BGP aggregates across the snapshot. */
+  private static List<Prefix> aggregatePrefixes(Map<String, Configuration> configs) {
+    Set<Prefix> aggregates = new LinkedHashSet<>();
+    for (Configuration c : configs.values()) {
+      for (Vrf vrf : c.getVrfs().values()) {
+        if (vrf.getBgpProcess() != null) {
+          aggregates.addAll(vrf.getBgpProcess().getAggregates().keySet());
+        }
+      }
+    }
+    return new ArrayList<>(aggregates);
+  }
+
+  /** Union-find grouping: each aggregate is unioned with every prefix it covers. */
+  private static List<List<Prefix>> dependencyGroups(
+      List<Prefix> prefixes, List<Prefix> aggregates) {
     List<Prefix> sorted = new ArrayList<>(prefixes);
     sorted.sort(Comparator.comparing(Prefix::toString));
-    int groups = (n <= 1 || sorted.isEmpty()) ? 1 : n;
+    Map<Prefix, Integer> index = new HashMap<>();
+    for (int i = 0; i < sorted.size(); i++) {
+      index.put(sorted.get(i), i);
+    }
+    int[] parent = new int[sorted.size()];
+    for (int i = 0; i < parent.length; i++) {
+      parent[i] = i;
+    }
+    for (Prefix aggregate : aggregates) {
+      Integer root = index.get(aggregate);
+      if (root == null) {
+        continue;
+      }
+      for (int j = 0; j < sorted.size(); j++) {
+        Prefix p = sorted.get(j);
+        if (!p.equals(aggregate) && aggregate.containsPrefix(p)) {
+          union(parent, root, j);
+        }
+      }
+    }
+    Map<Integer, List<Prefix>> byRoot = new TreeMap<>();
+    for (int i = 0; i < sorted.size(); i++) {
+      byRoot.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(sorted.get(i));
+    }
+    return new ArrayList<>(byRoot.values());
+  }
+
+  private static int find(int[] parent, int x) {
+    while (parent[x] != x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  }
+
+  private static void union(int[] parent, int a, int b) {
+    int ra = find(parent, a);
+    int rb = find(parent, b);
+    if (ra != rb) {
+      parent[rb] = ra;
+    }
+  }
+
+  /**
+   * Assign whole groups to at most {@code n} shards, largest group first to the currently-lightest
+   * shard (list scheduling). Deterministic for a fixed input.
+   */
+  private static List<PrefixSpace> assignGroups(List<List<Prefix>> groups, int n) {
     List<PrefixSpace> shards = new ArrayList<>();
-    for (int i = 0; i < groups; i++) {
+    if (n <= 1 || groups.isEmpty()) {
+      PrefixSpace all = new PrefixSpace();
+      groups.forEach(g -> g.forEach(all::addPrefix));
+      shards.add(all);
+      return shards;
+    }
+    int k = Math.min(n, groups.size());
+    for (int i = 0; i < k; i++) {
       shards.add(new PrefixSpace());
     }
-    for (int i = 0; i < sorted.size(); i++) {
-      shards.get(i % groups).addPrefix(sorted.get(i));
+    int[] sizes = new int[k];
+    List<List<Prefix>> sortedGroups = new ArrayList<>(groups);
+    sortedGroups.sort(
+        Comparator.<List<Prefix>>comparingInt(g -> -g.size())
+            .thenComparing(g -> g.get(0).toString()));
+    for (List<Prefix> group : sortedGroups) {
+      int best = 0;
+      for (int i = 1; i < k; i++) {
+        if (sizes[i] < sizes[best]) {
+          best = i;
+        }
+      }
+      group.forEach(shards.get(best)::addPrefix);
+      sizes[best] += group.size();
     }
     return shards;
   }

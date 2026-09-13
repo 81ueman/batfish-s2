@@ -174,6 +174,14 @@ protocol ごとの対象 prefix を閉じる:
 
 `BgpRoutingProcess` は `appointed()` で advertise/merge をフィルタする（`BgpRoutingProcess.java:1091, 2199, 2234`）。現状の `PrefixSharder` が aggregate prefix を universe に入れないため、**aggregate を使う config では当該経路がどの round でも merge されず欠落しうる**。`networks/example/*` に `aggregate-address` 付き config が存在する。既存テスト（line/ring、aggregate 無し）では露見していない。
 
+**修正済み（C-PFX, 2026-09-13）**: `PrefixSharder` が aggregate ネットワーク・unconditional network statement を universe に加え、**aggregate と被覆 more-specific を同一 shard に束ねる**（union-find + グループ単位 LPT）。
+
+- 再現: `networks/s2-agg`（受信経路を aggregate する 3 ノード eBGP）+ testrig `s2-agg`。
+- 修正前: `S2_PREFIX_SHARDS=2` で aggregate `2.128.0.0/16` が消え `ribs=DIFF symbolic=DIFF`（`=3,5` も DIFF）。
+- 修正後: `S2_PREFIX_SHARDS=2/3/5/8` すべて `MATCH`。単体テスト `testPrefixShardingWithAggregateMatchesVanilla` で固定。
+
+残り（closure の未対応分）: **external BGP announcements** の universe 取り込み（`S2Snapshot.loadExternalBgpAnnouncements` を `PrefixSharder` へ配線）と、**redistribution の明示的 closure**（現状は connected address 収集で概ねカバーされるが、BGP↔BGP 再配布は要確認）。
+
 ---
 
 ## 5. (A) × (B) の結合

@@ -54,6 +54,8 @@ public class S2DistributedControlPlaneTest {
   private static final List<String> OSPF_BGP_CONFIGS = ImmutableList.of("r1", "r2", "r3");
   private static final String REDIST_TESTRIG = "org/batfish/dataplane/testrigs/s2-redist";
   private static final List<String> REDIST_CONFIGS = ImmutableList.of("r1", "r2", "r3", "r4");
+  private static final String AGG_TESTRIG = "org/batfish/dataplane/testrigs/s2-agg";
+  private static final List<String> AGG_CONFIGS = ImmutableList.of("r1", "r2", "r3");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
@@ -96,6 +98,24 @@ public class S2DistributedControlPlaneTest {
     System.setProperty("s2.prefixShardExternalize", "true");
     try {
       assertDistributedMatchesVanilla(OSPF_BGP_TESTRIG, OSPF_BGP_CONFIGS, new int[] {1, 3});
+    } finally {
+      System.clearProperty("s2.prefixShards");
+      System.clearProperty("s2.prefixShardExternalize");
+    }
+  }
+
+  /**
+   * Prefix sharding with a BGP aggregate: the aggregate and the prefixes it covers must stay in the
+   * same shard, or the aggregate route disappears. Regression test for the prefix-closure bug
+   * (`PARTITIONING-PLAN.md` section 4.5); naive round-robin with 3 shards splits the aggregate from
+   * one of its more-specifics.
+   */
+  @Test
+  public void testPrefixShardingWithAggregateMatchesVanilla() throws Exception {
+    System.setProperty("s2.prefixShards", "3");
+    System.setProperty("s2.prefixShardExternalize", "true");
+    try {
+      assertDistributedMatchesVanilla(AGG_TESTRIG, AGG_CONFIGS, new int[] {1, 3});
     } finally {
       System.clearProperty("s2.prefixShards");
       System.clearProperty("s2.prefixShardExternalize");

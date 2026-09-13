@@ -1,0 +1,19 @@
+hostname r1
+
+interface Loopback0
+ ip address 1.1.1.1 255.255.255.255
+
+interface Loopback1
+ ip address 2.128.1.1 255.255.255.0
+
+interface Loopback2
+ ip address 2.128.2.1 255.255.255.0
+
+interface GigabitEthernet0/0
+ ip address 10.0.12.1 255.255.255.252
+
+router bgp 65001
+ bgp router-id 1.1.1.1
+ network 2.128.1.0 mask 255.255.255.0
+ network 2.128.2.0 mask 255.255.255.0
+ neighbor 10.0.12.2 remote-as 65002

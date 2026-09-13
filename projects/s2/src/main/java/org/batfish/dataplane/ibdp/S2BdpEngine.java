@@ -165,7 +165,7 @@ public class S2BdpEngine extends IncrementalBdpEngine {
           } else {
             Map<String, Configuration> configs = new HashMap<>();
             _nodes.forEach((host, node) -> configs.put(host, node.getConfiguration()));
-            shards = PrefixSharder.prefixSpaces(PrefixSharder.queryPrefixes(configs), n);
+            shards = PrefixSharder.shards(configs, n);
           }
           _egpPrefixShards = shards;
         }
