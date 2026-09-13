@@ -289,6 +289,26 @@ to ~168 MiB. With this floor removed, prefix sharding (B) no longer moves the *m
 at this size (it is within noise); B remains the lever when the BGP RIB itself dominates.
 Verified on OrbStack too (1 and 3 Pods MATCH).
 
+Set `-Ds2.noShipConfigs=true` on the controller to reproduce the per-worker-parse path.
+
+### Largest snapshot (`networks/s2-giga`, 32768 prefixes)
+
+`networks/s2-giga` is a 16-router eBGP line with 2048 loopbacks each (32768 origination
+prefixes). Run with `-Xmx4g`, 3 workers, all MATCH:
+
+| configuration | max peak heap / worker |
+| --- | --- |
+| per-worker parse (before) | 2513.1 MiB |
+| controller-shipped configs | 2226.1 MiB |
+| controller-shipped + B (8 shards) | 2363.7 MiB |
+
+At 32768 prefixes the peak is now dominated by the *retained* dataplane/analysis (RIBs,
+FIBs, forward/symbolic structures), so eliminating the parse transient only helps ~11%,
+and prefix sharding (B) no longer helps (its serialization/GC overhead slightly exceeds
+its RIB bound). Both mechanisms remain useful but their payoff depends on which component
+dominates: parse transient (config shipping), BGP RIB (B), or retained dataplane (needs the
+descriptor/owned-only work).
+
 ## Known residual
 
 On a **cyclic equal-cost** topology (e.g. a 6-node ring), the distributed BGP fixpoint

@@ -164,7 +164,8 @@ public final class S2Main {
     Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
 
     // Serialize the parsed configs once so each worker can skip parsing the snapshot.
-    byte[] serializedConfigs = serializeConfigs(snap.configs);
+    byte[] serializedConfigs =
+        Boolean.getBoolean("s2.noShipConfigs") ? null : serializeConfigs(snap.configs);
     try (S2ControllerServer server =
         new S2ControllerServer(port, numWorkers, endpoints, serializedConfigs)) {
       server.start();
