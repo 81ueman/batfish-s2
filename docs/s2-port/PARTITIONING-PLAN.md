@@ -1,6 +1,6 @@
 # S2 ネットワーク分割（ノード割当・prefix sharding）設計メモ & 評価計画
 
-- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）**
+- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）。P2 は完了し、`gpmetis` 導入後の実測を §6.7 に記録（METIS = 品質参照、既定は RANDOM）**
 - Date: 2026-09-13（更新）
 - 対象リポジトリ: `batfish-s2`（branch `master`）
 - 関連: `docs/s2-port/M5-SCALE.md`, `docs/s2-port/REMAINING.md`, `nv-papers/papers/s2-2025.pdf`, `XJTU-NetVerify/s2`（参考実装）
@@ -125,7 +125,7 @@ simulation 前は経路数が未知。以下を段階的に:
 | `COMMUNITY` (label propagation 等) | 中 | 自然なクラスタ | ○(要 seed) | community→LPT |
 
 - **`WEIGHTED_LPT_FM`**: 重み降順 LPT で初期割当（balance 重視）→ load cap 制約付きで FM/KL スワップし cut を削減。論文の目的関数（balance 主・cut 副）に直接対応。
-- **`METIS`**: 参照実装同様に `metis.input` を書き出し `gpmetis -seed=<fixed>` を起動。ローカルに未インストール（`gpmetis not found`）なので、評価時に `brew install metis` 等で導入。KaHyPar も同枠。
+- **`METIS`**: 参照実装同様に `metis.input` を書き出し `gpmetis -seed=<fixed> -ptype=rb -ufactor=1` を起動。**2026-09-13: `gpmetis` (METIS 5.1.0) を評価環境に導入**し実測（§6.7）。未導入環境では `WEIGHTED_LPT_FM` にフォールバックする。KaHyPar も同枠。
 - **決定性**: 乱択 scheme は controller 側で seed 固定で1回だけ計算し、**assignment を worker へ配布**する（現状の「各 worker 再計算」をやめる）。`-Ds2.partition=<scheme>` / protocol の `partition-scheme` で切替。
 
 ### 3.4 scheme 自動選択（DCN / WAN 両対応）
@@ -255,6 +255,58 @@ protocol ごとの対象 prefix を閉じる:
 悪化し、名前規則だけでは DCN で十分でないことを示す。3-node 網 × 3 worker は 1 node/worker
 で scheme 差が出ない（想定どおり）。
 
+### 6.7 P2 評価結果（2026-09-13, `gpmetis` 導入後・METIS 実測）
+
+`gpmetis`（METIS 5.1.0）を評価環境に導入して METIS を実測した。既定呼び出しには **graph file
+形式のバグ**があり、METIS が辺を読めていなかった。修正内容:
+
+- **根本原因**: `MetisPartitioner.writeGraph` が頂点行を `vwgt ewgt nbr` の順で書いていた。
+  METIS の正しい順序は `vwgt nbr ewgt`（頂点重み → 隣接頂点 → 辺重み）。誤順序では辺重み `1`
+  が隣接頂点として解釈され、辺が自己ループ化して実グラフが消え、METIS は**重みを無視して台数
+  だけ**を均そうとする（例: `s2-fat4` が 14/3/3 = imbalance 2.10）。
+- **修正**: フィールド順を `vwgt nbr ewgt` に修正。あわせて `gpmetis` 呼び出しに
+  `-ptype=rb -ufactor=1` を明示（既定も `rb` / `ufactor=1.001` だが固定。`-ufactor=0` は
+  METIS 5.1 でクラッシュするため不可）。
+- **最小再現**（6 頂点・一様重み 20 の line、nparts=3）:
+  - 修正前 `.part.3 = 0 2 1 0 0 2` → 負荷 60/20/40 = 3/1/2、imbalance 1.50。
+  - 修正後 `.part.3 = 0 0 2 2 1 1` → 2/2/2、imbalance 1.00。
+- **testbed before → after**（Java `S2Main partition`, W=3, `imbalance / weighted-cut`）:
+  `s2-line` 2.154/4 → **1.077/4**、`s2-fat4` 2.100/36 → **1.050/24**、
+  `s2-big2` 1.199/12 → 1.199/**4**、`s2-mega` 1.125/22 → 1.125/**4**。
+
+**sweep（W=3, Java `S2Main partition`, `imbalance(max/mean) / weighted-cut`）**:
+
+| network (nodes) | RANDOM | NAME_ORDERED | WEIGHTED_LPT_FM | GREEDY_REGION | METIS |
+| --- | --- | --- | --- | --- | --- |
+| s2-line (6) | 1.077 / 10 | 1.077 / 10 | 1.077 / 4 | 1.500 / 4 | **1.077 / 4** |
+| s2-big2 (10) | 1.195 / 18 | 1.199 / 18 | 1.195 / 14 | 1.199 / 4 | 1.199 / **4** |
+| s2-fat4 (20) | 1.050 / 40 | 1.050 / 46 | 1.050 / 24 | 1.050 / 24 | **1.050 / 24** |
+| s2-triangle (3) | 1.000 / 6 | 1.000 / 6 | 1.000 / 6 | 1.000 / 6 | 1.000 / 6 |
+| s2-ospf-bgp (3) | 1.167 / 6 | 1.167 / 6 | 1.167 / 6 | 1.167 / 6 | 1.167 / 6 |
+| s2-mega (16) | 1.124 / 30 | 1.125 / 30 | 1.124 / 18 | 1.126 / 4 | 1.125 / **4** |
+
+（表は `imbalance / cut` の順。cut は Java 側 union グラフの推定辺重みで、§6.6 の
+`partition-metrics.py` とは重み定義が異なるため数値は直接比較しない。）
+
+知見:
+
+- METIS は全 testbed で balance を `WEIGHTED_LPT_FM` と同等まで改善し、cut は全網で最良または
+  同値（`s2-big2`・`s2-mega` では最小の 4）。
+- ただし **METIS は明確な勝者ではない**: balance は weight-aware scheme 間でほぼ差がなく
+  （一様重み網では RANDOM でもほぼ均衡）、差が出るのは cut。これは論文 §5.6 の知見
+  （scheme 間の差は小さく、支配要因は負荷分散）と一致する。
+- したがって **METIS は「品質参照（quality reference）」として位置づけ、既定 scheme には
+  しない**。既定は従来どおり `RANDOM`（デモ不変）、外部依存を避けたい実運用の推奨は
+  `WEIGHTED_LPT_FM`、`gpmetis` のある環境では `METIS` を品質比較に使う。
+- 正しさ: `S2_BASE_PORT=18800 JAVA_TOOL_OPTIONS=-Ds2.partition=METIS scripts/local-demo.sh 3
+  s2-line` → `ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`
+  （controller `weighted-cut=4 imbalance=1.077`、worker peak 137.5/138.1/132.7 MiB）。
+
+**回帰テスト**: `NodePartitionerTest#testMetisGraphFormat`（`vwgt nbr ewgt` の順序を固定。外部
+バイナリ不要）と `#testMetisBalancesUniformWeightLine`（一様重み line が 2/2/2 になることを
+`gpmetis` がある場合のみ検証、無ければ skip）。バイナリ不在・失敗時は `WEIGHTED_LPT_FM` に
+フォールバックする挙動は不変（`#testMetisFallsBackWhenBinaryMissing`）。
+
 ---
 
 ## 7. マイルストーン
@@ -271,7 +323,9 @@ protocol ごとの対象 prefix を閉じる:
   --assignment ... --weights ...` で imbalance / weighted cut を測る（`--weights` は今回追加）。
 - **P3 `PrefixDependencyGraph`**: **完了** = `PrefixDependencyGraph.java` + `PrefixSharder` 刷新（weighted WCC-LPT、degenerate フォールバック、決定性）、`PrefixSharderTest` 拡張。
 - **P-X shard 数自動選択**: **完了** = `S2_PREFIX_SHARDS=auto`（別名 `-Ds2.prefixShardCount=auto`）。DPDG の成分数・重みから `PrefixShardCountSelector` が決定的に N を選ぶ（予算 `-Ds2.prefixShardBudgetMiB`、既定 192 MiB、上限 16）。sweep は `scripts/shard-sweep.sh`、測定は `M5-SCALE.md`。未設定時の挙動（sharding なし）は不変。
-- **P4 評価 → 既定 scheme 決定 → `M5-SCALE.md` / `README.md` 更新**: 未着手。
+- **P4 評価 → 既定 scheme 決定 → `M5-SCALE.md` / `README.md` 更新**: **評価実施（§6.7, METIS 実測）**。
+  既定は `RANDOM` のまま（デモ不変）、実運用の推奨は `WEIGHTED_LPT_FM`、`METIS` は品質参照。
+  `README.md` への反映は未。
 
 ---
 
@@ -279,7 +333,8 @@ protocol ごとの対象 prefix を閉じる:
 
 - **競合**: `S2Main.java` / `S2BdpEngine.java` / `PrefixSharder.java` は隣タブのメモリ実験と重なる。partition 系は新パッケージ（`.../ibdp/partition/`）に隔離し、既存ファイルの変更を最小化する。P1 相当は実装済みなので、`S2Main` の変更は「assignment を controller で算出して配布」の1箇所 + scheme plumbing に限定し、決定性変更で `S2ControlMessages` に触れる。
 - **決定性**: 乱択 scheme は controller 計算 + seed 固定で配布。worker 再計算をやめる。
-- **METIS 依存**: `gpmetis` 未インストール。評価環境への導入が必要。無い場合は純 Java scheme にフォールバック。
+- **METIS 依存**: `gpmetis` を評価環境に導入済み（§6.7）。無い環境では純 Java scheme に
+  フォールバック（挙動は不変）。導入の可否は §9-3。
 - **BGP 多重固定点**: cyclic equal-cost 網の tie-break 非決定（`M5-SCALE.md` Known residual）と partition の影響を混同しない。partition 評価は tie が安定な testbed で行う。
 - **推定精度**: ノード/prefix 重みの推定が外れると scheme 比較が無意味化。P0 で係数を実測に合わせる。
 - **owned モードの caveat**: owned は opt-in で、Track/VXLAN/IPsec/tunnel/BGP reachability 未対応。partition 評価は対応済み網で行い、既定化は caveat 解消後（REMAINING の owned-mode hardening）。
@@ -291,6 +346,7 @@ protocol ごとの対象 prefix を閉じる:
 
 1. P1 相当は実装済み。残るのは owned-mode hardening の caveat（Track/VXLAN/tunnel/BGP reachability）を誰がいつ埋めるか。
 2. ノード重み推定の係数をどの testbed で校准するか。
-3. METIS を評価環境に常設するか（Docker image に入れるか）。
+3. METIS を評価環境に常設するか（Docker image に入れるか）: **評価環境には導入済み**（§6.7）。
+   Docker image への同梱は未対応。`gpmetis` 不在時は `WEIGHTED_LPT_FM` にフォールバックする。
 4. prefix shard 数を実行時にどう決めるか: **解決（P-X）** = `S2_PREFIX_SHARDS=auto` が DPDG の成分重みから決定的に N を選ぶ（`PrefixShardCountSelector`、予算 `-Ds2.prefixShardBudgetMiB`、上限 16）。`scripts/shard-sweep.sh` で peak-vs-N を測定し既定を正当化（`M5-SCALE.md`）。
 5. DCN 判定ヒューリスティクスの設計（名前規則に依存しすぎないか）。

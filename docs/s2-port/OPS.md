@@ -134,9 +134,11 @@ Verify and locate it:
 gpmetis -version        # or: command -v gpmetis
 ```
 
-Current status: `gpmetis` is **not installed** in the evaluation environment, which is why the
-`METIS` scheme in `PARTITIONING-PLAN.md` §3.3 is listed as "external, fall back to a pure-Java
-scheme when absent". `scripts/partition-metrics.py` itself has no METIS dependency. If METIS
-cannot be installed, use `WEIGHTED_LPT_FM`/`GREEDY_REGION` (pure Java) for the comparison and
-record the substitution in the evaluation write-up. The container image does **not** currently
-bake in METIS; if the evaluation is to run on Kubernetes, add `metis` to `docker/Dockerfile.s2`.
+Current status: `gpmetis` (METIS 5.1.0) **is installed** in the evaluation environment, so the
+`METIS` scheme in `PARTITIONING-PLAN.md` is evaluated for real (§6.7 there). `MetisPartitioner`
+passes `-ptype=rb -ufactor=1` and still falls back to a pure-Java scheme when the binary is absent,
+so no build or stock run depends on it. `scripts/partition-metrics.py` itself has no METIS
+dependency. Where METIS cannot be installed, use `WEIGHTED_LPT_FM`/`GREEDY_REGION` (pure Java) for
+the comparison and record the substitution in the evaluation write-up. The container image does
+**not** currently bake in METIS; if the evaluation is to run on Kubernetes, add `metis` to
+`docker/Dockerfile.s2`.

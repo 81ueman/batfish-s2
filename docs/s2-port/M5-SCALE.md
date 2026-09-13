@@ -409,10 +409,13 @@ it is verified to match vanilla.
    (the paper's on-disk RIBs). Reduces the peak when the FIB dominates; a large shared-code
    change.
 
-6. **Partitioning and worker count.** `NetworkPartitioner` is a balanced round-robin; a graph
-   partitioner (the paper's expert / METIS) would cut boundary edges and balance per-worker RIB
-   size. More workers is the blunt version (retained ~ 1/numWorkers). Orthogonal, cheap to try,
-   but it scales out rather than down.
+6. **Partitioning and worker count.** The node→worker scheme is now pluggable (`-Ds2.partition`;
+   RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS) and the controller ships one
+   assignment; see `PARTITIONING-PLAN.md`. The real `gpmetis` sweep (§6.7 there) shows the
+   weight-aware schemes cut boundary edges substantially vs RANDOM (up to ~7× on these testbeds)
+   while keeping the same balance (METIS = quality reference; balance, not cut, dominates peak
+   memory per paper §5.6). More workers is the blunt version (retained ~ 1/numWorkers). Orthogonal, cheap to try, but it
+   scales out rather than down.
 
 7. **Heap cap (`-Xmx`).** Already used; bounds transient headroom, not the retained floor.
 
