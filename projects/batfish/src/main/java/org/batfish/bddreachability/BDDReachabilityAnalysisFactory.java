@@ -192,6 +192,20 @@ public final class BDDReachabilityAnalysisFactory {
 
   private final Map<String, Configuration> _configs;
 
+  /**
+   * When non-null, per-config <em>source</em> structures are built only for these hostnames (and
+   * source edges are generated only from them). Remote nodes remain usable as edge targets. {@code
+   * null} means "all nodes" (stock behavior).
+   */
+  private final @Nullable Set<String> _localNodes;
+
+  /**
+   * The subset of {@link #_configs} for which source-side per-config structures (ACLs,
+   * transformations, outgoing original flow filter managers, ...) are built. Equal to {@link
+   * #_configs} when {@link #_localNodes} is null.
+   */
+  private final Map<String, Configuration> _sourceConfigs;
+
   // only use this for IpSpaces that have no references
   private final IpSpaceToBDD _dstIpSpaceToBDD;
   private final IpSpaceToBDD _srcIpSpaceToBDD;
@@ -258,30 +272,87 @@ public final class BDDReachabilityAnalysisFactory {
       IpsRoutedOutInterfacesFactory ipsRoutedOutInterfacesFactory,
       boolean ignoreFilters,
       boolean initializeSessions) {
+    this(
+        packet,
+        configs,
+        forwardingAnalysis,
+        ipsRoutedOutInterfacesFactory,
+        ignoreFilters,
+        initializeSessions,
+        null);
+  }
+
+  /**
+   * Constructs a factory scoped to the given {@code localNodes}.
+   *
+   * <p>When {@code localNodes} is non-null, per-config <em>source</em> structures (ACLs,
+   * transformations, source managers, outgoing original flow filter managers, ...) are built only
+   * for those nodes, and source edges are generated only from them. Remote nodes remain usable as
+   * edge targets: whatever is needed to represent target states (in particular source managers and
+   * last-hop state for the neighbors a local node can forward to) is retained. Pass {@code null}
+   * for the stock behavior of building everything for every config.
+   */
+  public BDDReachabilityAnalysisFactory(
+      BDDPacket packet,
+      Map<String, Configuration> configs,
+      ForwardingAnalysis forwardingAnalysis,
+      IpsRoutedOutInterfacesFactory ipsRoutedOutInterfacesFactory,
+      boolean ignoreFilters,
+      boolean initializeSessions,
+      @Nullable Set<String> localNodes) {
     _bddPacket = packet;
     _one = packet.getFactory().one();
     _zero = packet.getFactory().zero();
     _ignoreFilters = ignoreFilters;
     _ipsRoutesOutInterfacesFactory = ipsRoutedOutInterfacesFactory;
+    _configs = configs;
+    _localNodes =
+        localNodes == null
+            ? null
+            : localNodes.stream()
+                .filter(configs::containsKey)
+                .collect(ImmutableSet.toImmutableSet());
+    _sourceConfigs = _localNodes == null ? configs : filterConfigs(configs, _localNodes);
+
     Map<String, Map<String, VrfForwardingBehavior>> vrfForwardingBehavior =
         forwardingAnalysis.getVrfForwardingBehavior();
+    if (_localNodes != null) {
+      vrfForwardingBehavior = filterVrfForwardingBehavior(vrfForwardingBehavior, _localNodes);
+    }
     _topologyEdges =
         vrfForwardingBehavior.values().stream()
             .flatMap(m -> m.values().stream())
             .flatMap(vfb -> vfb.getArpTrueEdge().keySet().stream())
             .collect(ImmutableSet.toImmutableSet());
+
+    // Remote nodes that a local-source edge can enter (targets of local arpTrueEdges/sessions) need
+    // source managers and last-hop state to represent the target states, even though the rest of
+    // their source-side structures is skipped.
+    Set<String> targetNodes =
+        _localNodes == null
+            ? configs.keySet()
+            : _topologyEdges.stream()
+                .map(org.batfish.datamodel.Edge::getNode2)
+                .collect(ImmutableSet.toImmutableSet());
+    Set<String> sourceManagerNodes =
+        _localNodes == null
+            ? configs.keySet()
+            : ImmutableSet.<String>builder().addAll(_localNodes).addAll(targetNodes).build();
+    Map<String, Configuration> sourceManagerConfigs =
+        _localNodes == null ? configs : filterConfigs(configs, sourceManagerNodes);
+
     _lastHopMgr =
         initializeSessions
-            ? new LastHopOutgoingInterfaceManager(packet, configs, _topologyEdges)
+            ? new LastHopOutgoingInterfaceManager(packet, sourceManagerConfigs, _topologyEdges)
             : null;
     _requiredTransitNodeBDD = _bddPacket.allocateBDDBit("requiredTransitNodes");
-    _bddSourceManagers = BDDSourceManager.forNetwork(_bddPacket, configs, initializeSessions);
+    _bddSourceManagers =
+        BDDSourceManager.forNetwork(_bddPacket, sourceManagerConfigs, initializeSessions);
 
-    _configs = configs;
     _dstIpSpaceToBDD = _bddPacket.getDstIpSpaceToBDD();
     _srcIpSpaceToBDD = _bddPacket.getSrcIpSpaceToBDD();
 
-    _aclPermitBDDs = computeAclBDDs(this::ipAccessListToBddForNode, configs);
+    _aclPermitBDDs = computeAclBDDs(this::ipAccessListToBddForNode, _sourceConfigs);
     _aclDenyBDDs = computeAclDenyBDDs(_aclPermitBDDs);
 
     if (_ignoreFilters) {
@@ -290,12 +361,12 @@ public final class BDDReachabilityAnalysisFactory {
       BDDOutgoingOriginalFlowFilterManager empty =
           BDDOutgoingOriginalFlowFilterManager.empty(_bddPacket);
       _bddOutgoingOriginalFlowFilterManagers =
-          toImmutableMap(configs.keySet(), Function.identity(), k -> empty);
+          toImmutableMap(_sourceConfigs.keySet(), Function.identity(), k -> empty);
     } else {
       _bddOutgoingOriginalFlowFilterManagers =
           BDDOutgoingOriginalFlowFilterManager.forNetwork(
               _bddPacket,
-              configs,
+              _sourceConfigs,
               (hostname, aclName) -> _aclPermitBDDs.get(hostname).get(aclName).get());
     }
 
@@ -332,7 +403,7 @@ public final class BDDReachabilityAnalysisFactory {
             vrfForwardingBehavior, InterfaceForwardingBehavior::getAcceptedIps, _dstIpSpaceToBDD);
     _vrfAcceptBDDs = computeVrfAcceptBDDs(); // must do this after populating _ifaceAcceptBDDs
     _nextVrfBDDs = computeNextVrfBDDs(vrfForwardingBehavior, _dstIpSpaceToBDD);
-    _interfacesToVrfsMap = computeInterfacesToVrfsMap(configs);
+    _interfacesToVrfsMap = computeInterfacesToVrfsMap(_sourceConfigs);
 
     _dstIpVars = _bddPacket.getDstIp().getVars();
     _sourceIpVars = _bddPacket.getSrcIp().getVars();
@@ -356,6 +427,23 @@ public final class BDDReachabilityAnalysisFactory {
             _nextVrfBDDs,
             _nullRoutedBDDs,
             this::flowsLeavingInterface);
+  }
+
+  /** Returns a copy of {@code configs} containing only the given hostnames, preserving order. */
+  private static Map<String, Configuration> filterConfigs(
+      Map<String, Configuration> configs, Set<String> hostnames) {
+    return configs.entrySet().stream()
+        .filter(entry -> hostnames.contains(entry.getKey()))
+        .collect(ImmutableMap.toImmutableMap(Entry::getKey, Entry::getValue));
+  }
+
+  /** Restricts a forwarding-analysis view to the given hostnames. */
+  private static Map<String, Map<String, VrfForwardingBehavior>> filterVrfForwardingBehavior(
+      Map<String, Map<String, VrfForwardingBehavior>> vrfForwardingBehavior,
+      Set<String> hostnames) {
+    return vrfForwardingBehavior.entrySet().stream()
+        .filter(entry -> hostnames.contains(entry.getKey()))
+        .collect(ImmutableMap.toImmutableMap(Entry::getKey, Entry::getValue));
   }
 
   /**
@@ -428,7 +516,7 @@ public final class BDDReachabilityAnalysisFactory {
     long start = System.currentTimeMillis();
     Map<String, Map<String, Transition>> result =
         toImmutableMap(
-            _configs,
+            _sourceConfigs,
             Entry::getKey, /* node */
             nodeEntry -> {
               Configuration node = nodeEntry.getValue();
@@ -450,7 +538,7 @@ public final class BDDReachabilityAnalysisFactory {
     long start = System.currentTimeMillis();
     Map<String, Map<String, Transition>> result =
         toImmutableMap(
-            _configs,
+            _sourceConfigs,
             Entry::getKey, /* node */
             nodeEntry -> {
               Configuration node = nodeEntry.getValue();
@@ -672,8 +760,12 @@ public final class BDDReachabilityAnalysisFactory {
     return finalNodes.stream()
         /* In differential context, nodes can be added or removed. This can lead to a finalNode
          * that doesn't exist in _configs.
+         *
+         * In localNodes (owned) mode we only build source-side structures for the local nodes and
+         * the targets they can reach. Skip any final node without such structures (a remote source
+         * state); its disposition edge is served by the worker that owns it.
          */
-        .filter(_configs::containsKey)
+        .filter(_bddOutgoingOriginalFlowFilterManagers::containsKey)
         .map(
             node ->
                 new Edge(
@@ -801,7 +893,7 @@ public final class BDDReachabilityAnalysisFactory {
 
   @VisibleForTesting
   Stream<Edge> generateRules_PreInInterface_PacketPolicy() {
-    return _configs.values().stream()
+    return _sourceConfigs.values().stream()
         .flatMap(
             config -> {
               String nodeName = config.getHostname();
@@ -1059,7 +1151,7 @@ public final class BDDReachabilityAnalysisFactory {
       return Stream.of();
     }
 
-    return _configs.entrySet().stream()
+    return _sourceConfigs.entrySet().stream()
         .flatMap(
             nodeEntry -> {
               String node = nodeEntry.getKey();
@@ -1223,7 +1315,7 @@ public final class BDDReachabilityAnalysisFactory {
 
   @VisibleForTesting
   Stream<Edge> generateRules_SetupSessionDisposition_NodeInterfaceDisposition() {
-    return _configs.values().stream()
+    return _sourceConfigs.values().stream()
         .flatMap(
             c -> {
               String node = c.getHostname();
@@ -1268,6 +1360,11 @@ public final class BDDReachabilityAnalysisFactory {
         matchDst(UniverseIpSpace.INSTANCE),
         ImmutableSet.of(),
         ImmutableSet.of(),
+        // Deliberately global, even in localNodes mode: the node-level disposition edges (in
+        // particular NodeAccept -> Accept) are attributed to the worker that owns the disposition
+        // state, not the node, so the global dispositions must remain reachable from every node's
+        // state. Disposition edges that require a node's source structures are filtered in
+        // generateRules_NodeDropNoRoute_DropNoRoute.
         _configs.keySet(),
         ImmutableSet.of(FlowDisposition.ACCEPTED),
         useInterfaceRoots);
@@ -1659,7 +1756,7 @@ public final class BDDReachabilityAnalysisFactory {
 
   private RangeComputer computeTransformationRanges() {
     RangeComputer rangeComputer = new RangeComputer();
-    _configs.values().forEach(c -> computeTransformationRanges(c, rangeComputer));
+    _sourceConfigs.values().forEach(c -> computeTransformationRanges(c, rangeComputer));
     return rangeComputer;
   }
 
@@ -1701,6 +1798,7 @@ public final class BDDReachabilityAnalysisFactory {
           .map(locationToStateExpr::visit)
           .filter(Optional::isPresent)
           .map(Optional::get)
+          .filter(this::isLocalRoot)
           .forEach(root -> rootConstraints.merge(root, srcIpSpaceBDD, BDD::or));
     }
 
@@ -1720,6 +1818,27 @@ public final class BDDReachabilityAnalysisFactory {
         "No sources are compatible with the headerspace constraint");
 
     return finalRootConstraints;
+  }
+
+  /**
+   * Whether the given origination state belongs to a node this factory builds source structures
+   * for. Always true in stock mode.
+   */
+  private boolean isLocalRoot(StateExpr root) {
+    if (_localNodes == null) {
+      return true;
+    }
+    String hostname;
+    if (root instanceof OriginateVrf) {
+      hostname = ((OriginateVrf) root).getHostname();
+    } else if (root instanceof OriginateInterface) {
+      hostname = ((OriginateInterface) root).getHostname();
+    } else if (root instanceof OriginateInterfaceLink) {
+      hostname = ((OriginateInterfaceLink) root).getHostname();
+    } else {
+      return true;
+    }
+    return _localNodes.contains(hostname);
   }
 
   /** Creates mapping of hostname -&gt; interface name -&gt; vrf name for active interfaces */
@@ -1852,7 +1971,7 @@ public final class BDDReachabilityAnalysisFactory {
    * <p>Note that this may need further filtering depending on application.
    */
   private @Nonnull Stream<Interface> getAllL3Interfaces() {
-    return _configs.values().stream()
+    return _sourceConfigs.values().stream()
         .flatMap(Configuration::activeInterfaces)
         .filter(Interface::isActiveL3);
   }

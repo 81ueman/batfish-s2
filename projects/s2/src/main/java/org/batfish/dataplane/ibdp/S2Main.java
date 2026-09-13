@@ -498,7 +498,9 @@ public final class S2Main {
   /**
    * Like {@link #buildReachabilityAnalysis(S2Snapshot, DataPlane)}, but when {@code ownedHosts} is
    * non-null the forwarding analysis is restricted to those switches so the worker generates only
-   * locally-owned edges. Cross-worker edges into owned states are pulled from their owners.
+   * locally-owned edges. Cross-worker edges into owned states are pulled from their owners. The
+   * factory is likewise scoped to the owned hostnames so it does not build remote source
+   * structures; remote nodes remain usable as edge targets.
    */
   private static BDDReachabilityAnalysis buildReachabilityAnalysis(
       S2Snapshot snap, DataPlane dp, Set<String> ownedHosts) {
@@ -514,7 +516,8 @@ public final class S2Main {
             forwardingAnalysis,
             new IpsRoutedOutInterfacesFactory(dp.getFibs()),
             false,
-            false);
+            false,
+            ownedHosts);
     IpSpaceAssignment.Builder builder = IpSpaceAssignment.builder();
     for (Configuration c : snap.configs.values()) {
       for (Interface i : c.getAllInterfaces().values()) {

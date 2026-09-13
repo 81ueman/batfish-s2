@@ -106,8 +106,8 @@ public class ScaledReachabilityTest {
     // owns (local source edges only); boundary edges into its states are pulled below.
     List<BDDReachabilityAnalysis> analyses = new ArrayList<>();
     for (int w = 0; w < workers; w++) {
-      analyses.add(
-          buildAnalysis(configs, dp, assignment(configs), scaled ? ownedHosts.get(w) : null));
+      Set<String> hosts = scaled ? ownedHosts.get(w) : null;
+      analyses.add(buildAnalysis(configs, dp, assignment(configs, hosts), hosts));
     }
 
     List<S2ReachabilityWorker[]> holders = new ArrayList<>();
@@ -191,9 +191,13 @@ public class ScaledReachabilityTest {
     }
   }
 
-  private static IpSpaceAssignment assignment(Map<String, Configuration> configs) {
+  private static IpSpaceAssignment assignment(
+      Map<String, Configuration> configs, Set<String> ownedHosts) {
     IpSpaceAssignment.Builder builder = IpSpaceAssignment.builder();
     for (Configuration c : configs.values()) {
+      if (ownedHosts != null && !ownedHosts.contains(c.getHostname())) {
+        continue;
+      }
       for (Interface i : c.getAllInterfaces().values()) {
         if (i.getActive()) {
           builder.assign(
@@ -221,7 +225,8 @@ public class ScaledReachabilityTest {
             forwardingAnalysis,
             new IpsRoutedOutInterfacesFactory(dp.getFibs()),
             false,
-            false);
+            false,
+            ownedHosts);
     return factory.bddReachabilityAnalysis(assignment);
   }
 

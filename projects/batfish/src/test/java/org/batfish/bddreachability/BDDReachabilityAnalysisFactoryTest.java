@@ -131,6 +131,8 @@ import org.batfish.symbolic.state.DropAclIn;
 import org.batfish.symbolic.state.DropAclOut;
 import org.batfish.symbolic.state.DropNoRoute;
 import org.batfish.symbolic.state.DropNullRoute;
+import org.batfish.symbolic.state.EdgeStateExpr;
+import org.batfish.symbolic.state.InterfaceStateExpr;
 import org.batfish.symbolic.state.NodeAccept;
 import org.batfish.symbolic.state.NodeDropAclIn;
 import org.batfish.symbolic.state.NodeDropAclOut;
@@ -157,6 +159,7 @@ import org.batfish.symbolic.state.Query;
 import org.batfish.symbolic.state.SetupSessionDeliveredToSubnet;
 import org.batfish.symbolic.state.SetupSessionExitsNetwork;
 import org.batfish.symbolic.state.StateExpr;
+import org.batfish.symbolic.state.VrfStateExpr;
 import org.hamcrest.Matcher;
 import org.junit.Rule;
 import org.junit.Test;
@@ -325,6 +328,87 @@ public final class BDDReachabilityAnalysisFactoryTest {
           edges,
           not(hasEntry(equalTo(new NodeDropNullRoute(otherNode)), hasKey(DropNullRoute.INSTANCE))));
     }
+  }
+
+  @Test
+  public void testLocalNodesScopesSourceStructures() throws IOException {
+    SortedMap<String, Configuration> configs = TestNetworkSources.twoNodeNetwork();
+    Batfish batfish = BatfishTestUtils.getBatfish(configs, temp);
+    batfish.computeDataPlane(batfish.getSnapshot());
+    DataPlane dataPlane = batfish.loadDataPlane(batfish.getSnapshot());
+
+    BDDReachabilityAnalysisFactory factory =
+        new BDDReachabilityAnalysisFactory(
+            _pkt,
+            configs,
+            dataPlane.getForwardingAnalysis(),
+            new IpsRoutedOutInterfacesFactory(dataPlane.getFibs()),
+            false,
+            false,
+            ImmutableSet.of(TestNetworkSources.PEER_NAME));
+
+    Set<Edge> edges =
+        getEdges(
+            factory
+                .bddReachabilityAnalysis(
+                    ipSpaceAssignment(batfish),
+                    TRUE,
+                    ImmutableSet.of(),
+                    ImmutableSet.of(),
+                    configs.keySet(),
+                    ALL_DISPOSITIONS)
+                .getForwardEdgeMap());
+
+    String remote = TestNetworkSources.CONFIG_NAME;
+
+    // Per-config source (i.e. pipeline) structures for the non-local node are not built.
+    assertTrue(
+        "remote node pipeline states should be pruned",
+        edges.stream()
+            .map(Edge::getPreState)
+            .filter(BDDReachabilityAnalysisFactoryTest::isPipelineState)
+            .noneMatch(pre -> isStateOnNode(pre, remote)));
+
+    // The non-local node remains usable as an edge target.
+    assertTrue(
+        "remote node should remain an edge target",
+        edges.stream()
+            .map(Edge::getPostState)
+            .anyMatch(
+                post ->
+                    post instanceof PreInInterface
+                        && ((PreInInterface) post).getHostname().equals(remote)));
+  }
+
+  /** Whether {@code state} is a pipeline (per-config source) state. */
+  private static boolean isPipelineState(StateExpr state) {
+    return state instanceof PreInInterface
+        || state instanceof PostInInterface
+        || state instanceof PostInVrf
+        || state instanceof PreOutVrf
+        || state instanceof PreOutEdge
+        || state instanceof PreOutEdgePostNat
+        || state instanceof PreOutInterfaceDeliveredToSubnet
+        || state instanceof PreOutInterfaceExitsNetwork
+        || state instanceof PreOutInterfaceInsufficientInfo
+        || state instanceof PreOutInterfaceNeighborUnreachable
+        || state instanceof OriginateVrf
+        || state instanceof OriginateInterface
+        || state instanceof OriginateInterfaceLink;
+  }
+
+  /** Whether {@code state} is a source state belonging to {@code hostname}. */
+  private static boolean isStateOnNode(StateExpr state, String hostname) {
+    if (state instanceof InterfaceStateExpr) {
+      return ((InterfaceStateExpr) state).getHostname().equals(hostname);
+    }
+    if (state instanceof VrfStateExpr) {
+      return ((VrfStateExpr) state).getHostname().equals(hostname);
+    }
+    if (state instanceof EdgeStateExpr) {
+      return ((EdgeStateExpr) state).getSrcNode().equals(hostname);
+    }
+    return false;
   }
 
   @Test
