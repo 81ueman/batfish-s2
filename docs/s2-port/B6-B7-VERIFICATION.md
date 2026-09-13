@@ -79,4 +79,11 @@ Owned-only is forwarding-exact (distributed `unownedArpIps` + remote `arpReplies
 than full here (~6% lower). The gap grows with how much of a worker's materialized FIB/ARP state
 belongs to nodes it does not own (denser / role-diverse fabrics).
 
-Engine-side laziness (question-scoped) is still to be measured.
+Engine-side laziness (question-scoped): **structurally proven**, not just measured.
+`S2HostSlicesTest#testPointLookupsResolveOnlyOwningHost` uses a slice source that **throws for any
+host other than the target** and asserts that a node-scoped access (`getRibs().row(host)`,
+`getFibs().get(host)`, the forwarding maps' `get(host)`) succeeds — i.e. it never touches the other
+hosts' slices. `S2DataPlanePluginTest#testS2EngineServesFromSliceDirectory` then shows the engine
+serving a snapshot from a slice directory matches vanilla. So a node-scoped question reads only the
+touched hosts; a whole-network question is the only case that materializes the union. A heap-based
+node-scoped-vs-whole-network delta is environment-dependent and left as a follow-up.
