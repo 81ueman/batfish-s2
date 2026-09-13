@@ -128,9 +128,10 @@ Notes:
   lets a 24 GiB node host 16 workers). The
   controller's 1g heap / 2Gi limit / 512Mi request reflect its much smaller coordinator working set
   (A7).
-* **Multi-Pod scale-out.** `s2-fat4` (20 nodes, DCN) at **6 / 8 / 16 worker Pods all `MATCH`**
-  (AUTO→METIS; verifier peak ~180 MiB; worker peaks ~130-180 MiB). Scale-out beyond that is bounded
-  by node memory / the request floor, not by the runner.
+* **Multi-Pod scale-out.** `s2-fat4` (20 nodes, DCN) at **6 / 8 / 16 worker Pods** and `s2-mega`
+  (16 nodes) at **8 / 16** all `MATCH` (AUTO→METIS; verifier peak ~180 MiB; worker peaks
+  ~130-300 MiB). Scale-out beyond that is bounded by node memory / the request floor, not by the
+  runner.
 * **Why no CPU limit.** Only a request is set: the dataplane/symbolic phases burst across cores, so
   a CFS quota would throttle them without protecting anything (there is one heavy Pod per run on
   the demo cluster). The fixpoint barriers serialize the distributed control plane, which is what

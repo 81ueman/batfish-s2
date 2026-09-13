@@ -664,19 +664,35 @@ python3 scripts/calibrate-weights.py imbalance \
 既定 demo `S2_BASE_PORT=23000 scripts/local-demo.sh 3 s2-line` は
 `ribs/reachability/symbolic/answer = MATCH`。
 
-### 6.13 予定している性能測定（未実施）
+### 6.13 性能測定（scheme の max peak / wall、2026-09-13 実施）
 
-現状の分割評価は**構造品質**（`imbalance` / `weighted-cut` / コスト考慮 imbalance）と MATCH のみで、
-**実性能（max per-worker peak・wall time）の scheme 比較は未実施**。
+`scripts/bench-table.sh --workers "3 6" --ladder "s2-fat4:20 s2-mega:4096" --modes
+"RANDOM=-Ds2.partition=RANDOM …"`（既定パイプライン = owned+descriptor+positive-cache、`-Xmx4g`）。
 
-- **ノード分割 scheme の性能 sweep（未実施）**: `RANDOM` / `NAME_ORDERED` / `WEIGHTED_LPT_FM` /
-  `GREEDY_REGION` / `METIS` を `-Ds2.partition=<scheme>` 付きで実行し、**max per-worker peak と
-  wall time** を記録。網は `s2-fat4`（20 ノード、ロール差が大きい）と `s2-mega`、workers は 3 と 6。
-  owned mode では per-worker peak が所有ノードのコストに比例するため、**コストを均す scheme が
-  max peak を下げる**はず（論文 §5.6 の「balance が支配」の実測再確認）。
-- **prefix shard の性能 sweep（peak は実測済み、時間は未収録）**: `scripts/shard-sweep.sh` が
-  `peak-vs-N`（`s2-big2` / `s2-mega`, N=1..32）を実測済み（`M5-SCALE.md`）。**wall time を追加**し、
-  現行既定（owned+descriptor+positive-cache）でも再測定する（同条件では peak は flat＝no-op の見込み）。
+**max per-worker peak（MiB、全 20 セル `MATCH`）**:
+
+| network (nodes) | W | RANDOM | NAME_ORDERED | WEIGHTED_LPT_FM | GREEDY_REGION | METIS |
+| --- | --- | --- | --- | --- | --- | --- |
+| `s2-fat4` (20) | 3 | 167.6 | 173.5 | **105.8** | 158.6 | 132.0 |
+| `s2-fat4` (20) | 6 | 164.8 | 162.5 | **129.4** | 138.8 | 139.6 |
+| `s2-mega` (16) | 3 | 287.0 | **268.2** | 294.8 | 297.5 | 298.2 |
+| `s2-mega` (16) | 6 | 298.5 | 301.2 | 298.2 | 298.8 | 300.3 |
+
+知見:
+
+- **DCN（ロール差が大きい `s2-fat4`）では `WEIGHTED_LPT_FM` が最良**: W=3 で RANDOM 比 **−37%**
+  （105.8 vs 167.6）、W=6 でも −21%。`METIS` が次点。owned mode では per-worker peak ∝ 所有ノード
+  コストなので、**コストを均す scheme が max peak を下げる**（論文 §5.6 の「balance が支配」を実測で
+  再確認）。
+- **一様な line（`s2-mega`）では scheme 差はほぼ無し**（268–301 MiB、ノイズ内）。ロール差がないと
+  割当を変えても peak は動かない。
+- **wall / engine time も scheme 間でほぼ同じ**（7–17 s / 1–6 s）。この規模では cut の throughput への
+  寄与は見えない。
+- 結論: 汎用既定は **`WEIGHTED_LPT_FM`**（DCN で最良・一様網で無害）、`METIS` は品質参照。runner 既定
+  `auto`（→METIS）は許容範囲だが、DCN では `WEIGHTED_LPT_FM` の方が低 peak。
+
+- **prefix shard**: peak-vs-N は実測済み（`scripts/shard-sweep.sh`, `M5-SCALE.md`）。wall time は
+  未収録で、現行既定では peak は flat（no-op）の見込み。
 
 ---
 
