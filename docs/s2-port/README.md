@@ -161,6 +161,7 @@ networks/s2-fat2/     # generated 5-switch FatTree k=2 (tie-stable)
 networks/s2-fat4/     # generated 20-switch FatTree k=4 (DCN; throughput/memory, tie-unstable)
 networks/s2-genline/  # generated 4-switch eBGP line (generator smoke test)
 scripts/gen-topology.py  # generate FatTree/line testbeds
+scripts/bench.sh      # run a network x workers matrix and emit a metrics table
 networks/s2-big-bgp/  # 6-node eBGP line with 192 prefixes (prefix-sharding measurement)
 networks/s2-big2/     # 10-node eBGP line with 640 prefixes (larger prefix-sharding measurement)
 networks/s2-huge/     # 8-node eBGP line with 2048 prefixes

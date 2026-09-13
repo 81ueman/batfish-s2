@@ -152,7 +152,11 @@ public class S2BdpEngine extends IncrementalBdpEngine {
         }
       }
     }
-    System.err.printf("S2 phase %s: peak heap %.1f MiB%n", phase, peak / 1048576.0);
+    System.err.printf(
+        "S2 phase %s: peak heap %.1f MiB, t=%.1fs%n",
+        phase,
+        peak / 1048576.0,
+        java.lang.management.ManagementFactory.getRuntimeMXBean().getUptime() / 1000.0);
   }
 
   private volatile List<PrefixSpace> _egpPrefixShards;

@@ -435,6 +435,11 @@ follow-up work.
 # unit tests
 bazel test //projects/s2:s2_tests
 
+# metrics matrix (result / max peak MiB / controller MiB / engine s / wall s)
+# env (JAVA_TOOL_OPTIONS, S2_PREFIX_SHARDS) is forwarded to each run
+scripts/bench.sh "1 3" "s2-line s2-mega"
+JAVA_TOOL_OPTIONS="-Xmx4g -Ds2.ownedDataplane=true" scripts/bench.sh "3" "s2-mega s2-giga"
+
 # local multi-process (workers, optional network; defaults to s2-triangle)
 bazel build //projects/s2:s2_main_deploy.jar
 scripts/local-demo.sh 1
