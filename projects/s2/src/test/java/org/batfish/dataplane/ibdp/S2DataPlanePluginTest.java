@@ -20,7 +20,8 @@ import org.junit.rules.TemporaryFolder;
 /**
  * Proves S2 is usable through the standard Batfish interface: selected with {@code
  * -dataplaneengine=s2}, the plugin runs the distributed engine and produces a data plane the normal
- * question engine can consume, identical to the stock {@code ibdp} engine at 1 and 3 workers.
+ * question engine can consume, identical to the stock {@code ibdp} engine at 1 and 3 workers. See
+ * {@code org.batfish.question.routes.S2RoutesQuestionTest} for a stock-question end-to-end check.
  */
 public final class S2DataPlanePluginTest {
 
