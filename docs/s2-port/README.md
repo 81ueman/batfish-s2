@@ -228,6 +228,7 @@ scripts/ci-matrix.sh       # opt-in demo matrix
 k8s/overlays/{1,3,6,8,16}pod  # worker replica counts (scripts/k8s-demo.sh <N>)
 docs/s2-port/OPS.md        # k8s resources, default -Xmx, METIS
 docs/s2-port/PLUGIN.md     # S2 as a Batfish dataplane engine (-dataplaneengine=s2)
+docs/s2-port/RESULTS.md    # consolidated drop-in/pool results (memory B.6, k8s B.7)
 networks/s2-big-bgp/  # 6-node eBGP line with 192 prefixes (prefix-sharding measurement)
 networks/s2-big2/     # 10-node eBGP line with 640 prefixes (larger prefix-sharding measurement)
 networks/s2-huge/     # 8-node eBGP line with 2048 prefixes
