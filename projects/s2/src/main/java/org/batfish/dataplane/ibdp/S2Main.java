@@ -3,6 +3,10 @@ package org.batfish.dataplane.ibdp;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryPoolMXBean;
+import java.lang.management.MemoryType;
+import java.lang.management.MemoryUsage;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,6 +39,7 @@ import org.batfish.datamodel.Interface;
 import org.batfish.datamodel.Ip;
 import org.batfish.datamodel.IpProtocol;
 import org.batfish.datamodel.UniverseIpSpace;
+import org.batfish.datamodel.Vrf;
 import org.batfish.datamodel.flow.Trace;
 import org.batfish.dataplane.TracerouteEngineImpl;
 import org.batfish.specifier.InterfaceLocation;
@@ -87,6 +92,44 @@ public final class S2Main {
     return dir;
   }
 
+  /**
+   * Shadow nodes only delegate BGP today, so multi-worker runs of snapshots that use OSPF/EIGRP/
+   * IS-IS/RIP hit a null shadow process. Fail with a clear message instead of an NPE.
+   */
+  private static void assertDistributedProtocolsSupported(S2Snapshot snap, int numWorkers) {
+    if (numWorkers <= 1) {
+      return;
+    }
+    for (Configuration c : snap.configs.values()) {
+      for (Vrf vrf : c.getVrfs().values()) {
+        if (!vrf.getOspfProcesses().isEmpty()
+            || !vrf.getEigrpProcesses().isEmpty()
+            || vrf.getIsisProcess() != null
+            || vrf.getRipProcess() != null) {
+          throw new UnsupportedOperationException(
+              "Multi-worker distributed IGP is not supported yet (only eBGP): "
+                  + c.getHostname()
+                  + " uses OSPF/EIGRP/IS-IS/RIP. Run with 1 worker or use the in-process "
+                  + "S2DistributedControlPlaneTest.");
+        }
+      }
+    }
+  }
+
+  /** Sum of the peak used bytes across all heap memory pools (for scale reporting). */
+  private static long peakHeapBytes() {
+    long total = 0;
+    for (MemoryPoolMXBean pool : ManagementFactory.getMemoryPoolMXBeans()) {
+      if (pool.getType() == MemoryType.HEAP) {
+        MemoryUsage peak = pool.getPeakUsage();
+        if (peak != null) {
+          total += peak.getUsed();
+        }
+      }
+    }
+    return total;
+  }
+
   // ---------------------------------------------------------------- controller
 
   private static void runController(String[] args) throws Exception {
@@ -96,6 +139,7 @@ public final class S2Main {
     int port = Integer.parseInt(args[4]);
 
     S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
+    assertDistributedProtocolsSupported(snap, numWorkers);
     snap.batfish.computeDataPlane(snap.snapshot);
     DataPlane vanilla = snap.batfish.loadDataPlane(snap.snapshot);
     Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
@@ -118,9 +162,10 @@ public final class S2Main {
         reachMatch &= workerResult.reachability.equals(vanillaReach);
       }
 
-      // Distributed symbolic reachability (M5), evaluated at the public API level: combine the
-      // workers' reachable BDDs, turn them into the reachability answer (concrete flows), and
-      // compare with vanilla Batfish's answer.
+      // Distributed symbolic reachability (M5). First compare the workers' reachable BDDs
+      // state-by-state against the reference. This is strict: the answer check below re-runs the
+      // fixpoint on the full reference graph (seeded with the distributed result), so it could mask
+      // a worker that dropped states.
       BDDReachabilityAnalysis referenceAnalysis = buildReachabilityAnalysis(snap, vanilla);
       JFactory referenceFactory = (JFactory) referenceAnalysis.getBDDPacket().getFactory();
       Map<StateExpr, BDD> mergedReachable = new HashMap<>();
@@ -129,6 +174,21 @@ public final class S2Main {
           mergedReachable.put(e.getKey(), new BDDTransfer().load(referenceFactory, e.getValue()));
         }
       }
+      Map<StateExpr, BDD> referenceReachable = referenceAnalysis.computeReverseReachableStates();
+      boolean symbolicMatch = mergedReachable.keySet().equals(referenceReachable.keySet());
+      StateExpr firstSymbolicDiff = null;
+      if (symbolicMatch) {
+        for (Map.Entry<StateExpr, BDD> e : referenceReachable.entrySet()) {
+          BDD actual = mergedReachable.get(e.getKey());
+          if (actual == null || !actual.biimp(e.getValue()).isOne()) {
+            symbolicMatch = false;
+            firstSymbolicDiff = e.getKey();
+            break;
+          }
+        }
+      }
+
+      // Public API level: turn the reachable BDDs into concrete flows and compare with vanilla.
       Set<Flow> distributedFlows =
           BDDReachabilityUtils.constructFlows(
               referenceAnalysis.getBDDPacket(),
@@ -139,6 +199,18 @@ public final class S2Main {
               referenceAnalysis.getIngressLocationReachableBDDs());
       boolean answerMatch = distributedFlows.equals(vanillaFlows);
 
+      // Per-worker peak heap (scale evidence).
+      long totalPeakHeapBytes = 0;
+      for (S2ControlMessages.Result workerResult : results.values()) {
+        totalPeakHeapBytes += workerResult.peakHeapBytes;
+      }
+      long controllerPeakHeapBytes = peakHeapBytes();
+      for (S2ControlMessages.Result workerResult : results.values()) {
+        System.out.printf(
+            "worker %d peak heap %.1f MiB%n",
+            workerResult.workerId, workerResult.peakHeapBytes / 1048576.0);
+      }
+
       Path out = outputDir().resolve("result-" + numWorkers + "worker.txt");
       StringBuilder report = new StringBuilder();
       report.append("network=").append(network).append('\n');
@@ -146,16 +218,29 @@ public final class S2Main {
       report.append("hosts=").append(distributedRibs.size()).append('\n');
       report.append(match ? "RESULT=MATCH\n" : "RESULT=DIFF\n");
       report.append(reachMatch ? "REACHABILITY=MATCH\n" : "REACHABILITY=DIFF\n");
+      report.append(symbolicMatch ? "SYMBOLIC=MATCH\n" : "SYMBOLIC=DIFF\n");
       report.append(answerMatch ? "ANSWER=MATCH\n" : "ANSWER=DIFF\n");
+      report.append("--- per-worker peak heap (MiB) ---\n");
+      for (S2ControlMessages.Result workerResult : results.values()) {
+        report
+            .append("worker ")
+            .append(workerResult.workerId)
+            .append(": ")
+            .append(String.format("%.1f", workerResult.peakHeapBytes / 1048576.0))
+            .append('\n');
+      }
+      report.append(String.format("total workers: %.1f%n", totalPeakHeapBytes / 1048576.0));
+      report.append(String.format("controller: %.1f%n", controllerPeakHeapBytes / 1048576.0));
       report.append("--- distributed ---\n").append(distributedRibs);
       Files.writeString(out, report.toString());
-      boolean allMatch = match && reachMatch && answerMatch;
+      boolean allMatch = match && reachMatch && symbolicMatch && answerMatch;
       System.out.printf(
-          "S2 %s (%d workers): ribs=%s reachability=%s answer=%s, wrote %s%n",
+          "S2 %s (%d workers): ribs=%s reachability=%s symbolic=%s answer=%s, wrote %s%n",
           allMatch ? "MATCH" : "DIFF",
           numWorkers,
           match ? "MATCH" : "DIFF",
           reachMatch ? "MATCH" : "DIFF",
+          symbolicMatch ? "MATCH" : "DIFF",
           answerMatch ? "MATCH" : "DIFF",
           out);
       if (!allMatch) {
@@ -163,6 +248,11 @@ public final class S2Main {
         System.out.println("distributed:  " + distributedRibs);
         System.out.println("vanilla reach: " + vanillaReach);
         results.values().forEach(r -> System.out.println("worker reach: " + r.reachability));
+        if (!symbolicMatch) {
+          System.out.printf(
+              "symbolic: reference states=%d distributed states=%d firstDiff=%s%n",
+              referenceReachable.size(), mergedReachable.size(), firstSymbolicDiff);
+        }
       }
     }
   }
@@ -178,6 +268,7 @@ public final class S2Main {
     int sidecarPort = Integer.parseInt(args[6]);
 
     S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
+    assertDistributedProtocolsSupported(snap, numWorkers);
     Map<String, Integer> assignment =
         NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, 0L);
     Set<String> ownedHosts = new HashSet<>();
@@ -300,14 +391,17 @@ public final class S2Main {
           }
         }
 
+        long peakHeapBytes = peakHeapBytes();
         out.writeObject(
             new S2ControlMessages.Result(
                 workerId,
                 ribsOf(dp, assignment, workerId),
                 reachabilityDigest(dp, snap),
-                symbolicSerialized));
+                symbolicSerialized,
+                peakHeapBytes));
         out.flush();
-        System.out.printf("S2 worker %d done%n", workerId);
+        System.out.printf(
+            "S2 worker %d done (peak heap %.1f MiB)%n", workerId, peakHeapBytes / 1048576.0);
       }
     }
   }

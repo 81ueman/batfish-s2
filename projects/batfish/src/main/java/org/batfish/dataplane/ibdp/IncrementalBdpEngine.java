@@ -897,20 +897,23 @@ public class IncrementalBdpEngine {
     // EIGRP
     LOGGER.info("{}: Propagate EIGRP routes", iterationLabel);
     vrs.parallelStream().forEach(vr -> vr.eigrpIteration(allNodes, networkConfigurations));
+    synchronizeWorkers();
     vrs.parallelStream().forEach(VirtualRouter::mergeEigrpRoutesToMainRib);
 
     // Re-initialize IS-IS exports.
     LOGGER.info("{}: Recompute IS-IS routes", iterationLabel);
     vrs.parallelStream()
         .forEach(vr -> vr.initIsisExports(iteration, allNodes, networkConfigurations));
+    synchronizeWorkers();
 
     // IS-IS route propagation
-    AtomicBoolean isisChanged = new AtomicBoolean(true);
+    boolean isisChanged = true;
     int isisSubIterations = 0;
-    while (isisChanged.get()) {
+    while (isisChanged) {
       isisSubIterations++;
       LOGGER.info("{}: Recompute IS-IS routes: subIteration {}", iterationLabel, isisSubIterations);
-      isisChanged.set(false);
+      synchronizeWorkers();
+      AtomicBoolean localIsisChanged = new AtomicBoolean(false);
       vrs.parallelStream()
           .forEach(
               vr -> {
@@ -919,13 +922,16 @@ public class IncrementalBdpEngine {
                 if (p != null
                     && vr.unstageIsisRoutes(
                         allNodes, networkConfigurations, p.getKey(), p.getValue())) {
-                  isisChanged.set(true);
+                  localIsisChanged.set(true);
                 }
               });
+      isisChanged = hasNotReachedIgpFixedPoint(localIsisChanged.get());
     }
 
     LOGGER.info("{}: Propagate OSPF external", iterationLabel);
+    synchronizeWorkers();
     vrs.parallelStream().forEach(vr -> vr.ospfIteration(allNodes, networkConfigurations));
+    synchronizeWorkers();
     vrs.parallelStream().forEach(VirtualRouter::mergeOspfRoutesToMainRib);
 
     computeIterationOfBgpRoutes(iterationLabel, allNodes, vrs, networkConfigurations);
@@ -975,6 +981,15 @@ public class IncrementalBdpEngine {
    */
   protected Schedule initialSchedule() {
     return _settings.getScheduleName();
+  }
+
+  /**
+   * Decide the IGP (OSPF/IS-IS/RIP) convergence condition cluster-wide. The stock engine keeps
+   * iterating while the local dirty flag is set; a distributed engine must OR the flags of every
+   * worker, or workers finish the IGP fixpoint after different numbers of iterations.
+   */
+  protected boolean hasNotReachedIgpFixedPoint(boolean localDirty) {
+    return localDirty;
   }
 
   private static void updateLayer3Vnis(List<VirtualRouter> vrs) {
@@ -1041,6 +1056,9 @@ public class IncrementalBdpEngine {
      */
     LOGGER.info("Initialize for IGP computation");
     vrs.parallelStream().forEach(vr -> vr.initForIgpComputation(topologyContext));
+    // initForIgpComputation queues outgoing messages to neighbors; let every worker finish before
+    // any worker starts consuming them.
+    synchronizeWorkers();
 
     // Apply rib-groups sequentially to avoid concurrent writes to same destination RIB
     LOGGER.info("Apply rib-groups for IGP");
@@ -1270,11 +1288,13 @@ public class IncrementalBdpEngine {
     while (dirty) {
       ospfInternalIterations++;
       LOGGER.info("OSPF internal: Iteration {}", ospfInternalIterations);
-      // Compute node schedule
+      // Use a single-step schedule so every worker takes the same steps. NODE_COLORED colors the
+      // worker's own (possibly shadowed) topology and can yield a different number of steps per
+      // worker, which would desynchronize the phase barriers.
       IbdpSchedule schedule =
           IbdpSchedule.getSchedule(
               _settings,
-              _settings.getScheduleName(),
+              Schedule.ALL,
               allNodes,
               TopologyContext.builder().setOspfTopology(ospfTopology).build());
 
@@ -1283,15 +1303,18 @@ public class IncrementalBdpEngine {
         List<VirtualRouter> scheduleVrs =
             toListInRandomOrder(
                 scheduleNodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
+        synchronizeWorkers();
         scheduleVrs.parallelStream()
             .forEach(virtualRouter -> virtualRouter.ospfIteration(allNodes, nc));
+        synchronizeWorkers();
         scheduleVrs.parallelStream().forEach(VirtualRouter::mergeOspfRoutesToMainRib);
       }
-      dirty =
+      boolean localDirty =
           allNodes.values().parallelStream()
               .flatMap(n -> iterationVirtualRouters(n).stream())
               .flatMap(vr -> vr.getOspfProcesses().values().stream())
               .anyMatch(OspfRoutingProcess::isDirty);
+      dirty = hasNotReachedIgpFixedPoint(localDirty);
       if (ospfInternalIterations > MAX_OSPF_INTERNAL_ITERATIONS) {
         throw new BdpOscillationException(
             "OSPF did not converge after " + MAX_OSPF_INTERNAL_ITERATIONS + " iterations");
@@ -1306,29 +1329,32 @@ public class IncrementalBdpEngine {
    * @param nodes nodes for which to initialize the routes, keyed by name
    * @param topology network topology
    */
-  private static void initRipInternalRoutes(
+  private void initRipInternalRoutes(
       SortedMap<String, Node> nodes, List<VirtualRouter> vrs, Topology topology) {
     /*
      * Consider this method to be a simulation within a simulation. Since RIP routes are not
      * affected by other protocols, we propagate all RIP routes amongst the nodes prior to
      * processing other routing protocols (e.g., OSPF & BGP)
      */
-    AtomicBoolean ripInternalChanged = new AtomicBoolean(true);
+    boolean ripInternalChanged = true;
     int ripInternalIterations = 0;
-    while (ripInternalChanged.get()) {
+    while (ripInternalChanged) {
       ripInternalIterations++;
-      ripInternalChanged.set(false);
       LOGGER.info("RIP internal: Iteration {}", ripInternalIterations);
+      synchronizeWorkers();
+      AtomicBoolean localChanged = new AtomicBoolean(false);
       vrs.parallelStream()
           .forEach(
               vr -> {
                 if (vr.propagateRipInternalRoutes(nodes, topology)) {
-                  ripInternalChanged.set(true);
+                  localChanged.set(true);
                 }
               });
+      synchronizeWorkers();
       LOGGER.info("Unstage RIP internal: Iteration {}", ripInternalIterations);
       vrs.parallelStream().forEach(VirtualRouter::unstageRipInternalRoutes);
 
+      synchronizeWorkers();
       LOGGER.info("Import RIP internal: Iteration {}", ripInternalIterations);
       vrs.parallelStream()
           .forEach(
@@ -1336,6 +1362,7 @@ public class IncrementalBdpEngine {
                 importRib(vr._ripRib, vr._ripInternalRib);
                 importRib(vr.getMainRib(), vr._ripRib, vr.getName());
               });
+      ripInternalChanged = hasNotReachedIgpFixedPoint(localChanged.get());
     }
   }
 }

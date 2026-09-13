@@ -94,6 +94,12 @@ public class S2BdpEngine extends IncrementalBdpEngine {
     return !_coordinator.roundCheck(!localConverged);
   }
 
+  /** IGP convergence (OSPF/IS-IS/RIP) is global for the same reason as the EGP fixed point. */
+  @Override
+  protected boolean hasNotReachedIgpFixedPoint(boolean localDirty) {
+    return _coordinator.roundCheck(localDirty);
+  }
+
   /**
    * Start with the {@link Schedule#ALL} schedule (one step) rather than the default {@code
    * NODE_COLORED} schedule. A worker computes its coloring from its own (partially shadowed)

@@ -39,7 +39,7 @@ so distribution needs no RIB surgery:
 | File | Change |
 | --- | --- |
 | `Node` | drop `final` |
-| `IncrementalBdpEngine` | `public`; `newNode`, `iterationVirtualRouters`, `protected nextDataplane`, `protected hasNotReachedRoutingFixedPoint`, and the synchronization hooks `synchronizeWorkers`, `exchangeIterationHashCode`, `hasReachedTopologyFixedPoint`, `initialSchedule` |
+| `IncrementalBdpEngine` | `public`; `newNode`, `iterationVirtualRouters`, `protected nextDataplane`, `protected hasNotReachedRoutingFixedPoint`, and the synchronization hooks `synchronizeWorkers`, `exchangeIterationHashCode`, `hasReachedTopologyFixedPoint`, `hasNotReachedIgpFixedPoint`, `initialSchedule` |
 | `BgpRoutingProcess` | `public`; `getOutgoingRoutesForEdge` protected |
 
 ### New module `//projects/s2`
@@ -99,7 +99,7 @@ The controller also evaluates the result at the **public API level**: it combine
 the workers' backward-reachable BDDs and produces Batfish's reachability answer
 (`BDDReachabilityUtils.constructFlows`), then compares the concrete flow set with
 vanilla. Verified locally and on OrbStack Kubernetes for 1 and 3 Pods
-(`ribs=MATCH reachability=MATCH answer=MATCH`).
+(`ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`).
 
 - [x] **Slice 5** Per-worker-local graph generation (paper §3.1/§4.3). Each worker
   builds its `BDDReachabilityAnalysis` with an `OwnedForwardingAnalysis` over its own
@@ -107,7 +107,7 @@ vanilla. Verified locally and on OrbStack Kubernetes for 1 and 3 Pods
   (`PreOutEdgePostNat(src remote) -> PreInInterface(dst local)`) from the owner with a
   portable transition codec (`TransitionTransfer`). Verified per-state against the
   full graph for 1 and 3 workers (`ScaledReachabilityTest`) and on Kubernetes
-  (`ribs=MATCH reachability=MATCH answer=MATCH`). See `M5-SCALE.md`.
+  (`ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`). See `M5-SCALE.md`.
 
 This closes the scalability gap: the symbolic edge table per worker now shrinks with
 the number of workers, not just the fixpoint.
@@ -139,7 +139,9 @@ under `projects/s2/src/test/resources/...`). A loop testrig is unsuitable: vanil
 Batfish itself does not converge on it. `networks/s2-line/configs/{r1..r6}` is a
 6-node static eBGP line used for the M5 symbolic scale evidence and for the
 multi-hop distributed-control-plane regression test; it matches vanilla at 1, 3,
-and 6 workers.
+and 6 workers. `networks/s2-ospf/configs/{r1..r4}` is a 4-node OSPF line used by the
+in-process IGP-phase-synchronization regression test (multi-process IGP is not
+supported yet, so only the 1-worker runner demo works).
 
 ## Layout added by this work
 
@@ -147,5 +149,6 @@ and 6 workers.
 projects/s2/          # our implementation + tests
 networks/s2-triangle/ # 3-node demo snapshot
 networks/s2-line/     # 6-node scale snapshot
+networks/s2-ospf/     # 4-node OSPF sync-test snapshot
 docker/, k8s/, scripts/, docs/s2-port/
 ```

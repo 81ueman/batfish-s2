@@ -86,7 +86,8 @@ public class BDDReachabilityAnalysis implements Serializable {
     initTransientFields();
   }
 
-  Map<StateExpr, BDD> computeReverseReachableStates() {
+  /** Compute the reverse-reachable state BDDs from the query header space. */
+  public Map<StateExpr, BDD> computeReverseReachableStates() {
     Map<StateExpr, BDD> reverseReachableStates = new HashMap<>();
     reverseReachableStates.put(Query.INSTANCE, _queryHeaderSpaceBdd);
     BDDReachabilityUtils.backwardFixpointTransposed(

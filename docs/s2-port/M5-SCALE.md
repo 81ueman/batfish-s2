@@ -8,14 +8,17 @@ shrink with the number of workers (the fixpoint was already distributed).
 ## Verified
 
 * **M1–M5 all green.** OrbStack Kubernetes, 1 Pod and 3 Pods both report
-  `ribs=MATCH reachability=MATCH answer=MATCH` against vanilla Batfish
+  `ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH` against vanilla Batfish
   (`scripts/k8s-demo.sh 1|3`, `scripts/compare-answers.sh`).
 * The scaled backward fixpoint equals the full-graph fixpoint **per state** for
-  1 and 3 workers (`ScaledReachabilityTest`), on the `s2-triangle` snapshot.
+  1 and 3 workers (`ScaledReachabilityTest`), on the `s2-triangle` snapshot. The runner
+  now performs the same strict per-state comparison itself (`symbolic=MATCH`).
 * Multi-process runner (`scripts/local-demo.sh`) matches for 1 and 3 workers (verified
   repeatedly on the 3-worker triangle: 5/5).
 * `networks/s2-line` (6-node static eBGP line) matches vanilla for 1, 3, and 6 workers,
   and is covered by `S2DistributedControlPlaneTest#testMultiHopLineMatchesVanilla`.
+* The runner reports per-worker peak heap (`S2ControlMessages.Result.peakHeapBytes`,
+  printed by the controller and written to `result-<N>worker.txt`).
 
 ## Design (approved and implemented)
 
@@ -97,9 +100,23 @@ before any symbolic reachability), which are now fixed:
    per-step phase barrier. `S2BdpEngine.initialSchedule` starts from `ALL` (one step);
    the oscillation fallback `NODE_SERIALIZED` has one step per node. Both have a step
    count that is identical across workers.
+5. **IGP phases (OSPF / EIGRP / IS-IS / RIP).** The same phase barriers are applied to
+   the IGP portions of the engine (`initForIgpComputation`, `initOspfInternalRoutes`,
+   `initRipInternalRoutes`, and the EIGRP/IS-IS/OSPF-external phases in
+   `computeDependentRoutesIteration`), their convergence loops are made global via the
+   `hasNotReachedIgpFixedPoint` hook, and the OSPF internal schedule is `ALL`
+   (deterministic). `S2DistributedControlPlaneTest#testOspfMatchesVanilla` runs a 4-node
+   OSPF line at 1 and 3 workers.
 
 With these, `s2-line` matches vanilla at 1, 3, and 6 workers and multi-worker runs no
 longer hang.
+
+**IGP scope note.** Shadow nodes only delegate BGP today, so the *multi-process* runner
+supports eBGP only. The IGP synchronization above is exercised by the in-process
+`S2BdpEngine` test (where shadows share the real nodes). Multi-worker OSPF/IS-IS/EIGRP/
+RIP in the multi-process runner would additionally need shadow IGP delegation; until
+then the runner fails fast with a clear message instead of an NPE
+(`S2Main.assertDistributedProtocolsSupported`).
 
 ## Known residual
 
@@ -121,6 +138,7 @@ bazel build //projects/s2:s2_main_deploy.jar
 scripts/local-demo.sh 1
 scripts/local-demo.sh 3
 scripts/local-demo.sh 3 s2-line
+scripts/local-demo.sh 1 s2-ospf   # OSPF: 1 worker only (multi-worker IGP not supported)
 
 # Kubernetes (OrbStack)
 scripts/build-s2.sh --image
@@ -138,4 +156,5 @@ scripts/compare-answers.sh
 * BDD transport: `S2BddSidecar.java`
 * BDD codec: `projects/bdd/src/main/java/net/sf/javabdd/BDDTransfer.java`
 * Transition codec: `projects/batfish/.../transition/TransitionTransfer.java`
-* Tests: `ScaledReachabilityTest`, `TransitionTransferTest`, `DistributedReachabilityTest`
+* Tests: `ScaledReachabilityTest`, `TransitionTransferTest`, `DistributedReachabilityTest`,
+  `S2DistributedControlPlaneTest` (`testMultiHopLineMatchesVanilla`, `testOspfMatchesVanilla`)

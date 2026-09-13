@@ -75,16 +75,19 @@ final class S2ControlMessages {
     final Map<String, Map<String, List<AbstractRoute>>> ribs;
     final Map<String, String> reachability;
     final Map<org.batfish.symbolic.state.StateExpr, String> symbolicReachable;
+    final long peakHeapBytes;
 
     Result(
         int workerId,
         Map<String, Map<String, List<AbstractRoute>>> ribs,
         Map<String, String> reachability,
-        Map<org.batfish.symbolic.state.StateExpr, String> symbolicReachable) {
+        Map<org.batfish.symbolic.state.StateExpr, String> symbolicReachable,
+        long peakHeapBytes) {
       this.workerId = workerId;
       this.ribs = ribs;
       this.reachability = reachability;
       this.symbolicReachable = symbolicReachable;
+      this.peakHeapBytes = peakHeapBytes;
     }
   }
 }

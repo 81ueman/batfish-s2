@@ -44,6 +44,8 @@ public class S2DistributedControlPlaneTest {
   private static final String LINE_TESTRIG = "org/batfish/dataplane/testrigs/s2-line";
   private static final List<String> LINE_CONFIGS =
       ImmutableList.of("r1", "r2", "r3", "r4", "r5", "r6");
+  private static final String OSPF_TESTRIG = "org/batfish/dataplane/testrigs/s2-ospf";
+  private static final List<String> OSPF_CONFIGS = ImmutableList.of("r1", "r2", "r3", "r4");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
@@ -59,6 +61,15 @@ public class S2DistributedControlPlaneTest {
   @Test
   public void testMultiHopLineMatchesVanilla() throws Exception {
     assertDistributedMatchesVanilla(LINE_TESTRIG, LINE_CONFIGS, new int[] {1, 3, 6});
+  }
+
+  /**
+   * Regression test for the distributed IGP phase barriers: a multi-hop OSPF topology must produce
+   * the same main RIBs as vanilla at 1 and 3 workers.
+   */
+  @Test
+  public void testOspfMatchesVanilla() throws Exception {
+    assertDistributedMatchesVanilla(OSPF_TESTRIG, OSPF_CONFIGS, new int[] {1, 3});
   }
 
   private void assertDistributedMatchesVanilla(
