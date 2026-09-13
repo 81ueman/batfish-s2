@@ -46,6 +46,8 @@ public class S2RemoteSidecarTest {
   private static final List<String> OSPF_CONFIGS = ImmutableList.of("r1", "r2", "r3", "r4");
   private static final String OSPF_BGP_TESTRIG = "org/batfish/dataplane/testrigs/s2-ospf-bgp";
   private static final List<String> OSPF_BGP_CONFIGS = ImmutableList.of("r1", "r2", "r3");
+  private static final String REDIST_TESTRIG = "org/batfish/dataplane/testrigs/s2-redist";
+  private static final List<String> REDIST_CONFIGS = ImmutableList.of("r1", "r2", "r3", "r4");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
@@ -64,6 +66,12 @@ public class S2RemoteSidecarTest {
   @Test
   public void testRemoteOspfBgpSidecar() throws Exception {
     runAndAssert(OSPF_BGP_TESTRIG, OSPF_BGP_CONFIGS);
+  }
+
+  /** OSPF<->BGP redistribution must propagate correctly over the sidecar. */
+  @Test
+  public void testRemoteRedistributionSidecar() throws Exception {
+    runAndAssert(REDIST_TESTRIG, REDIST_CONFIGS);
   }
 
   private void runAndAssert(String testrig, List<String> testrigConfigs) throws Exception {

@@ -126,11 +126,17 @@ delegation:
 * `OspfRoutingProcess.EnqueueProvider` is the pluggable hook; `OspfTopology.EdgeId` is
   now `Serializable`.
 
-Verified end to end with the multi-process runner: `s2-ospf` (OSPF only) and
-`s2-ospf-bgp` (eBGP + OSPF) both report
-`ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH` at 1 and 3 workers, and
-`S2RemoteSidecarTest#testRemoteOspfSidecar` / `testRemoteOspfBgpSidecar` exercise the
-sidecar path in-process.
+**Redistribution** is covered too. `networks/s2-redist` has OSPF->BGP redistribution on
+one border router (r2) and BGP->OSPF redistribution (with `subnets`) on another (r3), so
+an OSPF-only router (r4) learns a remote loopback as an OSPF external type-2 route.
+`testRedistributionProducesRoutes` asserts both directions actually produce routes;
+`testRedistributionMatchesVanilla` and `testRemoteRedistributionSidecar` assert the
+distributed result equals vanilla at 1 and 3 workers.
+
+Verified end to end: the multi-process local runner and OrbStack Kubernetes (1 and 3
+worker Pods) both report `ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH` for
+`s2-ospf`, `s2-ospf-bgp`, and `s2-redist`. `scripts/k8s-demo.sh <1|3> [network]` and
+`scripts/compare-answers.sh [network]` take the snapshot name.
 
 **Protocol scope note.** Only eBGP and OSPF are distributed. EIGRP, IS-IS, and RIP are
 not (they have different cross-node shapes: EIGRP/IS-IS also push into a neighbor's
@@ -162,12 +168,17 @@ scripts/local-demo.sh 3
 scripts/local-demo.sh 3 s2-line
 scripts/local-demo.sh 3 s2-ospf
 scripts/local-demo.sh 3 s2-ospf-bgp   # eBGP + OSPF
+scripts/local-demo.sh 3 s2-redist     # OSPF<->BGP redistribution
 
-# Kubernetes (OrbStack)
+# Kubernetes (OrbStack) — <workers> [network]
 scripts/build-s2.sh --image
 scripts/k8s-demo.sh 1
 scripts/k8s-demo.sh 3
 scripts/compare-answers.sh
+scripts/k8s-demo.sh 3 s2-ospf
+scripts/compare-answers.sh s2-ospf
+scripts/k8s-demo.sh 3 s2-ospf-bgp
+scripts/k8s-demo.sh 3 s2-redist
 ```
 
 ## Key files

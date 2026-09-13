@@ -2,6 +2,7 @@ package org.batfish.dataplane.ibdp;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 
 import com.google.common.collect.HashBasedTable;
@@ -24,6 +25,8 @@ import org.batfish.datamodel.BgpAdvertisement;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.DataPlane;
 import org.batfish.datamodel.FinalMainRib;
+import org.batfish.datamodel.Prefix;
+import org.batfish.datamodel.RoutingProtocol;
 import org.batfish.datamodel.isis.IsisTopology;
 import org.batfish.main.Batfish;
 import org.batfish.main.BatfishTestUtils;
@@ -48,6 +51,8 @@ public class S2DistributedControlPlaneTest {
   private static final List<String> OSPF_CONFIGS = ImmutableList.of("r1", "r2", "r3", "r4");
   private static final String OSPF_BGP_TESTRIG = "org/batfish/dataplane/testrigs/s2-ospf-bgp";
   private static final List<String> OSPF_BGP_CONFIGS = ImmutableList.of("r1", "r2", "r3");
+  private static final String REDIST_TESTRIG = "org/batfish/dataplane/testrigs/s2-redist";
+  private static final List<String> REDIST_CONFIGS = ImmutableList.of("r1", "r2", "r3", "r4");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
@@ -78,6 +83,43 @@ public class S2DistributedControlPlaneTest {
   @Test
   public void testOspfBgpMatchesVanilla() throws Exception {
     assertDistributedMatchesVanilla(OSPF_BGP_TESTRIG, OSPF_BGP_CONFIGS, new int[] {1, 3});
+  }
+
+  /**
+   * OSPF->BGP redistribution (on r2) and BGP->OSPF redistribution (on r3) must propagate correctly
+   * across workers: r4 learns r1's loopback as an OSPF external route.
+   */
+  @Test
+  public void testRedistributionMatchesVanilla() throws Exception {
+    assertDistributedMatchesVanilla(REDIST_TESTRIG, REDIST_CONFIGS, new int[] {1, 3});
+  }
+
+  /** Sanity-check that the redistribution snapshot actually exercises both directions. */
+  @Test
+  public void testRedistributionProducesRoutes() throws Exception {
+    Batfish batfish =
+        BatfishTestUtils.getBatfishFromTestrigText(
+            TestrigText.builder().setConfigurationFiles(REDIST_TESTRIG, REDIST_CONFIGS).build(),
+            _folder);
+    NetworkSnapshot snapshot = batfish.getSnapshot();
+    batfish.computeDataPlane(snapshot);
+    DataPlane dp = batfish.loadDataPlane(snapshot);
+    Prefix r1Loopback = Prefix.parse("1.1.1.1/32");
+    // r2 redistributes OSPF into BGP: r3 (eBGP) learns r1's loopback as a BGP route.
+    boolean r3Bgp =
+        dp.getRibs().get("r3", Configuration.DEFAULT_VRF_NAME).getRoutes().stream()
+            .anyMatch(
+                r -> r.getNetwork().equals(r1Loopback) && r.getProtocol() == RoutingProtocol.BGP);
+    // r3 redistributes BGP into OSPF: r4 (OSPF only) learns it as an OSPF external route.
+    boolean r4OspfExternal =
+        dp.getRibs().get("r4", Configuration.DEFAULT_VRF_NAME).getRoutes().stream()
+            .anyMatch(
+                r ->
+                    r.getNetwork().equals(r1Loopback)
+                        && (r.getProtocol() == RoutingProtocol.OSPF_E2
+                            || r.getProtocol() == RoutingProtocol.OSPF_E1));
+    assertThat("r3 should learn 1.1.1.1/32 via OSPF->BGP redistribution", r3Bgp, is(true));
+    assertThat("r4 should learn 1.1.1.1/32 via BGP->OSPF redistribution", r4OspfExternal, is(true));
   }
 
   private void assertDistributedMatchesVanilla(

@@ -4,9 +4,13 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-A="results/k8s-controller-1pod.log"
-B="results/k8s-controller-3pod.log"
-[[ -f "$A" && -f "$B" ]] || { echo "run scripts/k8s-demo.sh 1 and 3 first" >&2; exit 1; }
+NETWORK="${1:-s2-triangle}"
+A="results/k8s-controller-${NETWORK}-1pod.log"
+B="results/k8s-controller-${NETWORK}-3pod.log"
+[[ -f "$A" && -f "$B" ]] || {
+  echo "run 'scripts/k8s-demo.sh 1 ${NETWORK}' and 'scripts/k8s-demo.sh 3 ${NETWORK}' first" >&2
+  exit 1
+}
 
 summary() {
   grep -oE "ribs=[A-Z]+ reachability=[A-Z]+ symbolic=[A-Z]+ answer=[A-Z]+" "$1" | tail -1
