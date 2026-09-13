@@ -36,6 +36,8 @@ public final class S2PoolServiceTest {
   private static final List<String> TRIANGLE_CONFIGS = ImmutableList.of("r1", "r2", "r3");
   private static final String OSPF_BGP = "org/batfish/dataplane/testrigs/s2-ospf-bgp";
   private static final List<String> OSPF_BGP_CONFIGS = ImmutableList.of("r1", "r2", "r3");
+  private static final String EXTERNAL = "org/batfish/dataplane/testrigs/s2-external";
+  private static final List<String> EXTERNAL_CONFIGS = ImmutableList.of("r1", "r2");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
@@ -62,7 +64,16 @@ public final class S2PoolServiceTest {
   }
 
   private SnapshotInput loadVanilla(String testrig, List<String> configs) throws Exception {
-    TestrigText testrigText = TestrigText.builder().setConfigurationFiles(testrig, configs).build();
+    return loadVanilla(testrig, configs, false);
+  }
+
+  private SnapshotInput loadVanilla(String testrig, List<String> configs, boolean external)
+      throws Exception {
+    TestrigText.Builder builder = TestrigText.builder().setConfigurationFiles(testrig, configs);
+    if (external) {
+      builder.setExternalBgpAnnouncements(testrig);
+    }
+    TestrigText testrigText = builder.build();
     Batfish batfish = BatfishTestUtils.getBatfishFromTestrigText(testrigText, _folder);
     batfish.getSettings().setDataplaneEngineName(IncrementalDataPlanePlugin.PLUGIN_NAME);
     NetworkSnapshot snapshot = batfish.getSnapshot();
@@ -85,6 +96,19 @@ public final class S2PoolServiceTest {
     try (Pool pool = new Pool(WORKERS)) {
       assertSnapshotMatches(pool.controller(), triangle);
       assertSnapshotMatches(pool.controller(), ospfBgp);
+    }
+  }
+
+  /**
+   * External BGP announcements travel from the engine through the controller to the workers: the
+   * controller builds its snapshot from shipped configs, so it must ship the engine's announcements
+   * rather than re-derive them.
+   */
+  @Test
+  public void testPoolPropagatesExternalBgpAnnouncements() throws Exception {
+    SnapshotInput external = loadVanilla(EXTERNAL, EXTERNAL_CONFIGS, true);
+    try (Pool pool = new Pool(WORKERS)) {
+      assertSnapshotMatches(pool.controller(), external);
     }
   }
 

@@ -253,7 +253,12 @@ public final class S2ControllerService implements AutoCloseable {
           Boolean.parseBoolean(System.getProperty("s2.descriptorShadows", "true"));
       S2Sharding.Payload payload =
           S2Sharding.preparePayload(
-              snap, plan.assignment, _numWorkers, shipConfigs, descriptorShadowsRequested);
+              snap,
+              plan.assignment,
+              _numWorkers,
+              shipConfigs,
+              descriptorShadowsRequested,
+              request.externalAdverts);
       if (payload.descriptorShadows()) {
         System.out.printf(
             "S2 controller-service: descriptor shadows on (%d full configs + %d descriptors)%n",

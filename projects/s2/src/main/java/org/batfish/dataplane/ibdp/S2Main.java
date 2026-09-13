@@ -186,13 +186,17 @@ public final class S2Main {
     // without remote policy/forwarding bodies (see S2Sharding.descriptorShadowsSafe, which falls
     // back to shipping full configs for tracks / VNI / tunnel / IPsec).
     boolean shipConfigs = !Boolean.getBoolean("s2.noShipConfigs");
+    byte[] serializedExternalAdverts =
+        S2ControlMessages.serializeExternalAdverts(
+            snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
     S2Sharding.Payload payload =
         S2Sharding.preparePayload(
             snap,
             plan.assignment,
             numWorkers,
             shipConfigs,
-            Boolean.parseBoolean(System.getProperty("s2.descriptorShadows", "true")));
+            Boolean.parseBoolean(System.getProperty("s2.descriptorShadows", "true")),
+            serializedExternalAdverts);
     if (payload.descriptorShadows()) {
       System.out.printf(
           "S2 controller: descriptor shadows on (%d full configs + %d descriptors)%n",

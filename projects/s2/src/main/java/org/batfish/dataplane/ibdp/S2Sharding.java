@@ -165,18 +165,18 @@ final class S2Sharding {
   /**
    * Serialize the snapshot for shipping. In descriptor-shadow mode each worker gets only its owned
    * configs plus a shared reduced descriptor for the remote nodes; otherwise every worker gets the
-   * full snapshot (or null when {@code shipConfigs} is false).
+   * full snapshot (or null when {@code shipConfigs} is false). {@code serializedExternalAdverts} is
+   * shipped by the caller (the one-shot runner loads it from disk; the service takes it from the
+   * engine's compute request), so the controller never needs to re-read the snapshot.
    */
   static Payload preparePayload(
       S2Snapshot snap,
       Map<String, Integer> assignment,
       int numWorkers,
       boolean shipConfigs,
-      boolean descriptorShadowsRequested)
+      boolean descriptorShadowsRequested,
+      byte[] serializedExternalAdverts)
       throws IOException {
-    byte[] serializedExternalAdverts =
-        S2ControlMessages.serializeExternalAdverts(
-            snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
     boolean descriptorShadows =
         shipConfigs && descriptorShadowsRequested && numWorkers > 1 && descriptorShadowsSafe(snap);
     if (descriptorShadows) {
