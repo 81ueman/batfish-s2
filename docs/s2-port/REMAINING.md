@@ -104,7 +104,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 | **M2** | control-plane transient reduction | A2 | **Done**: root cause was an unbounded negative-result memo in `PrefixSpace.containsPrefix` (O(N^2) per router); positive-only cache (`-Ds2.prefixSpacePositiveCacheOnly`) cuts the s2-giga EGP peak ~40-48%; shared-code default off (stock unchanged), runner default on |
 | **M3** | BDD factory owned scoping | A3 | **Done**: nullable `localNodes` on `BDDReachabilityAnalysisFactory`, wired from `S2Main` |
 | **M4** | owned-mode hardening (Track / VXLAN / tunnel / BGP reachability) | A4 | **Done**: owned mode falls back to full configs when tracks/VNIs/tunnel/IPsec are present; BGP reachability disabled in owned mode |
-| **M5** | dataplane prefix sharding / on-disk RIB+FIB | A5 | deferred |
+| **M5** | dataplane prefix sharding / on-disk RIB+FIB | A5 | **Not pursued (2026-09-13)** — see A5 |
 
 ### Correctness / generality — section B
 
@@ -180,10 +180,13 @@ M2 ⇄ P3                      (both target T_w)
 ### Recommended order
 
 Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1, O2, O3, O7, C1.
+Dropped (2026-09-13): **M5** dataplane prefix sharding / on-disk RIB+FIB — see A5.
 
-1. **M5** (deferred) — dataplane prefix sharding / on-disk RIB+FIB
-2. Keep the O3 upstream stage (`scripts/ci.sh --upstream`) green as shared code changes
-3. Partitioner follow-ups (P2追 §3.4 auto / default scheme / O6 residual) — in progress
+1. **A7 controller-side slimming** — the controller peak (2637 MiB at `s2-giga`) is ~2x a worker and
+   is the scale-out bottleneck; instrument the controller phases, then release `vanilla` once the
+   digest/reference are built and/or make the full verification optional.
+2. **O6 role-scale promotion** once more DCN/WAN shapes are measured; **P4** docs finalization.
+3. Keep the O3 upstream stage (`scripts/ci.sh --upstream`) green as shared code changes.
 
 (O5 METIS install is done — see the sweep in `PARTITIONING-PLAN.md` §6.7.)
 
@@ -247,12 +250,37 @@ Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1, O2, O3, O7, C
 * **Verify:** add snapshots with a `TrackReachability`, a VXLAN/IPsec case, and a BGP session that
   requires a reachability check.
 
-### A5. Dataplane prefix sharding / on-disk RIB+FIB
+### A5. Dataplane prefix sharding / on-disk RIB+FIB — **Not pursued (2026-09-13)**
 * **What:** extend prefix sharding from the control-plane BGP RIB to the main RIB/FIB: build and
   serialize one prefix shard at a time and page the rest (the paper's on-disk RIBs).
-* **Why:** reduces the peak only when the FIB dominates, which it no longer does after A4's owned
-  mode on the current networks. Deferred.
-* **Risk:** high (large shared-code change; on-demand FIB lookup).
+* **Decision:** **not pursued.** The measurements (3 workers, `-Xmx4g`, default mode) show the
+  retained main RIB/FIB is no longer a dominant cost, while the change is large and risky:
+
+  | `s2-giga` worker phase | peak |
+  | --- | --- |
+  | building nodes (configs + nodes) | 348.1 MiB |
+  | initial nextDataplane | 444.1 MiB |
+  | EGP iteration 1 (BGP RIB transient) | 756.9 MiB |
+  | nextDataplane 1 (main RIB -> FIB / forwarding) | 953.1 MiB (**+196**) |
+  | worst worker peak | 1309.6 MiB |
+
+  The dataplane/FIB build is only ~**+150..200 MiB** per worker (`s2-mega` +151, `s2-giga` +196) —
+  ~12-15% of the giga peak — while configs+nodes (~348 MiB) and the EGP transient (~313 MiB) are
+  larger, and the **controller peak is 2637 MiB (~2x a worker)**. M5 would buy a modest fraction for
+  a large shared-code change. Revisit only if the retained FIB becomes dominant again (e.g. far
+  larger per-owned-node tables) or if prefix sharding is extended end-to-end.
+* **Risk:** high (on-demand FIB lookup / disk paging).
+
+### A7. Controller-side slimming (next focus)
+* **What:** the controller computes and holds the full vanilla dataplane plus the full reference BDD
+  analysis (and every config), so its peak (2637 MiB at `s2-giga`) is ~2x a worker and is the
+  scale-out bottleneck. Reduce it: instrument the controller's phases, release `vanilla` once the
+  digest/reference are built, optionally make the full verification (`vanilla` + reference) a
+  `-Ds2.verify` switch (off = controller holds only configs + coordination), or run verification in
+  a separate process.
+* **Why:** in S2 the controller is meant to be a lightweight coordinator; the full recomputation is a
+  harness artifact. This is the highest-value remaining memory work at scale.
+* **Risk:** low-medium (mostly harness/plumbing; keep verification on by default for demos/CI).
 
 ### A6. Partitioning and worker count
 * **What:** replace `NetworkPartitioner`'s balanced round-robin with a graph partitioner (the
