@@ -192,6 +192,28 @@ A query/header-space variant (sharding the reachability query by destination pre
 also prototyped and measured: it shrank the symbolic result ~20% but saturated and did not
 reduce peak heap, so it was removed in favor of this control-plane variant.
 
+### Memory attribution and peak reduction
+
+Forcing a GC right after the control plane on `s2-big2` shows the **retained set is small**
+(live ~40 MiB control plane + ~50 MiB reachability/BDD) while the **peak is ~550-580 MiB**:
+the peak is dominated by *transient* control-plane allocation (route/delta/FIB objects),
+not retained data. Consequences:
+
+* Prefix sharding (B) bounds the live BGP RIB and lowers the peak ~20-25%, but cannot go
+  much further by itself because the retained prefix state is a small fraction of the peak.
+* The effective lever for the transient part is GC headroom. Capping the worker heap
+  (`-Xmx512m`) already lowers the peak, and combining it with B:
+
+  | configuration (s2-big2, 3 workers) | max peak heap / worker | result |
+  | --- | --- | --- |
+  | baseline | 580.2 MiB | MATCH |
+  | B (8 shards + externalize) | 478.1 MiB | MATCH |
+  | `-Xmx512m` | 439.8 MiB | MATCH |
+  | B + `-Xmx512m` | 338.6 MiB | MATCH |
+
+  Together they cut the worst-worker peak ~42% while still matching vanilla. A `System.gc()`
+  hint each BGP iteration did **not** reliably help (GC timing is noisy).
+
 ## Known residual
 
 On a **cyclic equal-cost** topology (e.g. a 6-node ring), the distributed BGP fixpoint
