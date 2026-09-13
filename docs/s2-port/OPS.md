@@ -49,8 +49,14 @@ unaffected**. Each has a documented `=false` override:
 | owned-only dataplane | **on** | `-Ds2.ownedDataplane=false` | `S2BdpEngine`/`S2Main` (S2-only). Remote nodes get stub FIBs; a run automatically falls back to full RIBs/FIBs for tracks / VNI / IPsec / tunnel. |
 | descriptor shadows | **on** | `-Ds2.descriptorShadows=false` | `S2Main` (S2-only), multi-worker only, and gated by `descriptorShadowsSafe` (same tracks / VNI / tunnel / IPsec fallback: the controller then ships full configs). |
 | positive-only `PrefixSpace` memo | off in shared code, **on in the runner** | `-Ds2.prefixSpacePositiveCacheOnly=false` | pure memoization, never changes results; `scripts/local-demo.sh` exports it and the k8s worker manifest carries it in `JAVA_TOOL_OPTIONS`. |
-| node→worker partitioner | RANDOM | `-Ds2.partition=<scheme>` | unchanged. |
+| node→worker partitioner | **`auto` in the runner**, `RANDOM` in shared code | `-Ds2.partition=RANDOM` (or any scheme) | `AUTO` classifies DCN/WAN and picks METIS when `gpmetis` is installed, else NAME_ORDERED / WEIGHTED_LPT_FM; the controller logs the selection (`scheme=METIS (requested=AUTO, shape=...)`). A later user `-D` overrides the runner default. |
 | prefix sharding | off (`S2_PREFIX_SHARDS` unset) | — | unchanged. |
+
+Two node-weight model flags are also available (both gated off / evaluation-only; the partitioner
+is unaffected unless used): `-Ds2.nodeWeightsRoleScale=true` enables the O6-residual adaptive
+role-level peer scaling (improves `s2-fat4` W=3 cost imbalance 1.061→1.047, other testbeds
+unchanged; `PARTITIONING-PLAN.md` §6.10), and `-Ds2.nodeWeightsPeerScale=<int>` pins the BGP peer
+coefficient for calibration sweeps.
 
 The runner flag is prepended to any existing `JAVA_TOOL_OPTIONS`, so a later user `-D` wins:
 
@@ -88,8 +94,9 @@ Notes:
   per phase (the fixpoint barriers serialize workers).
 * The heap is set by the `JAVA_TOOL_OPTIONS` env in both base manifests, so it is visible and
   overridable (`kubectl set env` / `kubectl edit` / an overlay patch). The worker value also
-  carries the O1 runner default `-Ds2.prefixSpacePositiveCacheOnly=true`; append
-  `-Ds2.prefixSpacePositiveCacheOnly=false` to disable it. The JVM would otherwise derive its
+  carries the O1 runner default `-Ds2.prefixSpacePositiveCacheOnly=true`; both manifests carry the
+  partitioner runner default `-Ds2.partition=auto` (append `-Ds2.prefixSpacePositiveCacheOnly=false`
+  or `-Ds2.partition=<scheme>` to disable / pin). The JVM would otherwise derive its
   max heap from the limit (~1.5 GiB at 6Gi), which is too small for `s2-giga`.
 * The entrypoints still pass `-XX:-UseCompressedOops` (as measured). Do not remove it when
   comparing against the `M5-SCALE.md` numbers.

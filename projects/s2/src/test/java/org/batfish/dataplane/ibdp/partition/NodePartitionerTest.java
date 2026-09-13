@@ -18,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -251,6 +252,8 @@ public class NodePartitionerTest {
     assertThat(
         PartitionScheme.tryParse("weighted_lpt_fm"), equalTo(PartitionScheme.WEIGHTED_LPT_FM));
     assertThat(PartitionScheme.tryParse("MetIs"), equalTo(PartitionScheme.METIS));
+    assertThat(PartitionScheme.tryParse("auto"), equalTo(PartitionScheme.AUTO));
+    assertThat(PartitionScheme.tryParse("AUTO"), equalTo(PartitionScheme.AUTO));
     assertThat(PartitionScheme.tryParse("bogus"), equalTo(null));
     assertThat(PartitionScheme.tryParse(null), equalTo(null));
 
@@ -260,12 +263,167 @@ public class NodePartitionerTest {
       assertThat(PartitionScheme.fromSystemProperties(), equalTo(PartitionScheme.RANDOM));
       System.setProperty(PartitionScheme.PROPERTY, "greedy_region");
       assertThat(PartitionScheme.fromSystemProperties(), equalTo(PartitionScheme.GREEDY_REGION));
+      System.setProperty(PartitionScheme.PROPERTY, "auto");
+      assertThat(PartitionScheme.fromSystemProperties(), equalTo(PartitionScheme.AUTO));
     } finally {
       if (previous == null) {
         System.clearProperty(PartitionScheme.PROPERTY);
       } else {
         System.setProperty(PartitionScheme.PROPERTY, previous);
       }
+    }
+  }
+
+  /**
+   * A deliberate, regular, branching fabric with no tier names classifies as a DCN: a FatTree has a
+   * concentrated degree distribution and a substantial high-degree tier. A line/ring does not.
+   */
+  @Test
+  public void testAutoClassifiesRegularDegreeFabricAsDcn() {
+    // Two 4-node dense groups joined by two cross edges: degrees are 3 and 4, average 3.5, and
+    // every node is high-degree (>= 3).
+    Map<String, Integer> weights = new HashMap<>();
+    Object[][] edges = {
+      {"a1", "a2", 1}, {"a1", "a3", 1}, {"a1", "a4", 1},
+      {"a2", "a3", 1}, {"a2", "a4", 1}, {"a3", "a4", 1},
+      {"b1", "b2", 1}, {"b1", "b3", 1}, {"b1", "b4", 1},
+      {"b2", "b3", 1}, {"b2", "b4", 1}, {"b3", "b4", 1},
+      {"a1", "b1", 1}, {"a2", "b2", 1},
+    };
+    for (String node : ImmutableList.of("a1", "a2", "a3", "a4", "b1", "b2", "b3", "b4")) {
+      weights.put(node, 1);
+    }
+    assertThat(
+        AutoSchemeSelector.classify(graph(weights, edges)), equalTo(AutoSchemeSelector.Shape.DCN));
+  }
+
+  /** A line and a ring are too sparse (and have no high-degree tier): WAN. */
+  @Test
+  public void testAutoClassifiesSparseLineAsWan() {
+    Map<String, Integer> weights = ImmutableMap.of("a", 1, "b", 1, "c", 1, "d", 1);
+    CommunicationGraph line =
+        graph(weights, new Object[][] {{"a", "b", 1}, {"b", "c", 1}, {"c", "d", 1}});
+    assertThat(AutoSchemeSelector.classify(line), equalTo(AutoSchemeSelector.Shape.WAN));
+  }
+
+  /** Hierarchical hostnames are enough to call a DCN even when the graph itself is sparse. */
+  @Test
+  public void testAutoClassifiesDcnByTierNames() {
+    Map<String, Integer> weights = ImmutableMap.of("core1", 1, "agg1", 1, "spine1", 1, "edge1", 1);
+    CommunicationGraph g =
+        graph(
+            weights,
+            new Object[][] {{"core1", "agg1", 1}, {"agg1", "spine1", 1}, {"spine1", "edge1", 1}});
+    assertThat(AutoSchemeSelector.classify(g), equalTo(AutoSchemeSelector.Shape.DCN));
+    // A coincidence inside a longer word must not match (monitor != tor).
+    Map<String, Integer> monitor = ImmutableMap.of("monitor1", 1, "monitor2", 1);
+    assertThat(
+        AutoSchemeSelector.classify(graph(monitor, new Object[][] {{"monitor1", "monitor2", 1}})),
+        equalTo(AutoSchemeSelector.Shape.WAN));
+  }
+
+  /**
+   * A BGP overlay that does not follow the IGP (route reflectors / multi-hop iBGP) is a WAN even
+   * when the L3 graph is a line: most union edges are then BGP-only.
+   */
+  @Test
+  public void testAutoClassifiesBgpOverlayAsWan() {
+    List<String> nodes = ImmutableList.of("a", "b", "c", "d", "e", "f");
+    Map<String, Integer> weights = new HashMap<>();
+    Map<String, Map<String, Integer>> union = new HashMap<>();
+    Map<String, Map<String, Integer>> bgp = new HashMap<>();
+    for (String n : nodes) {
+      weights.put(n, 1);
+      union.put(n, new HashMap<>());
+      bgp.put(n, new HashMap<>());
+    }
+    // Every pair is a BGP session; only consecutive pairs have an L3 link under it (edge weight 2).
+    for (int i = 0; i < nodes.size(); i++) {
+      for (int j = i + 1; j < nodes.size(); j++) {
+        String u = nodes.get(i);
+        String v = nodes.get(j);
+        int w = (j == i + 1) ? 2 : 1;
+        union.get(u).put(v, w);
+        union.get(v).put(u, w);
+        bgp.get(u).put(v, 1);
+        bgp.get(v).put(u, 1);
+      }
+    }
+    CommunicationGraph g = CommunicationGraph.forTesting(weights, union, bgp);
+    assertThat(g.hasBgpSession("a", "f"), is(true));
+    assertThat(g.bgpNeighbors("a").size(), equalTo(5));
+    assertThat(AutoSchemeSelector.classify(g), equalTo(AutoSchemeSelector.Shape.WAN));
+  }
+
+  /** Without {@code gpmetis} a DCN falls back to NAME_ORDERED. */
+  @Test
+  public void testAutoResolvesDcnToNameOrderedWithoutMetis() {
+    Map<String, Integer> weights = ImmutableMap.of("core1", 1, "agg1", 1, "spine1", 1, "edge1", 1);
+    CommunicationGraph g =
+        graph(
+            weights,
+            new Object[][] {{"core1", "agg1", 1}, {"agg1", "spine1", 1}, {"spine1", "edge1", 1}});
+    withMetisUnavailable(
+        () -> assertThat(PartitionScheme.AUTO.resolve(g), equalTo(PartitionScheme.NAME_ORDERED)));
+  }
+
+  /** Without {@code gpmetis} a WAN falls back to WEIGHTED_LPT_FM. */
+  @Test
+  public void testAutoResolvesWanToWeightedLptFmWithoutMetis() {
+    Map<String, Integer> weights = ImmutableMap.of("a", 3, "b", 2, "c", 2, "d", 1);
+    CommunicationGraph g =
+        graph(weights, new Object[][] {{"a", "b", 1}, {"b", "c", 1}, {"c", "d", 1}});
+    withMetisUnavailable(
+        () ->
+            assertThat(PartitionScheme.AUTO.resolve(g), equalTo(PartitionScheme.WEIGHTED_LPT_FM)));
+  }
+
+  /** An explicit scheme never re-resolves (and never probes for METIS). */
+  @Test
+  public void testExplicitSchemeResolvesToItself() {
+    Map<String, Integer> weights = ImmutableMap.of("a", 1, "b", 1);
+    CommunicationGraph g = graph(weights, new Object[][] {{"a", "b", 1}});
+    assertThat(PartitionScheme.RANDOM.resolve(g), equalTo(PartitionScheme.RANDOM));
+    assertThat(PartitionScheme.GREEDY_REGION.resolve(g), equalTo(PartitionScheme.GREEDY_REGION));
+    AutoSchemeSelector.Selection explicit =
+        AutoSchemeSelector.select(PartitionScheme.NAME_ORDERED, g);
+    assertThat(explicit.scheme(), equalTo(PartitionScheme.NAME_ORDERED));
+    assertThat(explicit.shape(), equalTo(null));
+  }
+
+  /** The AUTO partitioner delegates to the concrete scheme it resolves to. */
+  @Test
+  public void testAutoPartitionerDelegatesToResolvedScheme() {
+    Map<String, Integer> weights = ImmutableMap.of("a", 3, "b", 2, "c", 2, "d", 1);
+    CommunicationGraph g =
+        graph(weights, new Object[][] {{"a", "b", 1}, {"b", "c", 1}, {"c", "d", 1}});
+    withMetisUnavailable(
+        () -> {
+          PartitionScheme resolved = PartitionScheme.AUTO.resolve(g);
+          assertThat(
+              new AutoPartitioner().partition(g, 2, 0L),
+              equalTo(resolved.partitioner().partition(g, 2, 0L)));
+        });
+  }
+
+  /** When {@code gpmetis} is installed, AUTO always picks METIS (the plan's quality reference). */
+  @Test
+  public void testAutoPicksMetisWhenAvailable() {
+    assumeTrue("gpmetis not installed", MetisPartitioner.isAvailable());
+    Map<String, Integer> weights = ImmutableMap.of("a", 1, "b", 1, "c", 1, "d", 1);
+    CommunicationGraph g = graph(weights, new Object[][] {{"a", "b", 1}, {"b", "c", 1}});
+    assertThat(PartitionScheme.AUTO.resolve(g), equalTo(PartitionScheme.METIS));
+  }
+
+  /** Run {@code body} with the METIS path forced to a nonexistent binary. */
+  private static void withMetisUnavailable(Runnable body) {
+    String previous = System.getProperty(MetisPartitioner.METIS_PATH_PROPERTY);
+    System.setProperty(
+        MetisPartitioner.METIS_PATH_PROPERTY, "/nonexistent/gpmetis-for-s2-auto-test");
+    try {
+      body.run();
+    } finally {
+      restoreProperty(MetisPartitioner.METIS_PATH_PROPERTY, previous);
     }
   }
 
@@ -435,6 +593,59 @@ public class NodePartitionerTest {
     } finally {
       restoreProperty(NodeWeights.V2_PROPERTY, previous);
       restoreProperty(NodeWeights.V2_SCALE_PROPERTY, previousScale);
+    }
+  }
+
+  /**
+   * The adaptive role rule: drop the peer term when the busiest tier has at least as many
+   * interfaces as the least-connected tier (s2-fat4-like), keep it when the busiest tier has fewer
+   * (s2-fat2-like), and drop it when every router has the same peer count.
+   */
+  @Test
+  public void testAdaptivePeerCoefficient() {
+    // s2-fat4: core/agg (4 peers, 5 interfaces), edge (2 peers, 5 interfaces) -> equal, drop peers.
+    assertThat(
+        NodeWeights.adaptivePeerCoefficient(
+            ImmutableList.of(
+                new NodeWeights.Features(5, 4, 1, 0, 9, 0, 1),
+                new NodeWeights.Features(5, 2, 3, 0, 9, 0, 1))),
+        equalTo(0));
+    // s2-fat2: core/agg (2 peers, 3 interfaces), edge (1 peer, 4 interfaces) -> keep peers.
+    assertThat(
+        NodeWeights.adaptivePeerCoefficient(
+            ImmutableList.of(
+                new NodeWeights.Features(3, 2, 1, 0, 7, 0, 1),
+                new NodeWeights.Features(4, 1, 3, 0, 8, 0, 1))),
+        equalTo(NodeWeights.BGP_PEER));
+    // Uniform peers: no role signal.
+    assertThat(
+        NodeWeights.adaptivePeerCoefficient(
+            ImmutableList.of(
+                new NodeWeights.Features(3, 2, 1, 0, 7, 0, 1),
+                new NodeWeights.Features(4, 2, 3, 0, 8, 0, 1))),
+        equalTo(0));
+  }
+
+  /** Role scaling is off by default; the peer-scale override wins when set. */
+  @Test
+  public void testEffectivePeerCoefficientPrecedence() {
+    java.util.List<NodeWeights.Features> fat4 =
+        ImmutableList.of(
+            new NodeWeights.Features(5, 4, 1, 0, 9, 0, 1),
+            new NodeWeights.Features(5, 2, 3, 0, 9, 0, 1));
+    String previousRole = System.getProperty(NodeWeights.ROLE_SCALE_PROPERTY);
+    String previousPeer = System.getProperty(NodeWeights.PEER_SCALE_PROPERTY);
+    try {
+      System.clearProperty(NodeWeights.ROLE_SCALE_PROPERTY);
+      System.clearProperty(NodeWeights.PEER_SCALE_PROPERTY);
+      assertThat(NodeWeights.effectivePeerCoefficient(fat4), equalTo(NodeWeights.BGP_PEER));
+      System.setProperty(NodeWeights.ROLE_SCALE_PROPERTY, "true");
+      assertThat(NodeWeights.effectivePeerCoefficient(fat4), equalTo(0));
+      System.setProperty(NodeWeights.PEER_SCALE_PROPERTY, "2");
+      assertThat(NodeWeights.effectivePeerCoefficient(fat4), equalTo(2));
+    } finally {
+      restoreProperty(NodeWeights.ROLE_SCALE_PROPERTY, previousRole);
+      restoreProperty(NodeWeights.PEER_SCALE_PROPERTY, previousPeer);
     }
   }
 

@@ -41,7 +41,39 @@ public final class MetisPartitioner implements NodePartitioner {
   /** Maximum time to wait for {@code gpmetis}. */
   private static final long TIMEOUT_SECONDS = 300;
 
+  /** Maximum time to wait for the availability probe, which only prints usage and exits. */
+  private static final long PROBE_TIMEOUT_SECONDS = 10;
+
   private final NodePartitioner _fallback = new WeightedLptFmPartitioner();
+
+  /**
+   * Whether the {@code gpmetis} executable can be started, honoring the {@link
+   * #METIS_PATH_PROPERTY} override. Used by {@link AutoSchemeSelector} to decide whether the {@code
+   * AUTO} scheme can prefer METIS. A binary that starts but exits non-zero (as bare {@code gpmetis}
+   * does when it prints usage) is still "available".
+   */
+  public static boolean isAvailable() {
+    String metis = System.getProperty(METIS_PATH_PROPERTY, "gpmetis");
+    Process process = null;
+    try {
+      process =
+          new ProcessBuilder(metis)
+              .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+              .redirectError(ProcessBuilder.Redirect.DISCARD)
+              .start();
+      process.waitFor(PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+      return !process.isAlive();
+    } catch (IOException e) {
+      return false;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    } finally {
+      if (process != null && process.isAlive()) {
+        process.destroyForcibly();
+      }
+    }
+  }
 
   @Override
   public Map<String, Integer> partition(CommunicationGraph graph, int numWorkers, long seed) {

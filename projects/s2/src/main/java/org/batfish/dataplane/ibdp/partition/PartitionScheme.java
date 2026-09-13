@@ -8,13 +8,15 @@ import java.util.Locale;
  *
  * <p>Selected on the controller with {@code -Ds2.partition=<scheme>} (case-insensitive). The
  * default is {@link #RANDOM}, which reproduces the historical deterministic hash-shuffle
- * round-robin exactly so stock demos are unchanged. Workers never consult this property: the
- * controller ships the computed assignment in {@code S2ControlMessages.Start}.
+ * round-robin exactly so stock demos are unchanged. {@link #AUTO} is a runner default that
+ * classifies the network and picks a concrete scheme at run time (see {@link AutoSchemeSelector}).
+ * Workers never consult this property: the controller ships the computed assignment in {@code
+ * S2ControlMessages.Start}.
  */
 public enum PartitionScheme {
   /**
-   * Historical deterministic balanced round-robin (hash-shuffled). Default; load-balanced, worst
-   * cut.
+   * Historical deterministic balanced round-robin (hash-shuffled). Code default; load-balanced,
+   * worst cut.
    */
   RANDOM(new RandomPartitioner()),
 
@@ -33,7 +35,14 @@ public enum PartitionScheme {
   /**
    * External {@code gpmetis -seed=...}; falls back to {@link #WEIGHTED_LPT_FM} when unavailable.
    */
-  METIS(new MetisPartitioner());
+  METIS(new MetisPartitioner()),
+
+  /**
+   * Automatic DCN/WAN selection (port plan &sect;3.4): classify the union graph and pick a concrete
+   * scheme &mdash; METIS when {@code gpmetis} is installed, else {@code NAME_ORDERED} for a DCN or
+   * {@code WEIGHTED_LPT_FM} for a WAN. Deterministic; see {@link AutoSchemeSelector}.
+   */
+  AUTO(new AutoPartitioner());
 
   /** System property that selects the scheme. */
   public static final String PROPERTY = "s2.partition";
@@ -77,8 +86,19 @@ public enum PartitionScheme {
               + PROPERTY
               + " value '"
               + value
-              + "'; expected one of RANDOM, NAME_ORDERED, WEIGHTED_LPT_FM, GREEDY_REGION, METIS");
+              + "'; expected one of RANDOM, NAME_ORDERED, WEIGHTED_LPT_FM, GREEDY_REGION, METIS,"
+              + " AUTO");
     }
     return scheme;
+  }
+
+  /**
+   * Resolve {@link #AUTO} to a concrete scheme for {@code graph} (see {@link AutoSchemeSelector});
+   * every other scheme resolves to itself. Callers that need to log the classification should use
+   * {@link AutoSchemeSelector#select(PartitionScheme, CommunicationGraph)} and read {@link
+   * AutoSchemeSelector.Selection#describe}.
+   */
+  public PartitionScheme resolve(CommunicationGraph graph) {
+    return this == AUTO ? AutoSchemeSelector.select(graph) : this;
   }
 }

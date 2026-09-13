@@ -1,6 +1,6 @@
 # S2 ネットワーク分割（ノード割当・prefix sharding）設計メモ & 評価計画
 
-- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）。P2 は完了し、`gpmetis` 導入後の実測を §6.7 に記録（METIS = 品質参照、既定は RANDOM）。O6 ノード重み校准（§6.8）と v2 トポロジ補正（§6.9, opt-in）を実装・測定**
+- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）。P2 は完了し、`gpmetis` 導入後の実測を §6.7 に記録（METIS = 品質参照、既定は RANDOM）。O6 ノード重み校准（§6.8）と v2 トポロジ補正（§6.9, opt-in）を実装・測定。§3.4 の `AUTO`（DCN/WAN 自動選択）を実装し runner 既定を `auto` に変更（コード既定は RANDOM のまま）。O6 residual の role-level peer scaling は opt-in で正の結果（§6.10）**
 - Date: 2026-09-13（更新）
 - 対象リポジトリ: `batfish-s2`（branch `master`）
 - 関連: `docs/s2-port/M5-SCALE.md`, `docs/s2-port/REMAINING.md`, `nv-papers/papers/s2-2025.pdf`, `XJTU-NetVerify/s2`（参考実装）
@@ -140,9 +140,36 @@ simulation 前は経路数が未知。以下を段階的に:
 
 ### 3.4 scheme 自動選択（DCN / WAN 両対応）
 
-- DCN 判定（階層・名前規則・規則的次数）→ `NAME_ORDERED`（expert）または `METIS`。
-- それ以外 / WAN → BGP session 重み付きグラフで `METIS`、外部 METIS 不可なら `WEIGHTED_LPT_FM` / `GREEDY_REGION`。
-- 選択は controller が行い、worker には結果のみ配布。
+**実装済み**: `-Ds2.partition=auto`（別名 `PartitionScheme.AUTO`、`-Ds2.partition=AUTO`）。選択は
+controller が union 通信グラフを構築した後、`AutoSchemeSelector.select(requested, graph)` で
+**1 回だけ**行い、結果の concrete scheme で assignment を計算して worker へ配布する
+（worker は再選択しない）。選択は決定的で、選択理由を controller ログに出す。
+
+**分類ヒューリスティクス**（`AutoSchemeSelector.classify`, グラフのみ使用）:
+
+1. **階層名**: hostname の 50% 以上が DCN tier token（`core` / `agg` / `aggr` / `spine` /
+   `leaf` / `tor` / `pod` / `fabric` / `tier` / `edge`）を小文字単語として含む → DCN
+   （例: `monitor` は `tor` に一致しない）。
+2. **BGP overlay**: union 辺の 25% 以上が **BGP のみ**（下に L3/OSPF 隣接がない BGP session）→
+   WAN/ISP。multi-hop iBGP / route reflector で session グラフが IGP より密な場合（§3.1）。
+3. **規則的次数**: 次数分布が 3 種以下・平均次数 2 以上・次数 ≥3 のノードが 25% 以上（かつ 3
+   ノード以上）・次数が 2 種以上 → DCN。FatTree k=4 は degree-4 が 60%。line/ring/小木は
+   スパースなので WAN 側に落ちる。
+4. それ以外 → WAN。
+
+**scheme 選択**: `gpmetis` があれば**常に `METIS`**（不在なら `MetisPartitioner` が
+`WEIGHTED_LPT_FM` にフォールバック）。`gpmetis` がない場合のみ分類が効き、DCN →
+`NAME_ORDERED`、WAN → `WEIGHTED_LPT_FM`。
+
+**既定**: コード既定は `RANDOM` のまま（stock 不変）。S2 **runner** が `auto` を既定にする:
+`scripts/local-demo.sh` が `JAVA_TOOL_OPTIONS` の先頭に `-Ds2.partition=auto` を付け、k8s の
+worker/controller manifest も `JAVA_TOOL_OPTIONS` に同 `-D` を持つ。ユーザの
+`-Ds2.partition=<scheme>` を後ろに置けば上書きできる（§2 の
+`s2.prefixSpacePositiveCacheOnly` と同じパターン）。
+
+**限界**（クラス Javadoc にも記載）: 分類は粗く、正しさには無関係（どの scheme でも assignment は
+valid）。tier 名のない不規則 DCN、規則的な密 WAN、tier token の偶発一致には誤分類しうる。
+bisection 推定や clustering による改良は将来課題。選択した shape と理由はログに出るので自己記述的。
 
 ---
 
@@ -462,6 +489,82 @@ partition 結果に反映させるには、成分定数ではなく role ごと�
 `ribs/reachability/symbolic/answer = MATCH`。v2 を有効にした `WEIGHTED_LPT_FM` の `s2-line` W=3 も
 MATCH。
 
+### 6.10 O6 residual: role-level peer scaling の実装と実測（2026-09-13）
+
+**動機.** §6.9 の残件「成分定数でない role 別スケール」への回答。§6.9 は BGP peer 係数を 0 にすると
+`s2-fat4` W=3 が 1.061→1.047 に改善するが `s2-fat2` W=2 は 1.148→1.213 に悪化することを示した。
+すなわち必要な peer 係数は FatTree の形（k）に依存し、単一係数では両立しない。
+
+**実装（`-Ds2.nodeWeightsRoleScale=true`, 既定 off）.** `NodeWeights.adaptivePeerCoefficient` が
+ネットワークごとに peer 項の係数を選ぶ:
+
+```
+if maxPeers == minPeers:            peerCoefficient = 0        # role 信号なし
+elif meanInterfaces(peers=max) >= meanInterfaces(peers=min):
+                                    peerCoefficient = 0        # interfaces が既に role を順序付け
+else:                               peerCoefficient = BGP_PEER # peer 項で core を edge より上に保つ
+```
+
+`-Ds2.nodeWeightsPeerScale=<int>`（評価用 override）が設定されていればそれが最優先。全ノード同 peer
+数の網では peer 項は元々 0 なので不変。`s2-fat4` は core/agg・edge とも interfaces=5 なので係数 0、
+`s2-fat2` は core interfaces=3 < edge interfaces=4 なので係数 3 のまま。
+
+**装置.** `-Ds2.nodeWeightsPeerScale` で係数を 0..5 に振り、`S2Main partition`（`WEIGHTED_LPT_FM`）
+の assignment を `scripts/calibrate-weights.py imbalance`（測定コスト = 1-worker `result-1worker.txt`
+の per-node main-RIB route 数）で採点（max/mean）。`scripts/partition-metrics.py --assignment ...
+--weights <測定コスト>`（`--weights` は script の重みを上書きするので測定コストを渡せる）でも同じ
+imbalance を再現する（fat4 1.061→1.047、fat2 1.148 不変）。
+
+| network | W | P=0 | P=1 | P=2 | P=3 | P=4 | P=5 | role-scale |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| s2-fat2 | 2 | 1.213 | 1.213 | 1.148 | 1.148 | 1.148 | 1.148 | **1.148** |
+| s2-fat4 | 3 | **1.047** | 1.061 | 1.061 | 1.061 | 1.061 | 1.061 | **1.047** |
+| s2-line | 3 | 1.071 | 1.071 | 1.071 | 1.071 | 1.071 | 1.071 | 1.071 |
+| s2-mega | 3 | 1.125 | 1.125 | 1.125 | 1.125 | 1.125 | 1.125 | 1.125 |
+| s2-big2 | 3 | 1.199 | 1.199 | 1.199 | 1.199 | 1.199 | 1.199 | 1.199 |
+| s2-big-bgp | 3 | 1.003 | 1.003 | 1.003 | 1.003 | 1.003 | 1.003 | 1.003 |
+
+**結果.** 単一係数では fat2（P≥2 が必要）と fat4（P=0 が最良）が両立しない（負の結果）。adaptive
+rule は両方を同時に満たす: fat2 1.148（calibrated と同値）、fat4 1.061→**1.047**（`v1` の最適値）、
+他の testbed は assignment 自体が不変で metric も不変。13 testbed の検証で **metric の退行は 0**、
+改善は fat4 W=3 の 1 件。`s2-agg` のみ assignment が変わるが metric は 1.250 のまま。
+
+**採用判断.** この rule は 2 つの FatTree 形状（fat2/fat4）の interface/peer 関係から導いたもので、
+より広い網での検証は未実施。`v2`/O6b と同じく **既定 off（gate）** とし、`-Ds2.nodeWeightsRoleScale=true`
+で有効化する。既定 scheme は `auto`→`METIS`（重みを使わない）なので runner のデモには影響しない。
+既定 on への昇格は、より多くの DCN/WAN testbed で退行がないことを確認してから。
+
+**検証.** `bazel test //projects/s2:s2_tests`（`adaptivePeerCoefficient`・override 優先順位のテストを
+追加）。`-Ds2.nodeWeightsRoleScale=true` の `WEIGHTED_LPT_FM` は Java 経由でも fat2=1.148 /
+fat4=1.047 を再現（assignment はそれぞれ P=3 / P=0 と一致）。
+
+### 6.11 AUTO 選定と runner 既定の確認（2026-09-13）
+
+`S2Main partition`（union グラフの Java node weight、W は表の列）:
+
+| network | W | RANDOM imb / cut | auto (=METIS) | WEIGHTED_LPT_FM | METIS |
+| --- | --- | --- | --- | --- | --- |
+| s2-line | 3 | 1.154 / 10 | 1.154 / **4** | 1.154 / **4** | 1.154 / **4** |
+| s2-ospf-bgp | 3 | 1.364 / 6 | 1.364 / 6 | 1.364 / 6 | 1.364 / 6 |
+| s2-big2 | 3 | 1.180 / 18 | 1.197 / **4** | 1.180 / 14 | 1.197 / **4** |
+| s2-triangle | 3 | 1.000 / 6 | 1.000 / 6 | 1.000 / 6 | 1.000 / 6 |
+| s2-fat2 | 2 | 1.217 / 2 | 1.217 / 2 | 1.130 / **4** | 1.217 / 2 |
+| s2-fat4 | 3 | 1.096 / 40 | 1.038 / **24** | 1.096 / **24** | 1.038 / **24** |
+| s2-mega | 3 | 1.121 / 30 | 1.124 / **4** | 1.121 / 18 | 1.124 / **4** |
+
+`auto` は `s2-fat4` を **DCN (regular-degree fabric)**、他を WAN と分類し、`gpmetis` 導入環境なので
+全網 `METIS` を選ぶ（`s2-fat4` 以外の WAN 判定は line/ring/小網を WAN 側に落とす設計どおり）。
+controller ログ例:
+
+```
+S2 controller: partition scheme=METIS (requested=AUTO, shape=DCN (regular-degree fabric), gpmetis=available) ...
+S2 controller: partition scheme=METIS (requested=AUTO, shape=WAN (sparse/irregular L3), gpmetis=available) ...
+```
+
+**正しさ（1 / 3 worker, runner 既定 auto と `-Ds2.partition=WEIGHTED_LPT_FM`）**: `s2-line` /
+`s2-ospf-bgp` / `s2-big2` / `s2-triangle` の全 16 run が
+`ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`。
+
 ---
 
 ## 7. マイルストーン
@@ -472,8 +575,11 @@ MATCH。
   に `NodePartitioner` + `RANDOM` / `NAME_ORDERED` / `WEIGHTED_LPT_FM` / `GREEDY_REGION` /
   `METIS` を実装。controller が union 通信グラフと `NodeWeights` を構築して assignment を1回だけ
   算出し、`S2ControlMessages.Start.assignment` で配布、worker は再計算しない。`-Ds2.partition=<scheme>`
-  で選択（既定 `RANDOM` = 従来の hash-shuffle round-robin、デモ不変）。`METIS` は `gpmetis -seed=0`
-  を起動し、バイナリ不在時は `WEIGHTED_LPT_FM` にフォールバックする。評価 CLI `S2Main partition
+  で選択（コード既定 `RANDOM` = 従来の hash-shuffle round-robin、デモ不変）。`METIS` は `gpmetis -seed=0`
+  を起動し、バイナリ不在時は `WEIGHTED_LPT_FM` にフォールバックする。§3.4 の **`AUTO`**（DCN/WAN
+  自動選択、`AutoSchemeSelector`）を追加し、**S2 runner の既定を `auto`** に変更（`scripts/local-demo.sh`
+  と k8s worker/controller manifest が `JAVA_TOOL_OPTIONS` に `-Ds2.partition=auto` を付与。ユーザの
+  `-D` が後勝ちで上書き可能）。評価 CLI `S2Main partition
   <net> <W>` が assignment と node weight を出力し、`scripts/partition-metrics.py
   --assignment ... --weights ...` で imbalance / weighted cut を測る（`--weights` は今回追加）。
 - **P3 `PrefixDependencyGraph`**: **完了** = `PrefixDependencyGraph.java` + `PrefixSharder` 刷新（weighted WCC-LPT、degenerate フォールバック、決定性）、`PrefixSharderTest` 拡張。
@@ -504,4 +610,6 @@ MATCH。
 3. METIS を評価環境に常設するか（Docker image に入れるか）: **評価環境には導入済み**（§6.7）。
    Docker image への同梱は未対応。`gpmetis` 不在時は `WEIGHTED_LPT_FM` にフォールバックする。
 4. prefix shard 数を実行時にどう決めるか: **解決（P-X）** = `S2_PREFIX_SHARDS=auto` が DPDG の成分重みから決定的に N を選ぶ（`PrefixShardCountSelector`、予算 `-Ds2.prefixShardBudgetMiB`、上限 16）。`scripts/shard-sweep.sh` で peak-vs-N を測定し既定を正当化（`M5-SCALE.md`）。
-5. DCN 判定ヒューリスティクスの設計（名前規則に依存しすぎないか）。
+5. DCN 判定ヒューリスティクスの設計（名前規則に依存しすぎないか）: **解決（§3.4）** =
+   `AutoSchemeSelector` が階層名・BGP overlay・規則的次数の 3 信号で決定的に分類し、`gpmetis`
+   の有無で concrete scheme を選ぶ。限界（不規則 DCN / 密 WAN / 偶発一致）は明記。

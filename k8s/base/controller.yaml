@@ -22,9 +22,11 @@ spec:
             - name: NETWORK_NAME
               value: "s2-triangle"
             # Default controller heap (docs/s2-port/OPS.md); the controller also builds
-            # the vanilla dataplane, so it uses the same 4g as the workers.
+            # the vanilla dataplane, so it uses the same 4g as the workers. The controller
+            # resolves the partition scheme; -Ds2.partition=auto selects it from the network
+            # shape (append -Ds2.partition=<scheme> to pin one).
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xmx4g"
+              value: "-Xmx4g -Ds2.partition=auto"
           ports:
             - containerPort: 4090
           resources:

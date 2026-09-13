@@ -7,11 +7,13 @@ W="${1:?usage: local-demo.sh <numWorkers> [network]}"
 NETWORK="${2:-s2-triangle}"
 cd "$(git rev-parse --show-toplevel)"
 
-# Runner default: enable the S2 positive-only PrefixSpace memoization, which bounds the EGP
-# control-plane transient (pure memoization; never changes results). The shared-code default stays
-# off so stock Batfish is unaffected. Put your own -D later in JAVA_TOOL_OPTIONS to override
-# (e.g. JAVA_TOOL_OPTIONS=-Ds2.prefixSpacePositiveCacheOnly=false); the JVM honors the last one.
-export JAVA_TOOL_OPTIONS="-Ds2.prefixSpacePositiveCacheOnly=true ${JAVA_TOOL_OPTIONS:-}"
+# Runner defaults. (1) Enable the S2 positive-only PrefixSpace memoization, which bounds the EGP
+# control-plane transient (pure memoization; never changes results). (2) Select the partition scheme
+# automatically from the network shape (AutoSchemeSelector): METIS when gpmetis is installed, else
+# NAME_ORDERED for a DCN / WEIGHTED_LPT_FM for a WAN. The shared-code default stays RANDOM and the
+# memo default stays off so stock Batfish is unaffected. Put your own -D later in JAVA_TOOL_OPTIONS
+# to override (e.g. JAVA_TOOL_OPTIONS=-Ds2.partition=WEIGHTED_LPT_FM); the JVM honors the last one.
+export JAVA_TOOL_OPTIONS="-Ds2.prefixSpacePositiveCacheOnly=true -Ds2.partition=auto ${JAVA_TOOL_OPTIONS:-}"
 
 # Free only the ports this run will use, so concurrent runs (other worktrees/agents) are not
 # disturbed. Override the base port with S2_BASE_PORT to run several demos at once.
