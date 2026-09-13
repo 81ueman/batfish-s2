@@ -1,8 +1,8 @@
 # S2 re-implementation design (clean, from scratch)
 
-We implement S2 ourselves against current upstream Batfish. The old copy-based
-port is preserved on branch `s2-copied-old` and the reference repo
-`~/ghq/github.com/81ueman/s2-reference` is used only as a design reference.
+We implement S2 ourselves against current upstream Batfish. An earlier copy-based
+port was superseded by this work, and the reference implementation
+[`XJTU-NetVerify/s2`](https://github.com/XJTU-NetVerify/s2) is used only as a design reference.
 
 ## Core idea
 

@@ -3,17 +3,16 @@
 Clean, from-scratch implementation of **S2: A Distributed Configuration Verifier
 for Hyper-Scale Networks** (SIGCOMM'25) on top of current upstream Batfish.
 
-The old copy-based port is preserved on branch `s2-copied-old`. The paper authors' open-source
-implementation [`XJTU-NetVerify/s2`](https://github.com/XJTU-NetVerify/s2) (Apache-2.0) is used as a
-design reference only; none of its code is copied into this work.
+An earlier copy-based port was superseded by this from-scratch implementation. The paper authors'
+open-source implementation [`XJTU-NetVerify/s2`](https://github.com/XJTU-NetVerify/s2) (Apache-2.0)
+is used as a design reference only; none of its code is copied into this work.
 
 ## Repos / branches
 
 | Thing | Where |
 | --- | --- |
 | Upstream Batfish base | `batfish/batfish` master `2a513d0` |
-| This work | branch `s2` |
-| Old copy-based port | branch `s2-copied-old` |
+| This work | branch `master` |
 | Reference implementation | [`XJTU-NetVerify/s2`](https://github.com/XJTU-NetVerify/s2) (Apache-2.0, design reference only) |
 | Paper | *S2: A Distributed Configuration Verifier for Hyper-Scale Networks* (SIGCOMM'25) |
 
@@ -181,6 +180,6 @@ Batfish itself; see the repository root [`LICENSE`](../../LICENSE). The new S2 s
 * Built on [Batfish](https://github.com/batfish/batfish) (Apache-2.0).
 * Design follows *S2: A Distributed Configuration Verifier for Hyper-Scale Networks* (SIGCOMM'25)
   and its open-source implementation [`XJTU-NetVerify/s2`](https://github.com/XJTU-NetVerify/s2)
-  (Apache-2.0), which was consulted for design only; no reference code is copied here (the earlier
-  copy-based effort is preserved separately on branch `s2-copied-old`).
+  (Apache-2.0), which was consulted for design only; no reference code is copied here. An earlier
+  copy-based port was superseded by this from-scratch implementation.
 
