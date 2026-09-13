@@ -1,0 +1,32 @@
+hostname sw14
+
+interface Loopback0
+ ip address 10.0.15.1 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.11.2 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.14.2 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.17.2 255.255.255.252
+
+interface GigabitEthernet0/3
+ ip address 10.1.69.1 255.255.255.252
+
+interface GigabitEthernet0/4
+ ip address 10.1.70.1 255.255.255.252
+
+interface GigabitEthernet0/5
+ ip address 10.1.71.1 255.255.255.252
+
+router bgp 65014
+ bgp router-id 10.0.15.1
+ network 10.0.15.1 mask 255.255.255.255
+ neighbor 10.1.11.1 remote-as 65030
+ neighbor 10.1.14.1 remote-as 65031
+ neighbor 10.1.17.1 remote-as 65032
+ neighbor 10.1.69.2 remote-as 65006
+ neighbor 10.1.70.2 remote-as 65007
+ neighbor 10.1.71.2 remote-as 65008

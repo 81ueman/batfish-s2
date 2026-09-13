@@ -1,0 +1,28 @@
+hostname sw30
+
+interface Loopback0
+ ip address 10.0.31.1 255.255.255.255
+
+interface Loopback1
+ ip address 10.100.31.1 255.255.255.255
+
+interface Loopback2
+ ip address 10.100.31.2 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.9.1 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.10.1 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.11.1 255.255.255.252
+
+router bgp 65030
+ bgp router-id 10.0.31.1
+ network 10.0.31.1 mask 255.255.255.255
+ network 10.100.31.1 mask 255.255.255.255
+ network 10.100.31.2 mask 255.255.255.255
+ neighbor 10.1.9.2 remote-as 65012
+ neighbor 10.1.10.2 remote-as 65013
+ neighbor 10.1.11.2 remote-as 65014

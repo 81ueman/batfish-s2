@@ -5,6 +5,7 @@
 Usage:
   scripts/gen-topology.py fattree --k 4 [--originate 2] --out networks/s2-fat4
   scripts/gen-topology.py line --nodes 8 [--originate 4] --out networks/s2-line8
+  scripts/gen-topology.py hub --spokes 8 [--originate 2] --out networks/s2-hub
 
 Every switch is its own eBGP AS and originates its loopback /32; edge switches additionally
 originate --originate extra /32 loopbacks each, to control the route count.
@@ -119,6 +120,22 @@ def gen_line(nodes, originate, out):
     return nodes, len(links)
 
 
+def gen_hub(spokes, originate, out):
+    """A hub/route-reflector star: one central node with every leaf as a peer.
+
+    The hub (node 0) has ``spokes`` interfaces and BGP peers; each leaf has one. This is a WAN
+    shape whose busiest tier already has at least as many interfaces as the sparse tier, so it
+    exercises the adaptive role rule's ``peerCoefficient = 0`` branch on a non-FatTree topology.
+    """
+    count = spokes + 1
+    links = [(0, s) for s in range(1, count)]
+    loopbacks = ["10.0.%d.1" % (s + 1) for s in range(count)]
+    asns = [65000 + s for s in range(count)]
+    extra = {s: originate for s in range(1, count)}
+    _emit(out, count, links, None, loopbacks, asns, extra)
+    return count, len(links)
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="kind", required=True)
@@ -130,10 +147,17 @@ def main():
     ln.add_argument("--nodes", type=int, required=True)
     ln.add_argument("--originate", type=int, default=0)
     ln.add_argument("--out", required=True)
+    hb = sub.add_parser("hub")
+    hb.add_argument("--spokes", type=int, required=True)
+    hb.add_argument("--originate", type=int, default=0)
+    hb.add_argument("--out", required=True)
     args = ap.parse_args()
     if args.kind == "fattree":
         n, e = gen_fattree(args.k, args.originate, args.out)
         print("fattree k=%d: %d switches, %d links -> %s" % (args.k, n, e, args.out))
+    elif args.kind == "hub":
+        n, e = gen_hub(args.spokes, args.originate, args.out)
+        print("hub spokes=%d: %d switches, %d links -> %s" % (args.spokes, n, e, args.out))
     else:
         n, e = gen_line(args.nodes, args.originate, args.out)
         print("line: %d switches, %d links -> %s" % (n, e, args.out))

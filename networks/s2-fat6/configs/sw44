@@ -1,0 +1,28 @@
+hostname sw44
+
+interface Loopback0
+ ip address 10.0.45.1 255.255.255.255
+
+interface Loopback1
+ ip address 10.100.45.1 255.255.255.255
+
+interface Loopback2
+ ip address 10.100.45.2 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.51.1 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.52.1 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.53.1 255.255.255.252
+
+router bgp 65044
+ bgp router-id 10.0.45.1
+ network 10.0.45.1 mask 255.255.255.255
+ network 10.100.45.1 mask 255.255.255.255
+ network 10.100.45.2 mask 255.255.255.255
+ neighbor 10.1.51.2 remote-as 65024
+ neighbor 10.1.52.2 remote-as 65025
+ neighbor 10.1.53.2 remote-as 65026

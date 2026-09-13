@@ -1,0 +1,32 @@
+hostname sw26
+
+interface Loopback0
+ ip address 10.0.27.1 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.47.2 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.50.2 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.53.2 255.255.255.252
+
+interface GigabitEthernet0/3
+ ip address 10.1.105.1 255.255.255.252
+
+interface GigabitEthernet0/4
+ ip address 10.1.106.1 255.255.255.252
+
+interface GigabitEthernet0/5
+ ip address 10.1.107.1 255.255.255.252
+
+router bgp 65026
+ bgp router-id 10.0.27.1
+ network 10.0.27.1 mask 255.255.255.255
+ neighbor 10.1.47.1 remote-as 65042
+ neighbor 10.1.50.1 remote-as 65043
+ neighbor 10.1.53.1 remote-as 65044
+ neighbor 10.1.105.2 remote-as 65006
+ neighbor 10.1.106.2 remote-as 65007
+ neighbor 10.1.107.2 remote-as 65008

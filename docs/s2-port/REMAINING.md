@@ -21,7 +21,7 @@ Knobs added for scale work:
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
 | `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) / AUTO (DCN/WAN classification) | code default RANDOM; **runner default `auto`** |
 | `-Ds2.nodeWeightsV2=true` | add the full-table propagation-closure term to the node weights (compresses the FatTree core/edge ratio; no assignment change on the current testbeds — see plan §6.9) | off |
-| `-Ds2.nodeWeightsRoleScale=true` | adaptive role-level peer coefficient: drop the peer term when the busiest BGP tier already has ≥ the interfaces of the least-connected tier (improves `s2-fat4` W=3 cost imbalance 1.061→1.047; plan §6.10) | off |
+| `-Ds2.nodeWeightsRoleScale=true` | adaptive role-level peer coefficient: drop the peer term when the busiest BGP tier already has ≥ the interfaces of the least-connected tier (improves `s2-fat4` W=3 cost imbalance 1.061→1.047 and the WAN hub star, but **regresses `s2-fat6` W=2 1.023→1.068**; plan §6.10, §6.12) | off |
 | `-Ds2.nodeWeightsPeerScale=<int>` | evaluation-only override pinning the BGP peer coefficient (O6 sweeps) | unset |
 | `-Ds2.prefixSpacePositiveCacheOnly=true` | memoize only positive `PrefixSpace.containsPrefix` results (cuts the EGP transient; pure memoization) | off in shared code (stock unchanged); **on in the runner** (`scripts/local-demo.sh`, k8s worker manifest; `-Ds2.prefixSpacePositiveCacheOnly=false` disables) |
 | `S2_PREFIX_SHARDS=N` | control-plane (BGP RIB) prefix sharding, N rounds | 1 (off) |
@@ -139,6 +139,15 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
   leaves `s2-fat2` (1.148) and the other testbeds unchanged (one assignment changes, no metric
   change). A single peer coefficient cannot do both (`s2-fat2` needs ≥2, `s2-fat4` is best at 0;
   `-Ds2.nodeWeightsPeerScale` sweep). Kept gated off like v2 pending broader validation; §6.10.
+  **Broadened validation (2026-09-13, §6.12)**: adding a k=6 FatTree (`networks/s2-fat6`, 45
+  switches) and a hub/route-reflector star (`scripts/gen-topology.py hub`, `networks/s2-hub`) shows
+  the rule still improves `s2-fat4` W=3 (1.061→1.047) and the hub W=2/W=3 (1.261→1.051 / 1.109),
+  but **regresses `s2-fat6` W=2 (1.023→1.068)** and slightly at W=3 (1.068→1.073); fat2 / line /
+  big2 / mega are unchanged. Since it fails on the shape it targets (FatTree k=6), it stays **gated
+  off** (`-Ds2.nodeWeightsRoleScale=true` opts in). The runner default (`auto`→METIS) ignores node
+  weights, so demos are unaffected. The WAN-star gain confirms the peer term over-spreads roles; a
+  cost-aware partitioner (plan §3.2 v2 extension) is the right fix, not a per-shape static
+  coefficient.
   **O7** docs sync — **Done (2026-09-13)**: `OPS.md`/`REMAINING.md` reflect the O1 defaults
   (owned + descriptor on, runner positive-cache on, runner `-Ds2.partition=auto`), the finalized k8s
   resources, and the staged CI (`--upstream`/`--matrix`).
