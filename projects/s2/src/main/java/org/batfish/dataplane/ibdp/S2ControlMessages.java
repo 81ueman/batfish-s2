@@ -23,8 +23,15 @@ final class S2ControlMessages {
     private static final long serialVersionUID = 1L;
     final List<S2WorkerEndpoint> endpoints;
 
-    Start(List<S2WorkerEndpoint> endpoints) {
+    /**
+     * Java-serialized {@code SortedMap<String, Configuration>} of all snapshot configs, produced by
+     * the controller so workers do not re-parse. May be null (fall back to parsing on the worker).
+     */
+    final byte[] configs;
+
+    Start(List<S2WorkerEndpoint> endpoints, byte[] configs) {
       this.endpoints = endpoints;
+      this.configs = configs;
     }
   }
 

@@ -26,6 +26,7 @@ public final class S2ControllerServer implements AutoCloseable {
 
   private final int _numWorkers;
   private final List<S2WorkerEndpoint> _endpoints;
+  private final byte[] _configs;
   private final ServerSocket _server;
   private final ExecutorService _pool = Executors.newCachedThreadPool();
 
@@ -94,10 +95,12 @@ public final class S2ControllerServer implements AutoCloseable {
     }
   }
 
-  public S2ControllerServer(int port, int numWorkers, List<S2WorkerEndpoint> endpoints)
+  public S2ControllerServer(
+      int port, int numWorkers, List<S2WorkerEndpoint> endpoints, byte[] configs)
       throws IOException {
     _numWorkers = numWorkers;
     _endpoints = endpoints;
+    _configs = configs;
     _server = new ServerSocket(port);
     _rounds = new RoundCoordinator(numWorkers);
     _sums = new SumCoordinator(numWorkers);
@@ -142,7 +145,7 @@ public final class S2ControllerServer implements AutoCloseable {
       }
       if (allRegistered) {
         for (ObjectOutputStream workerOut : _streams.values()) {
-          workerOut.writeObject(new S2ControlMessages.Start(_endpoints));
+          workerOut.writeObject(new S2ControlMessages.Start(_endpoints, _configs));
           workerOut.flush();
         }
       }

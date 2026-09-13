@@ -267,6 +267,28 @@ not retained data. Consequences:
   Together they cut the worst-worker peak ~42% while still matching vanilla. A `System.gc()`
   hint each BGP iteration did **not** reliably help (GC timing is noisy).
 
+## Controller-shipped configurations (per-worker parse elimination)
+
+The attribution above showed the floor is the per-worker parse/load of the full snapshot.
+The controller already parses the snapshot, so it now Java-serializes the parsed
+configurations and ships them in the `Start` control message; each worker deserializes them
+and builds its snapshot with `S2Snapshot.fromConfigs` (`BatfishTestUtils.getBatfish(configs)`
+installs them directly, no ANTLR and no on-disk snapshot). A worker that does not receive
+the configs falls back to parsing from disk.
+
+Effect (`s2-mega`, 16-router eBGP line, 4096 prefixes, 3 workers, all
+`ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`):
+
+| configuration | max peak heap / worker |
+| --- | --- |
+| per-worker parse (before) | 2090.8 MiB |
+| controller-shipped configs | **436.4 MiB** |
+
+That is ~79% lower, and the first-phase peak (`after building nodes`) drops from ~517 MiB
+to ~168 MiB. With this floor removed, prefix sharding (B) no longer moves the *max* peak
+at this size (it is within noise); B remains the lever when the BGP RIB itself dominates.
+Verified on OrbStack too (1 and 3 Pods MATCH).
+
 ## Known residual
 
 On a **cyclic equal-cost** topology (e.g. a 6-node ring), the distributed BGP fixpoint

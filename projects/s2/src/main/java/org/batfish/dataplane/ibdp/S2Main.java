@@ -1,5 +1,7 @@
 package org.batfish.dataplane.ibdp;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
@@ -17,6 +19,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicReference;
@@ -115,6 +118,23 @@ public final class S2Main {
     }
   }
 
+  /** Serialize the controller's parsed configurations so workers can skip parsing. */
+  private static byte[] serializeConfigs(Map<String, Configuration> configs) throws IOException {
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+      oos.writeObject(new TreeMap<>(configs));
+    }
+    return baos.toByteArray();
+  }
+
+  @SuppressWarnings("unchecked")
+  private static SortedMap<String, Configuration> deserializeConfigs(byte[] payload)
+      throws IOException, ClassNotFoundException {
+    try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(payload))) {
+      return (SortedMap<String, Configuration>) ois.readObject();
+    }
+  }
+
   /** Sum of the peak used bytes across all heap memory pools (for scale reporting). */
   private static long peakHeapBytes() {
     long total = 0;
@@ -143,7 +163,10 @@ public final class S2Main {
     DataPlane vanilla = snap.batfish.loadDataPlane(snap.snapshot);
     Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
 
-    try (S2ControllerServer server = new S2ControllerServer(port, numWorkers, endpoints)) {
+    // Serialize the parsed configs once so each worker can skip parsing the snapshot.
+    byte[] serializedConfigs = serializeConfigs(snap.configs);
+    try (S2ControllerServer server =
+        new S2ControllerServer(port, numWorkers, endpoints, serializedConfigs)) {
       server.start();
       System.out.printf(
           "S2 controller listening on %d, waiting for %d workers%n", port, numWorkers);
@@ -266,53 +289,54 @@ public final class S2Main {
     int controllerPort = Integer.parseInt(args[5]);
     int sidecarPort = Integer.parseInt(args[6]);
 
-    S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
-    System.err.printf(
-        "S2 worker %d peak heap after snapshot load: %.1f MiB%n",
-        workerId, peakHeapBytes() / 1048576.0);
-    assertDistributedProtocolsSupported(snap, numWorkers);
-    Map<String, Integer> assignment =
-        NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, 0L);
-    Set<String> ownedHosts = new HashSet<>();
-    assignment.forEach(
-        (host, owner) -> {
-          if (owner == workerId) {
-            ownedHosts.add(host);
-          }
-        });
+    try (Socket socket = connectWithRetry(controllerHost, controllerPort)) {
+      ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+      out.flush();
+      ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+      out.writeObject(new S2ControlMessages.Register(workerId));
+      out.flush();
+      S2ControlMessages.Start start = (S2ControlMessages.Start) in.readObject();
 
-    Map<String, DistributedNode> nodes = new HashMap<>();
-    for (String host : snap.configs.keySet()) {
-      nodes.put(
-          host,
-          assignment.get(host) == workerId
-              ? DistributedNode.real(snap.configs.get(host))
-              : DistributedNode.shadow(snap.configs.get(host)));
-    }
+      // S2 ships the controller's parsed configurations so workers do not re-parse the snapshot.
+      S2Snapshot snap =
+          start.configs != null
+              ? S2Snapshot.fromConfigs(deserializeConfigs(start.configs))
+              : S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
+      assertDistributedProtocolsSupported(snap, numWorkers);
+      Map<String, Integer> assignment =
+          NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, 0L);
+      Set<String> ownedHosts = new HashSet<>();
+      assignment.forEach(
+          (host, owner) -> {
+            if (owner == workerId) {
+              ownedHosts.add(host);
+            }
+          });
 
-    Map<String, Node> nodeMap = new HashMap<>(nodes);
-    List<org.batfish.datamodel.BgpAdvertisement> adverts =
-        new ArrayList<>(snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
+      Map<String, DistributedNode> nodes = new HashMap<>();
+      for (String host : snap.configs.keySet()) {
+        nodes.put(
+            host,
+            assignment.get(host) == workerId
+                ? DistributedNode.real(snap.configs.get(host))
+                : DistributedNode.shadow(snap.configs.get(host)));
+      }
 
-    AtomicReference<BDDReachabilityAnalysis> localAnalysisRef = new AtomicReference<>();
-    try (S2SidecarServer sidecar =
-        new S2SidecarServer(
-            sidecarPort,
-            S2SidecarHandlers.forWorker(
-                nodeMap,
-                snap.bgpTopology,
-                snap.networkConfigurations,
-                ownedHosts,
-                localAnalysisRef::get))) {
-      sidecar.start();
+      Map<String, Node> nodeMap = new HashMap<>(nodes);
+      List<org.batfish.datamodel.BgpAdvertisement> adverts =
+          new ArrayList<>(snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
 
-      try (Socket socket = connectWithRetry(controllerHost, controllerPort)) {
-        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-        out.flush();
-        ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-        out.writeObject(new S2ControlMessages.Register(workerId));
-        out.flush();
-        S2ControlMessages.Start start = (S2ControlMessages.Start) in.readObject();
+      AtomicReference<BDDReachabilityAnalysis> localAnalysisRef = new AtomicReference<>();
+      try (S2SidecarServer sidecar =
+          new S2SidecarServer(
+              sidecarPort,
+              S2SidecarHandlers.forWorker(
+                  nodeMap,
+                  snap.bgpTopology,
+                  snap.networkConfigurations,
+                  ownedHosts,
+                  localAnalysisRef::get))) {
+        sidecar.start();
 
         S2SidecarClient client = new S2SidecarClient();
         for (String host : snap.configs.keySet()) {

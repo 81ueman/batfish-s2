@@ -1,5 +1,6 @@
 package org.batfish.dataplane.ibdp;
 
+import com.google.common.collect.ImmutableMap;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,7 +11,6 @@ import org.batfish.common.NetworkSnapshot;
 import org.batfish.common.topology.IpOwners;
 import org.batfish.common.topology.TopologyProvider;
 import org.batfish.datamodel.Configuration;
-import com.google.common.collect.ImmutableMap;
 import org.batfish.datamodel.NetworkConfigurations;
 import org.batfish.datamodel.bgp.BgpTopology;
 import org.batfish.datamodel.bgp.BgpTopologyUtils;
@@ -67,6 +67,24 @@ public final class S2Snapshot {
             TestrigText.builder().setConfigurationBytes(bytes).build(), folder);
     NetworkSnapshot snapshot = batfish.getSnapshot();
     SortedMap<String, Configuration> configs = batfish.loadConfigurations(snapshot);
+    return fromBatfish(batfish, configs);
+  }
+
+  /**
+   * Like {@link #load}, but from already-parsed configurations (S2 ships the controller's parsed
+   * configs to workers so they do not re-parse the snapshot). {@code BatfishTestUtils.getBatfish}
+   * installs the configs directly, so topology is computed without ANTLR.
+   */
+  public static S2Snapshot fromConfigs(SortedMap<String, Configuration> configs)
+      throws IOException {
+    TemporaryFolder folder = new TemporaryFolder();
+    folder.create();
+    Batfish batfish = BatfishTestUtils.getBatfish(configs, folder);
+    return fromBatfish(batfish, configs);
+  }
+
+  private static S2Snapshot fromBatfish(Batfish batfish, SortedMap<String, Configuration> configs) {
+    NetworkSnapshot snapshot = batfish.getSnapshot();
     TopologyProvider tp = batfish.getTopologyProvider();
     TopologyContext topologyContext =
         TopologyContext.builder()
