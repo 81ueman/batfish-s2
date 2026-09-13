@@ -17,7 +17,13 @@ kubectl delete namespace s2 --ignore-not-found --wait=true
 
 echo "== applying k8s/overlays/${W}pod (network=${NETWORK}) =="
 # Render the overlay and substitute the snapshot name so we do not need one overlay per network.
-kubectl kustomize "k8s/overlays/${W}pod" | sed "s/s2-triangle/${NETWORK}/g" | kubectl apply -f -
+rendered="$(kubectl kustomize "k8s/overlays/${W}pod" | sed "s/s2-triangle/${NETWORK}/g")"
+# Optionally pin the partition scheme (default 'auto' from the manifests):
+#   S2_PARTITION=METIS scripts/k8s-demo.sh 3
+if [[ -n "${S2_PARTITION:-}" ]]; then
+  rendered="$(printf '%s\n' "$rendered" | sed "s/-Ds2.partition=auto/-Ds2.partition=${S2_PARTITION}/g")"
+fi
+printf '%s\n' "$rendered" | kubectl apply -f -
 
 echo "== waiting for controller job =="
 if ! kubectl -n s2 wait --for=condition=complete job/s2-controller --timeout=1800s; then
