@@ -309,6 +309,78 @@ its RIB bound). Both mechanisms remain useful but their payoff depends on which 
 dominates: parse transient (config shipping), BGP RIB (B), or retained dataplane (needs the
 descriptor/owned-only work).
 
+## Where the floor lives, across scales
+
+Same workload shape (eBGP line, origination prefixes grown), 3 workers:
+
+| network | prefixes | parse transient | config shipping | B prefix shards | worst-worker peak |
+| --- | --- | --- | --- | --- | --- |
+| `s2-big2` | 640 | dominant | 580.2 -> 164.7 MiB | helps | 164.7 MiB |
+| `s2-mega` | 4096 | large | 2090.8 -> 436.4 MiB | marginal | 436.4 MiB |
+| `s2-giga` | 32768 | small share | 2513.1 -> 2226.1 MiB | no gain | 2226.1 MiB |
+
+Phase peaks at 32768 prefixes (worker 0, per-worker-parse path, cumulative
+`MemoryPoolMXBean` peaks so the deltas are indicative, not live sizes):
+
+* `after building nodes` (configs + node skeletons): 1174.2 MiB
+* `after EGP iteration 1` (BGP RIBs): 1558.6 MiB (+~385)
+* `after nextDataplane 1` (FIB construction): 2335.5 MiB (+~777)
+* final peak: 2513.1 MiB
+
+So as prefixes grow the bottleneck migrates from *parsing the snapshot* (fixed cost per
+config, small at large prefix counts) to the *full dataplane every worker retains*. Each
+worker currently builds and keeps, for **all** nodes (owned and shadow):
+
+* a main RIB and a FIB per node — `S2BdpEngine.nextDataplane` calls `computeFib` on every
+  node's virtual routers, and the returned `DataPlane` holds every node's tables;
+* a global traceroute digest over every pair of loopbacks (`reachabilityDigest`), which needs
+  all FIBs to run;
+* a full `BDDReachabilityAnalysisFactory` over all configs — remote edges are then suppressed
+  by `OwnedForwardingAnalysis`, but the factory still builds each remote config's ACL /
+  transformation / source structures.
+
+## Reduction roadmap
+
+Ordered by expected payoff at scale. Every item should stay behind a default-off switch until
+it is verified to match vanilla.
+
+1. **Owned-only dataplane (FIB / main RIB).** Build and retain FIBs and main RIBs only for
+   owned nodes. The symbolic analysis is already owned-scoped (`OwnedForwardingAnalysis` +
+   pulled boundary edges) and `ribsOf` already filters to owned. The blockers are the three
+   consumers of *remote* forwarding: `reachabilityDigest` (a verification artifact — move it
+   to the controller or make it owned-pairs-only), `nextTopologyContext`'s global prune
+   (`initBgpTopology` reachability, VXLAN/IPsec/tunnel), and `IpsRoutedOutInterfacesFactory`.
+   Biggest lever: drops ~(1 - owned/total) of the retained FIB+RIB, i.e. ~2/3 at 16 nodes over
+   3 workers.
+
+2. **Scope the BDD factory to owned configs.** Add an optional `Set<String> localNodes` so
+   `computeAclBDDs`, `computeTransformationRanges`, `BDDOutgoingOriginalFlowFilterManager`,
+   `BDDSourceManager` and `LastHopOutgoingInterfaceManager` skip remote nodes. Cuts the
+   analysis transient and retained structures that `OwnedForwardingAnalysis` hides but does not
+   avoid.
+
+3. **Release the full dataplane before the symbolic phase.** After extracting owned RIBs and
+   owned FIBs, drop the `DataPlane` reference so the symbolic phase does not carry remote
+   tables. Cheap; helps the symbolic peak (item 1 is what helps the dataplane-loop peak).
+
+4. **Lightweight remote descriptor.** Replace each remote `Configuration` with a descriptor
+   holding only what edge generation needs (interface name / addresses / L3 flags / OSPF
+   settings, BGP peer config), dropping remote ACL / policy / route-map / community bodies.
+   Payoff tracks policy size, not prefix count; it is also the prerequisite for not holding
+   remote configs at all.
+
+5. **Prefix-shard the dataplane (on-demand RIB / FIB).** Extend B from the control-plane BGP
+   RIB to the main RIB / FIB: build and serialize one prefix shard at a time and page the rest
+   (the paper's on-disk RIBs). Reduces the peak when the FIB dominates; a large shared-code
+   change.
+
+6. **Partitioning and worker count.** `NetworkPartitioner` is a balanced round-robin; a graph
+   partitioner (the paper's expert / METIS) would cut boundary edges and balance per-worker RIB
+   size. More workers is the blunt version (retained ~ 1/numWorkers). Orthogonal, cheap to try,
+   but it scales out rather than down.
+
+7. **Heap cap (`-Xmx`).** Already used; bounds transient headroom, not the retained floor.
+
 ## Known residual
 
 On a **cyclic equal-cost** topology (e.g. a 6-node ring), the distributed BGP fixpoint
@@ -336,6 +408,11 @@ scripts/local-demo.sh 3 s2-redist     # OSPF<->BGP redistribution
 JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/local-demo.sh 3 s2-big-bgp
 JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/local-demo.sh 3 s2-big2
 JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/local-demo.sh 3 s2-mega
+
+# largest snapshot (32768 prefixes); bound the heap
+JAVA_TOOL_OPTIONS=-Xmx4g scripts/local-demo.sh 3 s2-giga
+# reproduce the per-worker snapshot parse (disable controller-shipped configs)
+JAVA_TOOL_OPTIONS=-Xmx4g scripts/local-demo.sh 3 s2-giga -Ds2.noShipConfigs=true
 
 # Kubernetes (OrbStack) — <workers> [network]
 scripts/build-s2.sh --image
