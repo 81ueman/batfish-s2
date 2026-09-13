@@ -1,0 +1,22 @@
+hostname r1
+
+interface Loopback0
+ ip address 1.1.1.1 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.0.12.1 255.255.255.252
+
+! A TrackReachability: r1 tracks whether r2's directly-connected address is reachable.
+ip sla 1
+ icmp-echo 10.0.12.2 source-interface GigabitEthernet0/0
+ip sla schedule 1 start-time now life forever
+
+track 1 ip sla 1 reachability
+
+! A static route gated on the track above.
+ip route 99.99.0.0 255.255.0.0 10.0.12.2 track 1
+
+router bgp 65001
+ bgp router-id 1.1.1.1
+ network 1.1.1.1 mask 255.255.255.255
+ neighbor 10.0.12.2 remote-as 65002
