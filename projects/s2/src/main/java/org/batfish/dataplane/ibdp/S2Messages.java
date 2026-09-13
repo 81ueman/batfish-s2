@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.batfish.dataplane.ibdp;
 
+import java.io.FilterInputStream;
+import java.io.FilterOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import org.batfish.datamodel.AbstractRoute;
 import org.batfish.datamodel.AnnotatedRoute;
 import org.batfish.datamodel.Bgpv4Route;
@@ -195,6 +202,130 @@ final class S2Messages {
         List<RouteAdvertisement<OspfExternalType2Route>> routes) {
       super(hostname, vrf, process, edge);
       this.routes = routes;
+    }
+  }
+
+  // ------------------------------------------------------------------ RPC stats
+
+  /**
+   * Process-wide sidecar RPC counters, for the partition-evaluation boundary communication metric
+   * ({@code docs/s2-port/PARTITIONING-PLAN.md} §6.1). Each worker JVM prints one summary to stderr
+   * at the end of a run (see {@link S2SidecarServer#close()}).
+   *
+   * <p>Byte counts are the actual bytes on the wire: every connection carries exactly one request
+   * and one response, so a counting wrapper around the socket stream counts exactly the bytes
+   * transferred, including the Java serialization stream headers. Set {@code -Ds2.rpcStats=false}
+   * to disable the summary.
+   */
+  static final class RpcStats {
+    private RpcStats() {}
+
+    // Route (BGP/OSPF/main-RIB/boundary) sidecar, as served by this worker.
+    static final AtomicLong routeServed = new AtomicLong();
+    static final AtomicLong routeServedReqBytes = new AtomicLong();
+    static final AtomicLong routeServedRespBytes = new AtomicLong();
+    static final AtomicLong routeServedBoundary = new AtomicLong();
+    static final AtomicLong routeServedBoundaryEdges = new AtomicLong();
+
+    // Route sidecar, as called by this worker.
+    static final AtomicLong routeSent = new AtomicLong();
+    static final AtomicLong routeSentReqBytes = new AtomicLong();
+    static final AtomicLong routeSentRespBytes = new AtomicLong();
+    static final AtomicLong routeSentBoundary = new AtomicLong();
+    static final AtomicLong routeSentBoundaryEdges = new AtomicLong();
+
+    // BDD (symbolic) sidecar.
+    static final AtomicLong bddReceived = new AtomicLong();
+    static final AtomicLong bddReceivedReqBytes = new AtomicLong();
+    static final AtomicLong bddReceivedRespBytes = new AtomicLong();
+    static final AtomicLong bddSent = new AtomicLong();
+    static final AtomicLong bddSentReqBytes = new AtomicLong();
+    static final AtomicLong bddSentRespBytes = new AtomicLong();
+
+    private static final AtomicBoolean PRINTED = new AtomicBoolean();
+    private static final boolean ENABLED =
+        !"false".equalsIgnoreCase(System.getProperty("s2.rpcStats", "true"));
+
+    /**
+     * Prints the per-worker summary to stderr once per JVM (no-op if disabled or already printed).
+     */
+    static void printSummary() {
+      if (!ENABLED || !PRINTED.compareAndSet(false, true)) {
+        return;
+      }
+      System.err.printf(
+          "S2 rpc-stats pid=%d route.served=%d served.reqBytes=%d served.respBytes=%d"
+              + " served.boundary=%d served.boundaryEdges=%d route.sent=%d"
+              + " sent.reqBytes=%d sent.respBytes=%d sent.boundary=%d sent.boundaryEdges=%d"
+              + " bdd.received=%d received.reqBytes=%d received.respBytes=%d"
+              + " bdd.sent=%d sent.reqBytes=%d sent.respBytes=%d%n",
+          ProcessHandle.current().pid(),
+          routeServed.get(),
+          routeServedReqBytes.get(),
+          routeServedRespBytes.get(),
+          routeServedBoundary.get(),
+          routeServedBoundaryEdges.get(),
+          routeSent.get(),
+          routeSentReqBytes.get(),
+          routeSentRespBytes.get(),
+          routeSentBoundary.get(),
+          routeSentBoundaryEdges.get(),
+          bddReceived.get(),
+          bddReceivedReqBytes.get(),
+          bddReceivedRespBytes.get(),
+          bddSent.get(),
+          bddSentReqBytes.get(),
+          bddSentRespBytes.get());
+    }
+  }
+
+  /** Counts every byte written to the wrapped stream into {@code counter}. */
+  static final class CountingOutputStream extends FilterOutputStream {
+    private final AtomicLong _counter;
+
+    CountingOutputStream(OutputStream out, AtomicLong counter) {
+      super(out);
+      _counter = counter;
+    }
+
+    @Override
+    public void write(int b) throws IOException {
+      out.write(b);
+      _counter.incrementAndGet();
+    }
+
+    @Override
+    public void write(byte[] b, int off, int len) throws IOException {
+      out.write(b, off, len);
+      _counter.addAndGet(len);
+    }
+  }
+
+  /** Counts every byte read from the wrapped stream into {@code counter}. */
+  static final class CountingInputStream extends FilterInputStream {
+    private final AtomicLong _counter;
+
+    CountingInputStream(InputStream in, AtomicLong counter) {
+      super(in);
+      _counter = counter;
+    }
+
+    @Override
+    public int read() throws IOException {
+      int b = in.read();
+      if (b >= 0) {
+        _counter.incrementAndGet();
+      }
+      return b;
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) throws IOException {
+      int n = in.read(b, off, len);
+      if (n > 0) {
+        _counter.addAndGet(n);
+      }
+      return n;
     }
   }
 }

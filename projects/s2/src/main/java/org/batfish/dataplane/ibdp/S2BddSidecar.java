@@ -79,10 +79,17 @@ public final class S2BddSidecar implements AutoCloseable {
 
   private void serve(Socket socket) {
     try (Socket s = socket) {
-      ObjectOutputStream out = new ObjectOutputStream(s.getOutputStream());
+      ObjectOutputStream out =
+          new ObjectOutputStream(
+              new S2Messages.CountingOutputStream(
+                  s.getOutputStream(), S2Messages.RpcStats.bddReceivedRespBytes));
       out.flush();
-      ObjectInputStream in = new ObjectInputStream(s.getInputStream());
+      ObjectInputStream in =
+          new ObjectInputStream(
+              new S2Messages.CountingInputStream(
+                  s.getInputStream(), S2Messages.RpcStats.bddReceivedReqBytes));
       TransitMessage message = (TransitMessage) in.readObject();
+      S2Messages.RpcStats.bddReceived.incrementAndGet();
       _handler.receive(message.state, message.payload);
       out.writeObject(new Ack());
       out.flush();
@@ -111,10 +118,17 @@ public final class S2BddSidecar implements AutoCloseable {
     }
 
     public void transit(StateExpr state, BDD bdd) {
+      S2Messages.RpcStats.bddSent.incrementAndGet();
       try (Socket socket = new Socket(_endpoint.getHost(), _endpoint.getPort())) {
-        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+        ObjectOutputStream out =
+            new ObjectOutputStream(
+                new S2Messages.CountingOutputStream(
+                    socket.getOutputStream(), S2Messages.RpcStats.bddSentReqBytes));
         out.flush();
-        ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+        ObjectInputStream in =
+            new ObjectInputStream(
+                new S2Messages.CountingInputStream(
+                    socket.getInputStream(), S2Messages.RpcStats.bddSentRespBytes));
         out.writeObject(new TransitMessage(state, new BDDTransfer().save(bdd)));
         out.flush();
         in.readObject();

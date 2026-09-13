@@ -21,11 +21,15 @@ spec:
               value: "1"
             - name: NETWORK_NAME
               value: "s2-triangle"
+            # Default controller heap (docs/s2-port/OPS.md); the controller also builds
+            # the vanilla dataplane, so it uses the same 4g as the workers.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx4g"
           ports:
             - containerPort: 4090
           resources:
             requests: {memory: "2Gi", cpu: "1"}
-            limits: {memory: "8Gi"}
+            limits: {memory: "6Gi"}
 ---
 apiVersion: v1
 kind: Service
