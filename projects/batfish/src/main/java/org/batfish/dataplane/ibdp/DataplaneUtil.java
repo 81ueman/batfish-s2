@@ -17,6 +17,7 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.stream.Stream;
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.batfish.common.topology.IpOwners;
@@ -26,6 +27,8 @@ import org.batfish.datamodel.EvpnRoute;
 import org.batfish.datamodel.Fib;
 import org.batfish.datamodel.ForwardingAnalysis;
 import org.batfish.datamodel.ForwardingAnalysisImpl;
+import org.batfish.datamodel.Ip;
+import org.batfish.datamodel.IpSpace;
 import org.batfish.datamodel.Topology;
 import org.batfish.datamodel.vxlan.Layer2Vni;
 import org.batfish.datamodel.vxlan.Layer3Vni;
@@ -58,9 +61,36 @@ public final class DataplaneUtil {
       Map<String, Configuration> configs,
       Topology layer3Topology,
       IpOwners ipOwners) {
+    return computeForwardingAnalysis(fibs, configs, layer3Topology, ipOwners, null);
+  }
+
+  static @Nonnull ForwardingAnalysis computeForwardingAnalysis(
+      Map<String, Map<String, Fib>> fibs,
+      Map<String, Configuration> configs,
+      Topology layer3Topology,
+      IpOwners ipOwners,
+      @Nullable Set<Ip> unownedArpIpsOverride) {
+    return computeForwardingAnalysis(
+        fibs, configs, layer3Topology, ipOwners, unownedArpIpsOverride, null);
+  }
+
+  static @Nonnull ForwardingAnalysis computeForwardingAnalysis(
+      Map<String, Map<String, Fib>> fibs,
+      Map<String, Configuration> configs,
+      Topology layer3Topology,
+      IpOwners ipOwners,
+      @Nullable Set<Ip> unownedArpIpsOverride,
+      @Nullable Map<String, Map<String, IpSpace>> arpRepliesOverride) {
     LOGGER.info("Computing location info");
     Map<Location, LocationInfo> locationInfo = computeLocationInfo(ipOwners, configs);
-    return new ForwardingAnalysisImpl(configs, fibs, layer3Topology, locationInfo, ipOwners);
+    return new ForwardingAnalysisImpl(
+        configs,
+        fibs,
+        layer3Topology,
+        locationInfo,
+        ipOwners,
+        unownedArpIpsOverride,
+        arpRepliesOverride);
   }
 
   static @Nonnull Table<String, String, Set<Bgpv4Route>> computeBgpRoutes(List<VirtualRouter> vrs) {

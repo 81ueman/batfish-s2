@@ -34,6 +34,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import net.sf.javabdd.BDD;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -88,6 +89,42 @@ public final class ForwardingAnalysisImpl implements ForwardingAnalysis, Seriali
       Topology topology,
       Map<Location, LocationInfo> locationInfo,
       IpOwners ipOwners) {
+    this(configurations, fibs, topology, locationInfo, ipOwners, null);
+  }
+
+  /**
+   * As {@link #ForwardingAnalysisImpl(Map, Map, Topology, Map, IpOwners)}, but uses the supplied
+   * {@code unownedArpIpsOverride} (when non-null) as the network's unowned ARP IPs instead of
+   * deriving them from {@code fibs}. A distributed engine that only computes full FIBs for the
+   * nodes it owns uses this to supply the cluster-wide unowned ARP IPs (see {@link
+   * #computeUnownedArpIps(Map, IpOwners)}) without needing every remote node's FIB.
+   */
+  public ForwardingAnalysisImpl(
+      Map<String, Configuration> configurations,
+      Map<String, Map<String, Fib>> fibs,
+      Topology topology,
+      Map<Location, LocationInfo> locationInfo,
+      IpOwners ipOwners,
+      @Nullable Set<Ip> unownedArpIpsOverride) {
+    this(configurations, fibs, topology, locationInfo, ipOwners, unownedArpIpsOverride, null);
+  }
+
+  /**
+   * As {@link #ForwardingAnalysisImpl(Map, Map, Topology, Map, IpOwners, Set)}, but also uses the
+   * supplied {@code arpRepliesOverride} (when non-null) as the per-node/interface ARP replies
+   * instead of deriving them from {@code fibs}. A distributed engine that only computes full FIBs
+   * for the nodes it owns uses this to supply every remote node's exact ARP replies (computed by
+   * its owner from the owner's full FIB), which an owned node's forwarding behavior consults for
+   * the edges it ships.
+   */
+  public ForwardingAnalysisImpl(
+      Map<String, Configuration> configurations,
+      Map<String, Map<String, Fib>> fibs,
+      Topology topology,
+      Map<Location, LocationInfo> locationInfo,
+      IpOwners ipOwners,
+      @Nullable Set<Ip> unownedArpIpsOverride,
+      @Nullable Map<String, Map<String, IpSpace>> arpRepliesOverride) {
     List<Map.Entry<String, String>> allVrfs = sparseKeys(fibs);
 
     // TODO accept IpSpaceToBDD as parameter to reuse work when we build forwarding analysis
@@ -105,7 +142,10 @@ public final class ForwardingAnalysisImpl implements ForwardingAnalysis, Seriali
     BDD unownedIpsBDD = ipSpaceToBDD.visit(ownedIps).not();
 
     // ARP ips not belonging to any subnet in the network
-    Set<Ip> unownedArpIps = computeUnownedArpIps(fibs, ipSpaceToBDD, unownedIpsBDD);
+    Set<Ip> unownedArpIps =
+        unownedArpIpsOverride != null
+            ? unownedArpIpsOverride
+            : computeUnownedArpIps(fibs, ipSpaceToBDD, unownedIpsBDD);
 
     LOGGER.info("Aggregating information about routing entries");
     // Node -> vrf -> destination IPs that can be routed
@@ -114,7 +154,9 @@ public final class ForwardingAnalysisImpl implements ForwardingAnalysis, Seriali
     /* Compute _arpReplies: for each interface, the set of arp IPs for which that interface will
      * respond.
      */
-    {
+    if (arpRepliesOverride != null) {
+      _arpReplies = arpRepliesOverride;
+    } else {
       // mapping: node name -> vrf name -> interface name -> dst ips which are routed to the
       // interface. Should only include active interfaces.
       LOGGER.info("Computing IPs routed out interfaces");
@@ -374,6 +416,21 @@ public final class ForwardingAnalysisImpl implements ForwardingAnalysis, Seriali
         }
       }
     }
+  }
+
+  /**
+   * Compute the network's unowned ARP IPs: the ARP (next-hop) IPs appearing in any of the given
+   * FIBs that fall outside the network's owned IPs (see {@link #computeOwnedIps}). Exposed so a
+   * distributed engine can union the per-worker contributions computed from its owned nodes' FIBs
+   * and hand the global set to {@link #ForwardingAnalysisImpl(Map, Map, Topology, Map, IpOwners,
+   * Set)}, instead of each worker deriving it from (possibly stub) remote FIBs.
+   */
+  public static Set<Ip> computeUnownedArpIps(
+      Map<String, Map<String, Fib>> fibs, IpOwners ipOwners) {
+    IpSpaceToBDD ipSpaceToBDD = new BDDPacket().getDstIpSpaceToBDD();
+    IpSpace ownedIps = computeOwnedIps(ipOwners.getInterfaceOwners(false));
+    BDD unownedIpsBDD = ipSpaceToBDD.visit(ownedIps).not();
+    return computeUnownedArpIps(fibs, ipSpaceToBDD, unownedIpsBDD);
   }
 
   private static Set<Ip> computeUnownedArpIps(

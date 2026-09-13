@@ -69,6 +69,7 @@ import org.batfish.datamodel.IntegerSpace;
 import org.batfish.datamodel.Interface;
 import org.batfish.datamodel.InterfaceType;
 import org.batfish.datamodel.Ip;
+import org.batfish.datamodel.IpSpace;
 import org.batfish.datamodel.IsisRoute;
 import org.batfish.datamodel.NetworkConfigurations;
 import org.batfish.datamodel.PrefixSpace;
@@ -184,6 +185,40 @@ public class IncrementalBdpEngine {
    */
   protected boolean hasCompleteFibForTrackReachability(String hostname) {
     return true;
+  }
+
+  /**
+   * Returns the cluster-wide set of unowned ARP IPs to use when building the <em>final</em> {@link
+   * PartialDataplane}, or {@code null} to keep the stock behavior of deriving it from the FIBs at
+   * hand.
+   *
+   * <p>This is called exactly once per snapshot, after the topology fixpoint has converged, and is
+   * how a distributed engine that only computes full FIBs for the nodes it owns can supply the
+   * global unowned-ARP-IP set without a cross-worker barrier inside every iteration. The default
+   * returns {@code null} so stock Batfish is unchanged. The S2 engine overrides it in owned-only
+   * mode: it computes the set from its owned nodes' real FIBs and unions it across workers via the
+   * coordinator.
+   */
+  protected @Nullable Set<Ip> computeFinalUnownedArpIps(
+      Map<String, Map<String, Fib>> fibs, IpOwners ipOwners) {
+    return null;
+  }
+
+  /**
+   * Returns the cluster-wide per-node/interface ARP replies to use when building the <em>final</em>
+   * {@link PartialDataplane}, or {@code null} to keep the stock behavior of deriving them from the
+   * FIBs at hand.
+   *
+   * <p>Like {@link #computeFinalUnownedArpIps}, this is called exactly once per snapshot, after
+   * convergence. A distributed engine that only computes full FIBs for the nodes it owns uses it to
+   * supply every remote node's exact ARP replies (which its owner computed from the owner's full
+   * FIB): an owned node's forwarding behavior consults a remote neighbor's ARP replies for the
+   * edges it ships, so stub-derived remote replies would otherwise leak into an owned node's
+   * answer. The default returns {@code null} so stock Batfish is unchanged.
+   */
+  protected @Nullable Map<String, Map<String, IpSpace>> computeFinalArpReplies(
+      Map<String, Map<String, IpSpace>> localArpReplies) {
+    return null;
   }
 
   /**
@@ -778,6 +813,29 @@ public class IncrementalBdpEngine {
     // TODO: Properly finalize topologies, IpOwners, etc.
     LOGGER.info("Finalizing dataplane");
     answerElement.setVersion(BatfishVersion.getVersionStatic());
+    // A distributed engine may need cluster-wide forwarding inputs (the unowned ARP IPs and every
+    // node's ARP replies) that cannot be derived from this worker's (possibly stub) remote FIBs. It
+    // supplies them here, once, after convergence; rebuilding the partial dataplane with the
+    // overrides makes the final forwarding analysis exact without a cross-worker barrier in every
+    // iteration.
+    Set<Ip> finalUnownedArpIps =
+        computeFinalUnownedArpIps(currentDataplane.getFibs(), currentIpOwners);
+    Map<String, Map<String, IpSpace>> finalArpReplies =
+        computeFinalArpReplies(currentDataplane.getForwardingAnalysis().getArpReplies());
+    if (finalUnownedArpIps != null || finalArpReplies != null) {
+      LOGGER.info("Rebuilding partial dataplane with cluster-wide forwarding state");
+      Map<String, Map<String, Fib>> finalFibs = currentDataplane.getFibs();
+      currentDataplane =
+          PartialDataplane.builder()
+              .setNodes(nodes)
+              .setFibs(finalFibs)
+              .setIpOwners(currentIpOwners)
+              .setLayer3Topology(currentTopologyContext.getLayer3Topology())
+              .setL3Adjacencies(currentTopologyContext.getL3Adjacencies())
+              .setUnownedArpIps(finalUnownedArpIps)
+              .setArpReplies(finalArpReplies)
+              .build();
+    }
     IncrementalDataPlane finalDataplane =
         IncrementalDataPlane.builder()
             .setNodes(dataPlaneNodes(nodes))

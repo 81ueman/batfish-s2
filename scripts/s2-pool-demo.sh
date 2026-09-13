@@ -14,7 +14,8 @@ NETWORK="${2:-s2-triangle}"
 cd "$(git rev-parse --show-toplevel)"
 
 # Runner defaults: positive-only PrefixSpace memoization and the pinned partition scheme. The
-# worker-service itself defaults to the forwarding-exact full dataplane (see S2WorkerService).
+# worker-service defaults to the forwarding-exact owned-only dataplane (see S2WorkerService);
+# set -Ds2.ownedDataplane=false to force the full-dataplane-per-worker mode.
 export JAVA_TOOL_OPTIONS="-Ds2.prefixSpacePositiveCacheOnly=true -Ds2.partition=WEIGHTED_LPT_FM ${JAVA_TOOL_OPTIONS:-}"
 
 # Free only the ports this run will use, so concurrent runs are not disturbed.

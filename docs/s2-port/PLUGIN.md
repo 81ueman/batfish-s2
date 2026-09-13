@@ -142,10 +142,13 @@ batfish -dataplaneengine=s2 -s2controllerhost=HOST -s2controllerport=PORT \
 * **Slice GC.** The engine creates a unique per-snapshot directory under `s2slicedir`, registers it
   for recursive deletion on JVM shutdown (`S2DirectoryHostSlices.deleteRecursively`), and the
   `pool-compute` client deletes its temporary directory when done.
-* **Forwarding exactness.** A remote shadow's FIB is a stub, so owned-only mode would give an ARP /
-  forwarding view that differs from stock Batfish. `S2WorkerService` therefore runs the
-  forwarding-exact full dataplane by default (`S2BdpEngine` takes an explicit owned-only flag);
-  `-Ds2.ownedDataplane=true` restores owned-only mode for RIB/FIB-only scale runs.
+* **Forwarding exactness.** A remote shadow's FIB is a stub, so the two cross-node FIB inputs of the
+  forwarding analysis are recovered by a one-shot post-convergence exchange: each worker ships the
+  unowned ARP IPs and the exact per-interface ARP replies it can compute from its owned nodes' full
+  FIBs, the coordinator unions them across the cluster, and each worker rebuilds its final
+  forwarding analysis with the global state. Owned-only mode is therefore forwarding-exact, and
+  `S2WorkerService` runs it by default (per-worker memory scales with the owned node count);
+  `-Ds2.ownedDataplane=false` restores the full-dataplane-per-worker behavior.
 * **Kubernetes.** `k8s/pool/` (separate from the one-shot `k8s/base` runner) has a persistent
   `s2-controller` Deployment + Service, an `s2-worker` StatefulSet in worker-service mode, a
   ReadWriteMany `s2-slices` PVC shared by the workers and the engine, and an `s2-engine` Deployment

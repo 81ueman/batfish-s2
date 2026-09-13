@@ -41,6 +41,8 @@ public final class S2ControllerServer implements AutoCloseable {
   private final CountDownLatch _resultsDone = new CountDownLatch(1);
   private final S2RoundBarrier _rounds;
   private final S2SumBarrier _sums;
+  private final S2UnownedArpIpsBarrier _unownedArpIps;
+  private final S2ArpRepliesBarrier _arpReplies;
   private int _registered;
 
   /**
@@ -68,6 +70,8 @@ public final class S2ControllerServer implements AutoCloseable {
     _server = new ServerSocket(port);
     _rounds = new S2RoundBarrier(numWorkers);
     _sums = new S2SumBarrier(numWorkers);
+    _unownedArpIps = new S2UnownedArpIpsBarrier(numWorkers);
+    _arpReplies = new S2ArpRepliesBarrier(numWorkers);
   }
 
   public int getPort() {
@@ -131,6 +135,18 @@ public final class S2ControllerServer implements AutoCloseable {
           S2ControlMessages.SumRequest request = (S2ControlMessages.SumRequest) message;
           int sum = _sums.check(request.value);
           out.writeObject(new S2ControlMessages.SumResponse(sum));
+          out.flush();
+        } else if (message instanceof S2ControlMessages.UnownedArpIpsRequest) {
+          S2ControlMessages.UnownedArpIpsRequest request =
+              (S2ControlMessages.UnownedArpIpsRequest) message;
+          out.writeObject(
+              new S2ControlMessages.UnownedArpIpsResponse(_unownedArpIps.check(request.ips)));
+          out.flush();
+        } else if (message instanceof S2ControlMessages.ArpRepliesRequest) {
+          S2ControlMessages.ArpRepliesRequest request =
+              (S2ControlMessages.ArpRepliesRequest) message;
+          out.writeObject(
+              new S2ControlMessages.ArpRepliesResponse(_arpReplies.check(request.arpReplies)));
           out.flush();
         } else if (message instanceof S2ControlMessages.Result) {
           S2ControlMessages.Result result = (S2ControlMessages.Result) message;

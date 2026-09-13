@@ -18,6 +18,10 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.batfish.common.topology.IpOwners;
 import org.batfish.datamodel.Configuration;
+import org.batfish.datamodel.Fib;
+import org.batfish.datamodel.ForwardingAnalysisImpl;
+import org.batfish.datamodel.Ip;
+import org.batfish.datamodel.IpSpace;
 import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.PrefixSpace;
 import org.batfish.datamodel.Vrf;
@@ -66,12 +70,14 @@ public class S2BdpEngine extends IncrementalBdpEngine {
    * when the snapshot contains features that need complete remote FIBs (tracks, VXLAN/IPsec/tunnel
    * reachability pruning), because owned-only FIBs would give silently wrong answers there.
    *
-   * <p>It is also the setter for the batch-forwarding analysis exactness: a remote shadow's FIB is
-   * a stub, so a worker's {@code ForwardingAnalysis} (ARP replies / VRF forwarding behavior) for
-   * its owned nodes can differ from the stock engine's. In-process S2 shadows share the real node,
-   * so that gap is invisible there; remote workers (the persistent pool) must run with owned mode
-   * off when the slices are served to questions that consult the forwarding analysis. {@link
-   * S2WorkerService} does so by default.
+   * <p>Owned-only forwarding is exact via one-shot post-convergence cluster exchanges. Two
+   * FIB-derived inputs of {@code ForwardingAnalysisImpl} are cross-node: the set of unowned ARP IPs
+   * (used to classify ARP-false next-hop routes) and each node's ARP replies (which an owned node's
+   * forwarding behavior consults for its edges to remote neighbors). After convergence each worker
+   * contributes what it can compute from its owned nodes' real FIBs ({@link
+   * #computeFinalUnownedArpIps}, {@link #computeFinalArpReplies}); the coordinator unions them and
+   * the worker rebuilds its final forwarding analysis with the global state. Remote workers (the
+   * persistent pool) therefore run in owned mode by default; see {@link S2WorkerService}.
    */
   private final boolean _ownedDataplaneRequested;
 
@@ -397,6 +403,58 @@ public class S2BdpEngine extends IncrementalBdpEngine {
       }
       return super.nextDataplane(currentTopologyContext, nodes, vrs, currentIpOwners);
     }
+  }
+
+  /**
+   * Owned-only mode computes full FIBs for owned nodes and stubs for remote shadows, so this
+   * worker's FIBs alone undercount the network's unowned ARP IPs. Compute the contribution from the
+   * owned nodes' real FIBs and union it across workers via the coordinator, recovering exactly the
+   * set the stock engine would derive from every full FIB. Called once per snapshot after
+   * convergence (see {@link IncrementalBdpEngine#computeFinalUnownedArpIps}), so there is no
+   * per-iteration cross-worker barrier. Returns null (stock behavior) in full-dataplane mode.
+   */
+  @Override
+  protected @Nullable Set<Ip> computeFinalUnownedArpIps(
+      Map<String, Map<String, Fib>> fibs, IpOwners ipOwners) {
+    if (!_ownedDataplane) {
+      return null;
+    }
+    Map<String, Map<String, Fib>> ownedFibs = new HashMap<>();
+    fibs.forEach(
+        (host, fibsByVrf) -> {
+          DistributedNode node = _nodes.get(host);
+          if (node != null && !node.isShadow()) {
+            ownedFibs.put(host, fibsByVrf);
+          }
+        });
+    return _coordinator.unionUnownedArpIps(
+        ForwardingAnalysisImpl.computeUnownedArpIps(ownedFibs, ipOwners));
+  }
+
+  /**
+   * Owned-only mode's remote shadows have stub FIBs, so their ARP replies (computed in this
+   * worker's forwarding analysis) differ from the full-FIB replies vanilla computes. An owned
+   * node's forwarding behavior consults a directly-connected remote neighbor's ARP replies, so
+   * those stubs would leak into the owned node's answer. Ship each owned node's exact ARP replies
+   * (computed here from its full FIB) and union them across workers. Like {@link
+   * #computeFinalUnownedArpIps}, once per snapshot after convergence. Returns null (stock behavior)
+   * in full-dataplane mode.
+   */
+  @Override
+  protected @Nullable Map<String, Map<String, IpSpace>> computeFinalArpReplies(
+      Map<String, Map<String, IpSpace>> localArpReplies) {
+    if (!_ownedDataplane) {
+      return null;
+    }
+    Map<String, Map<String, IpSpace>> ownedArpReplies = new HashMap<>();
+    localArpReplies.forEach(
+        (host, replies) -> {
+          DistributedNode node = _nodes.get(host);
+          if (node != null && !node.isShadow()) {
+            ownedArpReplies.put(host, replies);
+          }
+        });
+    return _coordinator.unionArpReplies(ownedArpReplies);
   }
 
   /**

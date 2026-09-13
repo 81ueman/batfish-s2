@@ -29,6 +29,8 @@ import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.DataPlane;
 import org.batfish.datamodel.ForwardingAnalysis;
 import org.batfish.datamodel.Interface;
+import org.batfish.datamodel.Ip;
+import org.batfish.datamodel.IpSpace;
 import org.batfish.datamodel.UniverseIpSpace;
 import org.batfish.main.Batfish;
 import org.batfish.main.BatfishTestUtils;
@@ -268,6 +270,20 @@ public class ScaledReachabilityTest {
     @Override
     public int sumAll(int localValue) {
       return localValue;
+    }
+
+    @Override
+    public Set<Ip> unionUnownedArpIps(Set<Ip> local) {
+      // This coordinator only drives the reachability workers, not the dataplane engine, so the
+      // one-shot unowned-ARP-IP exchange is never invoked. Return the local contribution.
+      return local;
+    }
+
+    @Override
+    public Map<String, Map<String, IpSpace>> unionArpReplies(
+        Map<String, Map<String, IpSpace>> local) {
+      // Never invoked (see unionUnownedArpIps).
+      return local;
     }
   }
 }
