@@ -115,6 +115,21 @@ public class S2BdpEngine extends IncrementalBdpEngine {
     return Schedule.ALL;
   }
 
+  @Override
+  protected void reportPhase(String phase) {
+    long peak = 0;
+    for (java.lang.management.MemoryPoolMXBean pool :
+        java.lang.management.ManagementFactory.getMemoryPoolMXBeans()) {
+      if (pool.getType() == java.lang.management.MemoryType.HEAP) {
+        java.lang.management.MemoryUsage usage = pool.getPeakUsage();
+        if (usage != null) {
+          peak += usage.getUsed();
+        }
+      }
+    }
+    System.err.printf("S2 phase %s: peak heap %.1f MiB%n", phase, peak / 1048576.0);
+  }
+
   private volatile List<PrefixSpace> _egpPrefixShards;
 
   /**

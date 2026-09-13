@@ -506,6 +506,7 @@ public class IncrementalBdpEngine {
     IncrementalBdpAnswerElement answerElement = new IncrementalBdpAnswerElement();
     // TODO: eventually, IGP needs to be part of fixed-point below, because tunnels.
     computeIgpDataPlane(nodes, vrs, initialTopologyContext, networkConfigurations, answerElement);
+    reportPhase("after IGP");
 
     LOGGER.info("Initialize virtual routers before topology fixed point");
     vrs.parallelStream()
@@ -571,10 +572,12 @@ public class IncrementalBdpEngine {
         LOGGER.error("Network has no stable solution");
         throw new BdpOscillationException("Network has no stable solution");
       }
+      reportPhase("after EGP iteration " + topologyIterations);
 
       updateLayer3Vnis(vrs);
       currentDataplane = null; // free the old one
       currentDataplane = nextDataplane(currentTopologyContext, nodes, vrs, currentIpOwners);
+      reportPhase("after nextDataplane " + topologyIterations);
       TopologyContext nextTopologyContext =
           nextTopologyContext(
               currentTopologyContext,
@@ -1005,6 +1008,9 @@ public class IncrementalBdpEngine {
   protected List<PrefixSpace> egpPrefixShards() {
     return ImmutableList.of();
   }
+
+  /** Hook for phase-level reporting (e.g. peak memory) during dataplane computation. No-op. */
+  protected void reportPhase(String phase) {}
 
   /**
    * Decide the IGP (OSPF/IS-IS/RIP) convergence condition cluster-wide. The stock engine keeps
