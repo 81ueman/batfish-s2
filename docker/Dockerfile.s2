@@ -17,6 +17,7 @@ WORKDIR /s2
 COPY docker/s2_main_deploy.jar /s2/s2_main.jar
 COPY scripts/entrypoint-controller.sh /s2/entrypoint-controller.sh
 COPY scripts/entrypoint-worker.sh /s2/entrypoint-worker.sh
+COPY scripts/entrypoint-verifier.sh /s2/entrypoint-verifier.sh
 COPY networks/ /s2/inputs/
 
 EXPOSE 4090 4091

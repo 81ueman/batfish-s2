@@ -21,26 +21,34 @@ spec:
               value: "1"
             - name: NETWORK_NAME
               value: "s2-triangle"
-            # Default controller heap (docs/s2-port/OPS.md; peaks in M5-SCALE.md).
-            # The controller also builds the vanilla dataplane and the reference
-            # reachability analysis, so it uses the same heap budget as a worker:
-            # -Xmx4g covers the largest verified snapshot (s2-giga) with headroom.
+            # The controller is a lightweight coordinator (A7): it parses the snapshot,
+            # resolves the partition, ships configs, and collects the workers' results
+            # into worker-results-<W>.bin on the shared volume. The vanilla dataplane and
+            # the reference BDD analysis now run in the s2-verifier Job, so the
+            # controller needs only a small heap (docs/s2-port/OPS.md).
+            - name: S2_OUTPUT_DIR
+              value: /s2/shared
             # The controller resolves the partition scheme; -Ds2.partition=auto selects it
             # from the network shape (append -Ds2.partition=<scheme> to pin one).
             # Override per run via JAVA_TOOL_OPTIONS.
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xmx4g -Ds2.partition=auto"
+              value: "-Xmx1g -Ds2.partition=auto"
           ports:
             - containerPort: 4090
-          # Request is a scheduling floor; the transient peak is absorbed by the limit.
-          # 2Gi is above the retained working set (tens of MiB after GC) and near the
-          # typical transient; 6Gi = 4g heap + ~2Gi non-heap/GC headroom, which also
-          # covers the pre-O1 fallback (owned/descriptor off, ~2.5 GiB). No CPU limit:
-          # the dataplane/symbolic phases burst across cores, so a CFS quota would only
-          # throttle them.
+          volumeMounts:
+            - name: shared
+              mountPath: /s2/shared
+          # No longer computes vanilla/reference dataplanes, so it needs a much smaller
+          # budget than a worker: 1g heap, 512Mi scheduling floor, 2Gi = 1g heap + ~1Gi
+          # non-heap/GC headroom. No CPU limit: it still resolves the partition and
+          # serializes/ships the configs.
           resources:
-            requests: {memory: "2Gi", cpu: "1"}
-            limits: {memory: "6Gi"}
+            requests: {memory: "512Mi", cpu: "0.5"}
+            limits: {memory: "2Gi"}
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: s2-shared
 ---
 apiVersion: v1
 kind: Service

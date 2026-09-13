@@ -91,11 +91,11 @@ Decomposed into slices:
 The symbolic fixpoint is now wired into the multi-process/k8s runner: after the
 control plane converges and FIBs are distributed, each worker builds its
 `BDDReachabilityAnalysis`, runs its share of the distributed forward fixpoint with
-`S2BddSidecar` transfer, and the controller compares the per-state reachable BDDs
+`S2BddSidecar` transfer, and the verify role compares the per-state reachable BDDs
 against vanilla. Verified locally and on OrbStack Kubernetes for 1 and 3 Pods
 (`ribs=MATCH reachability=MATCH symbolic=MATCH`).
 
-The controller also evaluates the result at the **public API level**: it combines
+The verify role also evaluates the result at the **public API level**: it combines
 the workers' backward-reachable BDDs and produces Batfish's reachability answer
 (`BDDReachabilityUtils.constructFlows`), then compares the concrete flow set with
 vanilla. Verified locally and on OrbStack Kubernetes for 1 and 3 Pods
@@ -114,7 +114,7 @@ the number of workers, not just the fixpoint.
 
 ## Running the demos
 
-Local multi-process (one JVM per worker):
+Local multi-process (one JVM per worker, plus a separate verify JVM):
 
 ```sh
 bazel build //projects/s2:s2_main_deploy.jar
@@ -123,7 +123,7 @@ scripts/local-demo.sh 3
 scripts/local-demo.sh 3 s2-line   # optional second arg selects the network
 ```
 
-OrbStack Kubernetes (controller + 1 or 3 worker Pods):
+OrbStack Kubernetes (controller Job + 1 or 3 worker Pods + verifier Job):
 
 ```sh
 scripts/build-s2.sh --image        # builds s2:local
@@ -131,6 +131,18 @@ scripts/k8s-demo.sh 1
 scripts/k8s-demo.sh 3
 scripts/compare-answers.sh
 ```
+
+The controller is a **lightweight coordinator**: it parses the snapshot, resolves
+the partition, ships configs, collects the workers' RIBs/digest/symbolic BDDs, and
+writes them to `$S2_OUTPUT_DIR/worker-results-<W>.bin`. It no longer computes the
+vanilla single-machine dataplane or the reference BDD analysis. The `verify` role
+(`S2Main verify <network> <numWorkers>`, a new JVM locally and the `s2-verifier`
+Job on Kubernetes) reads that file, reproduces the reference computation, and
+writes `result-<W>worker.txt` with the same `S2 MATCH (...)` line. The two k8s
+Jobs share a small `ReadWriteOnce` PVC at `/s2/shared` (`S2_OUTPUT_DIR`); the
+verifier waits for the controller's results, so no ordering is required. This is
+what lets the controller's heap drop far below a worker's (A7 in `REMAINING.md`,
+resources in `OPS.md`).
 
 ## Test snapshot
 

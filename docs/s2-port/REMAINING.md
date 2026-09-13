@@ -8,6 +8,8 @@ Living list of what is left, what it would buy, and how to verify it. Companion 
 Working and verified end-to-end (local multi-process and OrbStack Kubernetes for 1 and 3
 workers): distributed BGP + OSPF + OSPF<->BGP redistribution control plane, distributed symbolic
 DPV, and the public-API answer check. `ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`.
+The controller is a lightweight coordinator and the vanilla/reference verification runs in a
+separate `verify` role (new JVM / new `s2-verifier` Job) — task A7.
 
 Knobs added for scale work:
 
@@ -42,7 +44,7 @@ stays off — unchanged.
 With owned/descriptor mode on, workers no longer hold complete remote FIBs, so they cannot
 run the per-worker traceroute digest. The verification checks are therefore the **exact
 RIB match** (`ribs=MATCH`) plus the **distributed symbolic reachability** comparison
-(`symbolic=MATCH`) and the public-API answer check (`answer=MATCH`); the controller no
+(`symbolic=MATCH`) and the public-API answer check (`answer=MATCH`); the verifier no
 longer compares a worker digest (it implies forwarding equality from the exact RIB match —
 see C3 and `OPS.md`). Disable owned and descriptor mode to restore the digest check.
 
@@ -68,8 +70,9 @@ descriptor + runner positive-cache + `partition=auto`; full = owned/descriptor o
 | `s2-giga` | 32768 | **1309.6 MiB** | (not run) |
 
 The default pipeline brings `s2-giga` down to 1309.6 MiB (engine 22 s), well below the earlier
-shipped 2226.1 MiB and owned-only 1938.1 MiB. Note the *controller* peak grows with the vanilla
-dataplane + reference analysis (2637.0 MiB at `s2-giga`) and can become the limiting process.
+shipped 2226.1 MiB and owned-only 1938.1 MiB. The reference *verification* peak (vanilla dataplane
++ reference analysis, 2637.0 MiB at `s2-giga`) no longer lives in the controller: since A7 it runs
+in the separate verifier process, so the controller no longer limits scale-out.
 
 Descriptor mode (`-Ds2.descriptorShadows`, default on) further trims remote policy bodies. On the
 ACL-heavy `networks/s2-acl` (3000-line ACLs), owned+descriptor drops the `after building nodes`
@@ -119,9 +122,11 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
   default (shared-code default stays off); the code default `-Ds2.partition` stays RANDOM but the
   **runner now sets `auto`** (local demo + k8s manifests; `-Ds2.partition=<scheme>` overrides) and
   `S2_PREFIX_SHARDS` stays off. **O2** k8s resources / `-Xmx` — **Done (2026-09-13)**:
-  `k8s/base/{controller,worker}.yaml` pin `requests {memory: 2Gi, cpu: 1}` / `limits {memory: 6Gi}`
-  and `-Xmx4g` (the worker also carries `-Ds2.prefixSpacePositiveCacheOnly=true` and
-  `-Ds2.partition=auto`); the measured-peak rationale is in `OPS.md`.
+  `k8s/base/{controller,worker,verifier}.yaml` pin the per-role budgets — worker
+  `requests {memory: 2Gi, cpu: 1}` / `limits {memory: 6Gi}` / `-Xmx4g` (plus
+  `-Ds2.prefixSpacePositiveCacheOnly=true` and `-Ds2.partition=auto`), controller
+  `512Mi` / `2Gi` / `-Xmx1g` (lightweight coordinator), verifier `2Gi` / `6Gi` / `-Xmx4g`
+  (the vanilla + reference work); the measured-peak rationale is in `OPS.md`.
   **O3** CI — **Done (2026-09-13)**: `scripts/ci.sh` stages unit tests by default, the shared-code
   + public-API e2e regression stage with `--upstream`, and the demo matrix with `--matrix` (`--all`
   runs everything); the manual-only `.github/workflows/s2-ci.yml` exposes both heavier stages via
@@ -179,12 +184,13 @@ M2 ⇄ P3                      (both target T_w)
 
 ### Recommended order
 
-Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1, O2, O3, O7, C1.
+Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1, O2, O3, O7, C1, A7.
 Dropped (2026-09-13): **M5** dataplane prefix sharding / on-disk RIB+FIB — see A5.
 
-1. **A7 controller-side slimming** — the controller peak (2637 MiB at `s2-giga`) is ~2x a worker and
-   is the scale-out bottleneck; instrument the controller phases, then release `vanilla` once the
-   digest/reference are built and/or make the full verification optional.
+1. **A7 controller-side slimming — Done (2026-09-13).** The controller is now a lightweight
+   coordinator; the vanilla dataplane + reference BDD analysis moved to the separate `verify`
+   role/JVM (`s2-verifier` Job). Controller peak on `s2-mega` W=3 (`-Xmx4g`) dropped
+   **1326.2 → 486.1 MiB** (no vanilla/reference work), with the verification peak in the verifier.
 2. **O6 role-scale promotion** once more DCN/WAN shapes are measured; **P4** docs finalization.
 3. Keep the O3 upstream stage (`scripts/ci.sh --upstream`) green as shared code changes.
 
@@ -266,21 +272,32 @@ Dropped (2026-09-13): **M5** dataplane prefix sharding / on-disk RIB+FIB — see
 
   The dataplane/FIB build is only ~**+150..200 MiB** per worker (`s2-mega` +151, `s2-giga` +196) —
   ~12-15% of the giga peak — while configs+nodes (~348 MiB) and the EGP transient (~313 MiB) are
-  larger, and the **controller peak is 2637 MiB (~2x a worker)**. M5 would buy a modest fraction for
+  larger, and the **verification peak was 2637 MiB (~2x a worker, in the old controller; now moved
+  to the separate verifier by A7)**. M5 would buy a modest fraction for
   a large shared-code change. Revisit only if the retained FIB becomes dominant again (e.g. far
   larger per-owned-node tables) or if prefix sharding is extended end-to-end.
 * **Risk:** high (on-demand FIB lookup / disk paging).
 
-### A7. Controller-side slimming (next focus)
-* **What:** the controller computes and holds the full vanilla dataplane plus the full reference BDD
-  analysis (and every config), so its peak (2637 MiB at `s2-giga`) is ~2x a worker and is the
-  scale-out bottleneck. Reduce it: instrument the controller's phases, release `vanilla` once the
-  digest/reference are built, optionally make the full verification (`vanilla` + reference) a
-  `-Ds2.verify` switch (off = controller holds only configs + coordination), or run verification in
-  a separate process.
+### A7. Controller-side slimming — **Done (2026-09-13)**
+* **What (done):** the controller no longer computes or holds the vanilla dataplane or the reference
+  BDD analysis. It is a lightweight coordinator: parse snapshot → resolve partition → ship configs →
+  run the distributed fixpoint → collect the workers' results into
+  `$S2_OUTPUT_DIR/worker-results-<W>.bin` → exit. Verification moved to a new `verify` role
+  (`S2Main verify <network> <numWorkers>`), a separate JVM locally and a new `s2-verifier` Job on
+  Kubernetes; it loads the same snapshot, reads the results file, computes vanilla + reference, and
+  writes `result-<W>worker.txt` in the unchanged format. The controller/verifier `controllerPhase`
+  prints now attribute the phases to the process that does the work.
+* **Result (local, `-Xmx4g`, W=3):** on `s2-mega` the controller peak fell **1326.2 → 486.1 MiB**
+  (~63% lower): the old peak was dominated by `after vanilla computeDataPlane` (495.8 → 1264.5 MiB)
+  and `after reference reverse-reachable` (1326.2 MiB), and those phases no longer run in the
+  controller. The verification work now peaks in the verifier process (809.4 MiB on `s2-mega`). On
+  the tiny `s2-line` the split is only **399.6 → 367.5 MiB** because there the peak is snapshot
+  parsing; the vanilla/reference phases add just ~32 MiB. On OrbStack Kubernetes the controller
+  peaked at 145–160 MiB with `-Xmx1g` for `s2-triangle` 1/3 Pods (verifier MATCH).
+* **k8s:** controller `-Xmx1g` / 512Mi request / 2Gi limit, verifier `-Xmx4g` / 2Gi / 6Gi, sharing a
+  1Gi `ReadWriteOnce` PVC at `/s2/shared`.
 * **Why:** in S2 the controller is meant to be a lightweight coordinator; the full recomputation is a
-  harness artifact. This is the highest-value remaining memory work at scale.
-* **Risk:** low-medium (mostly harness/plumbing; keep verification on by default for demos/CI).
+  harness artifact. This was the highest-value remaining memory work at scale.
 
 ### A6. Partitioning and worker count
 * **What:** replace `NetworkPartitioner`'s balanced round-robin with a graph partitioner (the
@@ -312,13 +329,15 @@ Dropped (2026-09-13): **M5** dataplane prefix sharding / on-disk RIB+FIB — see
   (`S2_PREFIX_SHARDS` default off). Every feature is individually disabled with `=false` (see
   `OPS.md`); owned/descriptor mode replaces the per-worker traceroute digest with the exact RIB +
   distributed symbolic checks.
-* **C2. Kubernetes resources — done (O2).** `k8s/base/{controller,worker}.yaml` pin the final
-  defaults: `requests: {memory: 2Gi, cpu: 1}`, `limits: {memory: 6Gi}` and `-Xmx4g` (the worker
-  value also carries the runner positive-cache `-D`). The limit is the 4g heap plus ~2Gi non-heap
-  headroom, covering the measured `s2-giga` peak with the O1 defaults on (1938.1 MiB) and the
-  owned/descriptor-off fallback (~2.5 GiB); the 2Gi request is a scheduling floor. Rebuild the
-  image (`scripts/build-s2.sh --image`) after any runner change and re-run `scripts/k8s-demo.sh` +
-  `scripts/compare-answers.sh`.
+* **C2. Kubernetes resources — done (O2), split across controller/verifier (A7).**
+  `k8s/base/{controller,worker,verifier}.yaml` pin the per-role budgets. The worker/verifier limit
+  is the 4g heap plus ~2Gi non-heap headroom, covering the measured `s2-giga` peak with the O1
+  defaults on (1938.1 MiB) and the owned/descriptor-off fallback (~2.5 GiB); the 2Gi request is a
+  scheduling floor. The controller is now a lightweight coordinator (`512Mi` request, 2Gi limit,
+  `-Xmx1g`) because the vanilla/reference work moved to the verifier. The controller and verifier
+  share a 1Gi `ReadWriteOnce` PVC at `/s2/shared` (`S2_OUTPUT_DIR`) for the
+  `worker-results-<W>.bin` handoff. Rebuild the image (`scripts/build-s2.sh --image`) after any
+  runner change and re-run `scripts/k8s-demo.sh` + `scripts/compare-answers.sh`.
 * **C3. CI — done (O3), extended.** `scripts/ci.sh` stages the checks: unit tests by default, the
   upstream regression (shared-code suites + `tests(//projects/allinone/... +
   //projects/coordinator/...)`) with `--upstream`, and the full demo matrix with `--matrix`
@@ -336,7 +355,8 @@ Dropped (2026-09-13): **M5** dataplane prefix sharding / on-disk RIB+FIB — see
 
 | Area | File |
 | --- | --- |
-| Runner / controller / worker / config shipping / digest | `projects/s2/src/main/java/org/batfish/dataplane/ibdp/S2Main.java` |
+| Runner / controller / worker / verify / config shipping | `projects/s2/src/main/java/org/batfish/dataplane/ibdp/S2Main.java` |
+| Controller/verifier k8s Jobs + shared PVC | `k8s/base/{controller,verifier,shared-pvc}.yaml`, `scripts/entrypoint-{controller,verifier}.sh` |
 | Owned mode, stub FIBs, schedule/barriers | `projects/s2/src/main/java/org/batfish/dataplane/ibdp/S2BdpEngine.java` |
 | Final-dataplane node hook | `IncrementalBdpEngine.dataPlaneNodes` (`projects/batfish/.../ibdp/IncrementalBdpEngine.java`) |
 | Stub FIB init | `VirtualRouter.initStubFib` (`projects/batfish/.../ibdp/VirtualRouter.java`) |

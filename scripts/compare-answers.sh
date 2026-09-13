@@ -5,8 +5,9 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 NETWORK="${1:-s2-triangle}"
-A="results/k8s-controller-${NETWORK}-1pod.log"
-B="results/k8s-controller-${NETWORK}-3pod.log"
+# The MATCH line is produced by the verify role now (the controller only collects results).
+A="results/k8s-verifier-${NETWORK}-1pod.log"
+B="results/k8s-verifier-${NETWORK}-3pod.log"
 [[ -f "$A" && -f "$B" ]] || {
   echo "run 'scripts/k8s-demo.sh 1 ${NETWORK}' and 'scripts/k8s-demo.sh 3 ${NETWORK}' first" >&2
   exit 1

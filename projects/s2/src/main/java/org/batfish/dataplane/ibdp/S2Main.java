@@ -15,6 +15,7 @@ import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -61,7 +62,16 @@ import org.batfish.symbolic.state.StateExpr;
  * <pre>
  *   S2Main controller &lt;network&gt; &lt;numWorkers&gt; &lt;endpointsCsv&gt; &lt;controllerPort&gt;
  *   S2Main worker &lt;network&gt; &lt;workerId&gt; &lt;numWorkers&gt; &lt;controllerHost&gt; &lt;controllerPort&gt; &lt;sidecarPort&gt;
+ *   S2Main verify &lt;network&gt; &lt;numWorkers&gt;
+ *   S2Main partition &lt;network&gt; &lt;numWorkers&gt;
  * </pre>
+ *
+ * <p>The controller is a lightweight coordinator: it parses the snapshot, resolves the partition,
+ * ships configs, and collects the workers' results, which it writes to {@code
+ * $S2_OUTPUT_DIR/worker-results-&lt;W&gt;.bin}. The vanilla/reference verification (the vanilla
+ * single-machine dataplane, the reference BDD analysis, and the RIB/reachability/symbolic/answer
+ * comparisons) runs in a separate {@code verify} process/JVM so the controller's heap stays small
+ * (see {@code docs/s2-port/OPS.md}, task A7).
  *
  * <p>Configs are read from {@code $S2_INPUT_DIR/&lt;network&gt;/configs} (default {@code
  * /s2/inputs}); results are written under {@code $S2_OUTPUT_DIR} (default {@code /s2/outputs}).
@@ -80,7 +90,7 @@ public final class S2Main {
 
   public static void main(String[] args) throws Exception {
     if (args.length == 0) {
-      throw new IllegalArgumentException("usage: S2Main controller|worker|partition ...");
+      throw new IllegalArgumentException("usage: S2Main controller|worker|verify|partition ...");
     }
     switch (args[0]) {
       case "controller":
@@ -88,6 +98,9 @@ public final class S2Main {
         break;
       case "worker":
         runWorker(args);
+        break;
+      case "verify":
+        runVerify(args);
         break;
       case "partition":
         runPartition(args);
@@ -237,11 +250,6 @@ public final class S2Main {
     S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
     controllerPhase("after snapshot load");
     assertDistributedProtocolsSupported(snap, numWorkers);
-    snap.batfish.computeDataPlane(snap.snapshot);
-    DataPlane vanilla = snap.batfish.loadDataPlane(snap.snapshot);
-    controllerPhase("after vanilla computeDataPlane");
-    Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
-    controllerPhase("after vanillaRibs canonical");
 
     // The partition scheme is selected once on the controller and the assignment is computed here,
     // then shipped to every worker (workers never recompute it). The code default RANDOM reproduces
@@ -337,130 +345,186 @@ public final class S2Main {
           "S2 controller listening on %d, waiting for %d workers%n", port, numWorkers);
       Map<Integer, S2ControlMessages.Result> results = server.awaitResults(3600);
       controllerPhase("after awaitResults");
-      Map<String, Map<String, List<AbstractRoute>>> merged = new TreeMap<>();
-      for (S2ControlMessages.Result workerResult : results.values()) {
-        workerResult.ribs.forEach(
-            (host, byVrf) -> merged.computeIfAbsent(host, h -> new TreeMap<>()).putAll(byVrf));
+      // The controller stops here: verification (vanilla dataplane + reference BDD analysis) runs
+      // in the separate `verify` role. Hand the workers' results over via the shared output dir.
+      // Write atomically so a verifier waiting for the file never reads a partial payload.
+      Path out = outputDir().resolve("worker-results-" + numWorkers + ".bin");
+      Path tmp = outputDir().resolve("worker-results-" + numWorkers + ".bin.tmp");
+      try (ObjectOutputStream oos = new ObjectOutputStream(Files.newOutputStream(tmp))) {
+        oos.writeObject(results);
       }
-      Map<String, Map<String, Set<String>>> distributedRibs = canonical(merged);
-      boolean match = vanillaRibs.equals(distributedRibs);
-      Map<String, String> vanillaReach = reachabilityDigest(vanilla, snap);
-      boolean reachMatch = true;
-      boolean anyWorkerDigest =
-          results.values().stream().anyMatch(workerResult -> !workerResult.reachability.isEmpty());
-      if (anyWorkerDigest) {
-        for (S2ControlMessages.Result workerResult : results.values()) {
-          reachMatch &= workerResult.reachability.equals(vanillaReach);
-        }
-      } else {
-        // No worker digest to compare (owned-dataplane mode uses stub remote FIBs; descriptor mode
-        // uses remote configs without their ACL bodies). C3: the implication "exact RIB match =>
-        // forwarding match" is sound because each worker returns its owned nodes' complete final
-        // main RIBs and every host's RIB is checked exactly against vanilla (match). A FIB is a
-        // deterministic function of the main RIB plus the node's configuration; the workers build
-        // owned FIBs from the full owned configs, and a remote node's ACL/policy bodies never
-        // change its FIB. The union therefore has the same forwarding behaviour as vanilla.
-        reachMatch = match;
+      try {
+        Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+        Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING);
       }
       System.out.printf(
-          "S2 controller: worker traceroute digest %s%n",
-          anyWorkerDigest
-              ? "compared"
-              : "skipped (owned/descriptor mode); implying forwarding from the exact RIB match");
+          "S2 controller: collected %d worker results (verification skipped; run the verify role),"
+              + " wrote %s%n",
+          results.size(), out);
+    }
+  }
 
-      // Distributed symbolic reachability (M5). First compare the workers' reachable BDDs
-      // state-by-state against the reference. This is strict: the answer check below re-runs the
-      // fixpoint on the full reference graph (seeded with the distributed result), so it could mask
-      // a worker that dropped states.
-      BDDReachabilityAnalysis referenceAnalysis = buildReachabilityAnalysis(snap, vanilla);
-      controllerPhase("after reference analysis build");
-      JFactory referenceFactory = (JFactory) referenceAnalysis.getBDDPacket().getFactory();
-      Map<StateExpr, BDD> mergedReachable = new HashMap<>();
+  // -------------------------------------------------------------------- verify
+
+  /** Read the worker results the controller wrote (see {@link #runController}). */
+  @SuppressWarnings("unchecked")
+  private static Map<Integer, S2ControlMessages.Result> readWorkerResults(int numWorkers)
+      throws IOException, ClassNotFoundException {
+    Path in = outputDir().resolve("worker-results-" + numWorkers + ".bin");
+    if (!Files.exists(in)) {
+      throw new IllegalStateException(
+          "missing " + in + "; run the controller role first (it collects the worker results)");
+    }
+    try (ObjectInputStream ois = new ObjectInputStream(Files.newInputStream(in))) {
+      return (Map<Integer, S2ControlMessages.Result>) ois.readObject();
+    }
+  }
+
+  /**
+   * Verification role: {@code verify <network> <numWorkers>}. Runs in its own JVM/Job, reads the
+   * controller's {@code worker-results-&lt;W&gt;.bin}, reproduces the vanilla reference
+   * computation, and writes {@code result-&lt;W&gt;worker.txt} in the historical format. The
+   * controller no longer computes any of this, so its heap stays small (task A7).
+   */
+  private static void runVerify(String[] args) throws Exception {
+    String network = args[1];
+    int numWorkers = Integer.parseInt(args[2]);
+
+    S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
+    controllerPhase("after snapshot load");
+    Map<Integer, S2ControlMessages.Result> results = readWorkerResults(numWorkers);
+
+    // The vanilla single-machine dataplane is the reference the distributed result is checked
+    // against. This is the work that used to run (and peak) in the controller.
+    snap.batfish.computeDataPlane(snap.snapshot);
+    DataPlane vanilla = snap.batfish.loadDataPlane(snap.snapshot);
+    controllerPhase("after vanilla computeDataPlane");
+    Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
+    controllerPhase("after vanillaRibs canonical");
+
+    Map<String, Map<String, List<AbstractRoute>>> merged = new TreeMap<>();
+    for (S2ControlMessages.Result workerResult : results.values()) {
+      workerResult.ribs.forEach(
+          (host, byVrf) -> merged.computeIfAbsent(host, h -> new TreeMap<>()).putAll(byVrf));
+    }
+    Map<String, Map<String, Set<String>>> distributedRibs = canonical(merged);
+    boolean match = vanillaRibs.equals(distributedRibs);
+    Map<String, String> vanillaReach = reachabilityDigest(vanilla, snap);
+    boolean reachMatch = true;
+    boolean anyWorkerDigest =
+        results.values().stream().anyMatch(workerResult -> !workerResult.reachability.isEmpty());
+    if (anyWorkerDigest) {
       for (S2ControlMessages.Result workerResult : results.values()) {
-        for (Map.Entry<StateExpr, String> e : workerResult.symbolicReachable.entrySet()) {
-          mergedReachable.put(e.getKey(), new BDDTransfer().load(referenceFactory, e.getValue()));
+        reachMatch &= workerResult.reachability.equals(vanillaReach);
+      }
+    } else {
+      // No worker digest to compare (owned-dataplane mode uses stub remote FIBs; descriptor mode
+      // uses remote configs without their ACL bodies). C3: the implication "exact RIB match =>
+      // forwarding match" is sound because each worker returns its owned nodes' complete final
+      // main RIBs and every host's RIB is checked exactly against vanilla (match). A FIB is a
+      // deterministic function of the main RIB plus the node's configuration; the workers build
+      // owned FIBs from the full owned configs, and a remote node's ACL/policy bodies never
+      // change its FIB. The union therefore has the same forwarding behaviour as vanilla.
+      reachMatch = match;
+    }
+    System.out.printf(
+        "S2 verify: worker traceroute digest %s%n",
+        anyWorkerDigest
+            ? "compared"
+            : "skipped (owned/descriptor mode); implying forwarding from the exact RIB match");
+
+    // Distributed symbolic reachability (M5). First compare the workers' reachable BDDs
+    // state-by-state against the reference. This is strict: the answer check below re-runs the
+    // fixpoint on the full reference graph (seeded with the distributed result), so it could mask
+    // a worker that dropped states.
+    BDDReachabilityAnalysis referenceAnalysis = buildReachabilityAnalysis(snap, vanilla);
+    controllerPhase("after reference analysis build");
+    JFactory referenceFactory = (JFactory) referenceAnalysis.getBDDPacket().getFactory();
+    Map<StateExpr, BDD> mergedReachable = new HashMap<>();
+    for (S2ControlMessages.Result workerResult : results.values()) {
+      for (Map.Entry<StateExpr, String> e : workerResult.symbolicReachable.entrySet()) {
+        mergedReachable.put(e.getKey(), new BDDTransfer().load(referenceFactory, e.getValue()));
+      }
+    }
+    Map<StateExpr, BDD> referenceReachable = referenceAnalysis.computeReverseReachableStates();
+    controllerPhase("after reference reverse-reachable");
+    boolean symbolicMatch = mergedReachable.keySet().equals(referenceReachable.keySet());
+    StateExpr firstSymbolicDiff = null;
+    if (symbolicMatch) {
+      for (Map.Entry<StateExpr, BDD> e : referenceReachable.entrySet()) {
+        BDD actual = mergedReachable.get(e.getKey());
+        if (actual == null || !actual.biimp(e.getValue()).isOne()) {
+          symbolicMatch = false;
+          firstSymbolicDiff = e.getKey();
+          break;
         }
       }
-      Map<StateExpr, BDD> referenceReachable = referenceAnalysis.computeReverseReachableStates();
-      controllerPhase("after reference reverse-reachable");
-      boolean symbolicMatch = mergedReachable.keySet().equals(referenceReachable.keySet());
-      StateExpr firstSymbolicDiff = null;
-      if (symbolicMatch) {
-        for (Map.Entry<StateExpr, BDD> e : referenceReachable.entrySet()) {
-          BDD actual = mergedReachable.get(e.getKey());
-          if (actual == null || !actual.biimp(e.getValue()).isOne()) {
-            symbolicMatch = false;
-            firstSymbolicDiff = e.getKey();
-            break;
-          }
-        }
-      }
+    }
 
-      // Public API level: turn the reachable BDDs into concrete flows and compare with vanilla.
-      Set<Flow> distributedFlows =
-          BDDReachabilityUtils.constructFlows(
-              referenceAnalysis.getBDDPacket(),
-              referenceAnalysis.getIngressLocationReachableBDDs(mergedReachable));
-      Set<Flow> vanillaFlows =
-          BDDReachabilityUtils.constructFlows(
-              referenceAnalysis.getBDDPacket(),
-              referenceAnalysis.getIngressLocationReachableBDDs());
-      boolean answerMatch = distributedFlows.equals(vanillaFlows);
+    // Public API level: turn the reachable BDDs into concrete flows and compare with vanilla.
+    Set<Flow> distributedFlows =
+        BDDReachabilityUtils.constructFlows(
+            referenceAnalysis.getBDDPacket(),
+            referenceAnalysis.getIngressLocationReachableBDDs(mergedReachable));
+    Set<Flow> vanillaFlows =
+        BDDReachabilityUtils.constructFlows(
+            referenceAnalysis.getBDDPacket(), referenceAnalysis.getIngressLocationReachableBDDs());
+    boolean answerMatch = distributedFlows.equals(vanillaFlows);
 
-      // Per-worker peak heap (scale evidence).
-      long totalPeakHeapBytes = 0;
-      for (S2ControlMessages.Result workerResult : results.values()) {
-        totalPeakHeapBytes += workerResult.peakHeapBytes;
-      }
-      long controllerPeakHeapBytes = peakHeapBytes();
-      for (S2ControlMessages.Result workerResult : results.values()) {
+    // Per-worker peak heap (scale evidence).
+    long totalPeakHeapBytes = 0;
+    for (S2ControlMessages.Result workerResult : results.values()) {
+      totalPeakHeapBytes += workerResult.peakHeapBytes;
+    }
+    long verifyPeakHeapBytes = peakHeapBytes();
+    for (S2ControlMessages.Result workerResult : results.values()) {
+      System.out.printf(
+          "worker %d peak heap %.1f MiB%n",
+          workerResult.workerId, workerResult.peakHeapBytes / 1048576.0);
+    }
+
+    Path out = outputDir().resolve("result-" + numWorkers + "worker.txt");
+    StringBuilder report = new StringBuilder();
+    report.append("network=").append(network).append('\n');
+    report.append("workers=").append(numWorkers).append('\n');
+    report.append("hosts=").append(distributedRibs.size()).append('\n');
+    report.append(match ? "RESULT=MATCH\n" : "RESULT=DIFF\n");
+    report.append(reachMatch ? "REACHABILITY=MATCH\n" : "REACHABILITY=DIFF\n");
+    report.append(symbolicMatch ? "SYMBOLIC=MATCH\n" : "SYMBOLIC=DIFF\n");
+    report.append(answerMatch ? "ANSWER=MATCH\n" : "ANSWER=DIFF\n");
+    report.append("--- per-worker peak heap (MiB) ---\n");
+    for (S2ControlMessages.Result workerResult : results.values()) {
+      report
+          .append("worker ")
+          .append(workerResult.workerId)
+          .append(": ")
+          .append(String.format("%.1f", workerResult.peakHeapBytes / 1048576.0))
+          .append('\n');
+    }
+    report.append(String.format("total workers: %.1f%n", totalPeakHeapBytes / 1048576.0));
+    report.append(String.format("controller: %.1f%n", verifyPeakHeapBytes / 1048576.0));
+    report.append("--- distributed ---\n").append(distributedRibs);
+    Files.writeString(out, report.toString());
+    boolean allMatch = match && reachMatch && symbolicMatch && answerMatch;
+    System.out.printf(
+        "S2 %s (%d workers): ribs=%s reachability=%s symbolic=%s answer=%s, wrote %s%n",
+        allMatch ? "MATCH" : "DIFF",
+        numWorkers,
+        match ? "MATCH" : "DIFF",
+        reachMatch ? "MATCH" : "DIFF",
+        symbolicMatch ? "MATCH" : "DIFF",
+        answerMatch ? "MATCH" : "DIFF",
+        out);
+    if (!allMatch) {
+      System.out.println("vanilla ribs: " + vanillaRibs);
+      System.out.println("distributed:  " + distributedRibs);
+      System.out.println("vanilla reach: " + vanillaReach);
+      results.values().forEach(r -> System.out.println("worker reach: " + r.reachability));
+      if (!symbolicMatch) {
         System.out.printf(
-            "worker %d peak heap %.1f MiB%n",
-            workerResult.workerId, workerResult.peakHeapBytes / 1048576.0);
-      }
-
-      Path out = outputDir().resolve("result-" + numWorkers + "worker.txt");
-      StringBuilder report = new StringBuilder();
-      report.append("network=").append(network).append('\n');
-      report.append("workers=").append(numWorkers).append('\n');
-      report.append("hosts=").append(distributedRibs.size()).append('\n');
-      report.append(match ? "RESULT=MATCH\n" : "RESULT=DIFF\n");
-      report.append(reachMatch ? "REACHABILITY=MATCH\n" : "REACHABILITY=DIFF\n");
-      report.append(symbolicMatch ? "SYMBOLIC=MATCH\n" : "SYMBOLIC=DIFF\n");
-      report.append(answerMatch ? "ANSWER=MATCH\n" : "ANSWER=DIFF\n");
-      report.append("--- per-worker peak heap (MiB) ---\n");
-      for (S2ControlMessages.Result workerResult : results.values()) {
-        report
-            .append("worker ")
-            .append(workerResult.workerId)
-            .append(": ")
-            .append(String.format("%.1f", workerResult.peakHeapBytes / 1048576.0))
-            .append('\n');
-      }
-      report.append(String.format("total workers: %.1f%n", totalPeakHeapBytes / 1048576.0));
-      report.append(String.format("controller: %.1f%n", controllerPeakHeapBytes / 1048576.0));
-      report.append("--- distributed ---\n").append(distributedRibs);
-      Files.writeString(out, report.toString());
-      boolean allMatch = match && reachMatch && symbolicMatch && answerMatch;
-      System.out.printf(
-          "S2 %s (%d workers): ribs=%s reachability=%s symbolic=%s answer=%s, wrote %s%n",
-          allMatch ? "MATCH" : "DIFF",
-          numWorkers,
-          match ? "MATCH" : "DIFF",
-          reachMatch ? "MATCH" : "DIFF",
-          symbolicMatch ? "MATCH" : "DIFF",
-          answerMatch ? "MATCH" : "DIFF",
-          out);
-      if (!allMatch) {
-        System.out.println("vanilla ribs: " + vanillaRibs);
-        System.out.println("distributed:  " + distributedRibs);
-        System.out.println("vanilla reach: " + vanillaReach);
-        results.values().forEach(r -> System.out.println("worker reach: " + r.reachability));
-        if (!symbolicMatch) {
-          System.out.printf(
-              "symbolic: reference states=%d distributed states=%d firstDiff=%s%n",
-              referenceReachable.size(), mergedReachable.size(), firstSymbolicDiff);
-        }
+            "symbolic: reference states=%d distributed states=%d firstDiff=%s%n",
+            referenceReachable.size(), mergedReachable.size(), firstSymbolicDiff);
       }
     }
   }
