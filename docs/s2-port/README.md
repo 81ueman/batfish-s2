@@ -148,6 +148,10 @@ Added after the distributed DPV (defaults noted; see `M5-SCALE.md`, `OPS.md`, `R
   and reference BDD analysis. This cut the `s2-mega` controller peak from ~1326 to ~529 MiB.
 * **k8s multi-Pod scale-out**: `k8s/overlays/{1,3,6,8,16}pod` and `scripts/k8s-demo.sh <N>`;
   `s2-fat4` at 6 / 8 / 16 and `s2-mega` at 8 / 16 all `MATCH`.
+* **Drop-in engine** (`-dataplaneengine=s2`): S2 is also a Batfish `DataPlanePlugin`, so the
+  distributed engine is selected like the stock `ibdp` engine — same snapshot input, same question
+  engine/REST/pybatfish, `-s2workers N`, and no verify step. The global data plane is assembled
+  lazily per host. See [`PLUGIN.md`](PLUGIN.md).
 
 ## Running the demos
 
@@ -223,6 +227,7 @@ scripts/ci.sh              # CI entry point (unit / --upstream / --matrix)
 scripts/ci-matrix.sh       # opt-in demo matrix
 k8s/overlays/{1,3,6,8,16}pod  # worker replica counts (scripts/k8s-demo.sh <N>)
 docs/s2-port/OPS.md        # k8s resources, default -Xmx, METIS
+docs/s2-port/PLUGIN.md     # S2 as a Batfish dataplane engine (-dataplaneengine=s2)
 networks/s2-big-bgp/  # 6-node eBGP line with 192 prefixes (prefix-sharding measurement)
 networks/s2-big2/     # 10-node eBGP line with 640 prefixes (larger prefix-sharding measurement)
 networks/s2-huge/     # 8-node eBGP line with 2048 prefixes

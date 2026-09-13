@@ -26,6 +26,8 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
   private static final String ARG_DATAPLANE_ENGINE_NAME = "dataplaneengine";
 
+  public static final String ARG_S2_WORKERS = "s2workers";
+
   private static final String ARG_DEBUG_FLAGS = "debugflags";
 
   private static final String ARG_PARSE_REUSE = "parsereuse";
@@ -353,6 +355,11 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     return _config.getString(ARG_DATAPLANE_ENGINE_NAME);
   }
 
+  /** Number of S2 dataplane workers (only used when {@link #getDataPlaneEngineName()} is "s2"). */
+  public int getS2Workers() {
+    return _config.getInt(ARG_S2_WORKERS);
+  }
+
   private void initConfigDefaults() {
     setDefaultProperty(BfConsts.ARG_ALWAYS_INCLUDE_ANSWER_IN_WORK_JSON_LOG, false);
     setDefaultProperty(BfConsts.ARG_BDP_DETAIL, false);
@@ -407,6 +414,7 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     setDefaultProperty(BfConsts.COMMAND_PARSE_VENDOR_INDEPENDENT, false);
     setDefaultProperty(BfConsts.COMMAND_PARSE_VENDOR_SPECIFIC, false);
     setDefaultProperty(ARG_DATAPLANE_ENGINE_NAME, "ibdp");
+    setDefaultProperty(ARG_S2_WORKERS, 1);
   }
 
   private void initOptions() {
@@ -585,6 +593,11 @@ public final class Settings extends BaseSettings implements GrammarSettings {
         "name of the dataplane generation engine to use.",
         "dataplane engine name");
 
+    addOption(
+        ARG_S2_WORKERS,
+        "number of S2 dataplane workers (used when the dataplane engine is s2).",
+        "s2 workers");
+
     // deprecated and ignored
     for (String deprecatedStringArg :
         new String[] {
@@ -702,6 +715,7 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     getBooleanOptionValue(ARG_TIMESTAMP);
     getBooleanOptionValue(BfConsts.ARG_VERBOSE_PARSE);
     getStringOptionValue(ARG_DATAPLANE_ENGINE_NAME);
+    getIntOptionValue(ARG_S2_WORKERS);
   }
 
   public void setCanExecute(boolean canExecute) {
@@ -807,6 +821,10 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
   public void setDataplaneEngineName(String name) {
     _config.setProperty(ARG_DATAPLANE_ENGINE_NAME, name);
+  }
+
+  public void setS2Workers(int workers) {
+    _config.setProperty(ARG_S2_WORKERS, workers);
   }
 
   public void setQuestionName(QuestionId questionName) {
