@@ -3,8 +3,9 @@
 Clean, from-scratch implementation of **S2: A Distributed Configuration Verifier
 for Hyper-Scale Networks** (SIGCOMM'25) on top of current upstream Batfish.
 
-The old copy-based port is preserved on branch `s2-copied-old` and the reference
-repo `~/ghq/github.com/81ueman/s2-reference` is used as a design reference only.
+The old copy-based port is preserved on branch `s2-copied-old`. The paper authors' open-source
+implementation [`XJTU-NetVerify/s2`](https://github.com/XJTU-NetVerify/s2) (Apache-2.0) is used as a
+design reference only; none of its code is copied into this work.
 
 ## Repos / branches
 
@@ -13,8 +14,8 @@ repo `~/ghq/github.com/81ueman/s2-reference` is used as a design reference only.
 | Upstream Batfish base | `batfish/batfish` master `2a513d0` |
 | This work | branch `s2` |
 | Old copy-based port | branch `s2-copied-old` |
-| Reference implementation | `~/ghq/github.com/81ueman/s2-reference` |
-| Paper | `nv-papers/papers/s2-2025.pdf` |
+| Reference implementation | [`XJTU-NetVerify/s2`](https://github.com/XJTU-NetVerify/s2) (Apache-2.0, design reference only) |
+| Paper | *S2: A Distributed Configuration Verifier for Hyper-Scale Networks* (SIGCOMM'25) |
 
 ## Design (see `DESIGN.md`)
 
@@ -174,4 +175,12 @@ This work — the `//projects/s2` module, the S2 runner and scripts, and the S2 
 `docs/s2-port/` — is released under the **Apache License, Version 2.0**, the same license as
 Batfish itself; see the repository root [`LICENSE`](../../LICENSE). The new S2 source files carry an
 `SPDX-License-Identifier: Apache-2.0` header.
+
+## Acknowledgements
+
+* Built on [Batfish](https://github.com/batfish/batfish) (Apache-2.0).
+* Design follows *S2: A Distributed Configuration Verifier for Hyper-Scale Networks* (SIGCOMM'25)
+  and its open-source implementation [`XJTU-NetVerify/s2`](https://github.com/XJTU-NetVerify/s2)
+  (Apache-2.0), which was consulted for design only; no reference code is copied here (the earlier
+  copy-based effort is preserved separately on branch `s2-copied-old`).
 
