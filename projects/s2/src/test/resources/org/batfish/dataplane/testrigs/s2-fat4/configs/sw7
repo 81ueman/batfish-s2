@@ -1,0 +1,24 @@
+hostname sw7
+
+interface Loopback0
+ ip address 10.0.8.1 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.1.5.2 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.1.7.2 255.255.255.252
+
+interface GigabitEthernet0/2
+ ip address 10.1.22.1 255.255.255.252
+
+interface GigabitEthernet0/3
+ ip address 10.1.23.1 255.255.255.252
+
+router bgp 65007
+ bgp router-id 10.0.8.1
+ network 10.0.8.1 mask 255.255.255.255
+ neighbor 10.1.5.1 remote-as 65014
+ neighbor 10.1.7.1 remote-as 65015
+ neighbor 10.1.22.2 remote-as 65002
+ neighbor 10.1.23.2 remote-as 65003

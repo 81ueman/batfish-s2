@@ -462,10 +462,12 @@ Verified on `s2-triangle`, `s2-line`, `s2-ospf`, `s2-ospf-bgp`, `s2-redist`, `s2
 
 On a **cyclic equal-cost** topology (e.g. a 6-node ring), the distributed BGP fixpoint
 can occasionally pick a different valid route than single-machine Batfish where two
-paths tie on AS-path length. That is BGP multiple-fixed-point / tie-break-order
-nondeterminism, not a hang or a scheduling bug; the handoff's acyclic topologies are
-unaffected. Matching Batfish's tie-breaking exactly in a distributed setting is
-follow-up work.
+paths tie on AS-path length. The root cause is the S2 engine forcing `Schedule.ALL`
+while vanilla uses `NODE_COLORED`, combined with the default `ARRIVAL_ORDER` BGP
+tie-breaker; `Schedule.ALL` is run-to-run nondeterministic on these topologies. Use
+`-Ds2.egpSchedule=NODE_COLORED` to reproduce vanilla (verified on `networks/s2-fat4`
+at 1 and 3 workers). Full analysis and design in `C1-TIE-BREAK.md`. The handoff's
+acyclic topologies are unaffected.
 
 ## Commands
 
