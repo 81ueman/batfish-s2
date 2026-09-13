@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s2-engine
+  labels: {app: s2-engine}
+spec:
+  # One engine: it drives the shared pool and writes a unique per-snapshot slice directory.
+  # Run additional engines only if they are coordinated (they would share the pool serially).
+  replicas: 1
+  selector:
+    matchLabels: {app: s2-engine}
+  template:
+    metadata:
+      labels: {app: s2-engine}
+    spec:
+      containers:
+        - name: engine
+          # Batfish allinone with the S2 dataplane plugin on the classpath (see
+          # docker/Dockerfile.s2-engine). Selects the engine with -dataplaneengine=s2 and
+          # drives the pool (entrypoint-engine.sh).
+          image: s2-engine:local
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/s2/entrypoint-engine.sh"]
+          env:
+            - name: CONTROLLER_HOST
+              value: "s2-controller.s2-pool.svc.cluster.local"
+            - name: CONTROLLER_PORT
+              value: "4090"
+            - name: SLICE_DIR
+              value: /s2/shared/slices
+            # The data plane is lazy/remote, so -s2storedataplane=false keeps it in memory only.
+            # The engine itself is light: it ships configs, waits, and resolves the touched
+            # hosts from the shared slices. -Xmx8g is a starting point for the question engine.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx8g"
+          ports:
+            - containerPort: 9997
+              name: coordinator
+            - containerPort: 9996
+              name: worker
+          volumeMounts:
+            - name: slices
+              mountPath: /s2/shared
+          resources:
+            requests: {memory: "2Gi", cpu: "1"}
+            limits: {memory: "12Gi"}
+      volumes:
+        - name: slices
+          persistentVolumeClaim:
+            claimName: s2-slices
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s2-engine
+  labels: {app: s2-engine}
+spec:
+  selector: {app: s2-engine}
+  ports:
+    - name: coordinator
+      port: 9997
+      targetPort: 9997
+    - name: worker
+      port: 9996
+      targetPort: 9996

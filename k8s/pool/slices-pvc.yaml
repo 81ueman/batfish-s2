@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s2-slices
+  labels: {app: s2-pool}
+spec:
+  # ReadWriteMany: the engine Deployment and every worker StatefulSet pod (which can be
+  # scheduled on different nodes) read/write the same per-host slice directory, so the
+  # volume must be writable from many nodes. This needs an RWX-capable storage class
+  # (NFS, CephFS, EFS, ...); on a single-node demo cluster with only a RWO local-path
+  # provisioner, set storageClassName to such a class or collapse the pool onto one node.
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 10Gi

@@ -61,6 +61,7 @@ import org.batfish.symbolic.state.StateExpr;
  *   S2Main controller-service &lt;numWorkers&gt; &lt;controllerPort&gt;
  *   S2Main worker &lt;network&gt; &lt;workerId&gt; &lt;numWorkers&gt; &lt;controllerHost&gt; &lt;controllerPort&gt; &lt;sidecarPort&gt;
  *   S2Main worker-service &lt;workerId&gt; &lt;controllerHost&gt; &lt;controllerPort&gt; &lt;sidecarPort&gt; [advertisedHost]
+ *   S2Main pool-compute &lt;network&gt; &lt;controllerPort&gt;
  *   S2Main verify &lt;network&gt; &lt;numWorkers&gt;
  *   S2Main partition &lt;network&gt; &lt;numWorkers&gt;
  * </pre>
@@ -107,6 +108,9 @@ public final class S2Main {
         break;
       case "worker-service":
         runWorkerService(args);
+        break;
+      case "pool-compute":
+        runPoolCompute(args);
         break;
       case "verify":
         runVerify(args);
@@ -651,6 +655,56 @@ public final class S2Main {
         "S2 worker-service %d registered at %s (sidecar %d, controller %s:%d)%n",
         workerId, advertisedHost, worker.getSidecarPort(), controllerHost, controllerPort);
     Thread.currentThread().join();
+  }
+
+  /**
+   * Pool smoke-test client: {@code pool-compute <network> <controllerPort>}. Loads a snapshot from
+   * {@code $S2_INPUT_DIR}, ships it to the running controller service, then reads the slices the
+   * workers wrote and compares the RIBs and forwarding behavior against the vanilla engine. Prints
+   * {@code ribs=MATCH|DIFF forwarding=MATCH|DIFF} and exits non-zero on a difference. This is the
+   * process-level counterpart of {@code S2PoolServiceTest}.
+   */
+  private static void runPoolCompute(String[] args) throws Exception {
+    String network = args[1];
+    int controllerPort = Integer.parseInt(args[2]);
+    S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
+    snap.batfish.computeDataPlane(snap.snapshot);
+    DataPlane vanilla = snap.batfish.loadDataPlane(snap.snapshot);
+    Path sliceDir = Files.createTempDirectory("s2-pool-");
+    try {
+      S2ControlMessages.ComputeRequest request =
+          new S2ControlMessages.ComputeRequest(
+              S2ControlMessages.serializeConfigs(snap.configs),
+              S2ControlMessages.serializeExternalAdverts(
+                  snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs)),
+              sliceDir.toString(),
+              network);
+      S2ControlMessages.ComputeResponse response =
+          new S2ControllerClient("127.0.0.1", controllerPort).compute(request);
+      if (!response.ok) {
+        throw new IllegalStateException("S2 controller failed: " + response.message);
+      }
+      DataPlane distributed =
+          S2LazyDataPlane.of(S2DirectoryHostSlices.read(Paths.get(response.sliceDir)));
+      boolean ribsMatch =
+          canonical(ribsOf(vanilla, null, null)).equals(canonical(ribsOf(distributed, null, null)));
+      boolean forwardingMatch =
+          vanilla
+              .getForwardingAnalysis()
+              .getVrfForwardingBehavior()
+              .equals(distributed.getForwardingAnalysis().getVrfForwardingBehavior());
+      System.out.printf(
+          "S2 pool-compute %s (%d workers): ribs=%s forwarding=%s%n",
+          network,
+          response.numWorkers,
+          ribsMatch ? "MATCH" : "DIFF",
+          forwardingMatch ? "MATCH" : "DIFF");
+      if (!ribsMatch || !forwardingMatch) {
+        throw new IllegalStateException("S2 pool-compute differs from vanilla");
+      }
+    } finally {
+      S2DirectoryHostSlices.deleteRecursively(sliceDir);
+    }
   }
 
   // ------------------------------------------------------------------- helpers

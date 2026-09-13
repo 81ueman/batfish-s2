@@ -1,0 +1,22 @@
+# Batfish engine image for the persistent S2 pool (choice A).
+#
+# Build the allinone runner jar first, then the image:
+#   bazel build //projects/allinone:allinone_main_deploy.jar
+#   cp -f bazel-bin/projects/allinone/allinone_main_deploy.jar docker/allinone_main_deploy.jar
+#   docker build -f docker/Dockerfile.s2-engine -t s2-engine:local .
+#
+# The allinone deploy jar now bundles the S2 dataplane plugin (//projects/s2:s2), so
+# -dataplaneengine=s2 is discoverable exactly like the stock ibdp engine.
+FROM eclipse-temurin:25-jre
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /s2
+
+COPY docker/allinone_main_deploy.jar /s2/allinone.jar
+COPY scripts/entrypoint-engine.sh /s2/entrypoint-engine.sh
+
+# allinone coordinator / worker ports.
+EXPOSE 9996 9997

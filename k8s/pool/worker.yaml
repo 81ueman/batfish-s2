@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: s2-worker
+  labels: {app: s2-worker}
+spec:
+  serviceName: s2-worker
+  # Pool size. The controller's WORKERS must match; `kubectl scale statefulset/s2-worker`
+  # changes the pool for subsequent snapshots.
+  replicas: 3
+  selector:
+    matchLabels: {app: s2-worker}
+  template:
+    metadata:
+      labels: {app: s2-worker}
+    spec:
+      containers:
+        - name: worker
+          image: s2:local
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/s2/entrypoint-worker-service.sh"]
+          env:
+            - name: CONTROLLER_HOST
+              value: "s2-controller.s2-pool.svc.cluster.local"
+            - name: CONTROLLER_PORT
+              value: "4090"
+            - name: SIDECAR_PORT
+              value: "4091"
+            - name: NAMESPACE
+              value: "s2-pool"
+            # The worker service writes its owned hosts' slices here (the controller names a
+            # unique per-snapshot subdirectory); the engine reads them from the same volume.
+            - name: S2_SLICE_DIR
+              value: /s2/shared/slices
+            # The worker service runs the forwarding-exact full dataplane by default (a remote
+            # shadow's stub FIB would otherwise make ARP/forwarding behavior differ from stock).
+            # Override per run via JAVA_TOOL_OPTIONS.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx4g -Ds2.prefixSpacePositiveCacheOnly=true -Ds2.partition=WEIGHTED_LPT_FM"
+          ports:
+            - containerPort: 4091
+          volumeMounts:
+            - name: slices
+              mountPath: /s2/shared
+          resources:
+            requests: {memory: "1Gi", cpu: "0.5"}
+            limits: {memory: "6Gi"}
+      volumes:
+        - name: slices
+          persistentVolumeClaim:
+            claimName: s2-slices
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s2-worker
+  labels: {app: s2-worker}
+spec:
+  # Headless: stable per-pod DNS (s2-worker-<i>.s2-worker.<ns>.svc.cluster.local) that the
+  # workers advertise as their sidecar endpoint and the controller ships to every peer.
+  clusterIP: None
+  selector: {app: s2-worker}
+  ports:
+    - name: routes
+      port: 4091
+      targetPort: 4091
