@@ -31,6 +31,70 @@ phase peaks are `building nodes` 413 MiB, `EGP iteration 1` 1595 MiB, `nextDatap
 The remaining cost is the held configurations and the BGP control-plane transient. The FIB axis is
 considered done for now.
 
+## Consolidated task index (with dependencies)
+
+Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄` competes with,
+(independent) otherwise. Detail sections A/B/C follow below.
+
+### Base (do first)
+
+| id | task | notes |
+| --- | --- | --- |
+| **P0** | measurement + testbed infrastructure | topology/config generators (FatTree/Clos; aggregate / redistribution / external-ads snapshots), metric dumps, current baseline, weight calibration. Prerequisite for evaluating all partitioning work. |
+| **C-PFX** | prefix closure fix | `PrefixSharder.queryPrefixes` must include aggregates, the redistribution closure and external announcements. Correctness prerequisite for (B)/DPDG; latent bug (`PARTITIONING-PLAN.md` §4.5). |
+
+### Partitioning (see `PARTITIONING-PLAN.md`)
+
+| id | task | depends |
+| --- | --- | --- |
+| **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS); controller computes and distributes the assignment | P0 (weights) |
+| **P3** | PrefixDependencyGraph (closure + DPDG + weighted WCC-LPT) | C-PFX |
+| **P-X** | shard-count selection | P3 |
+
+### Memory
+
+| id | task | section | depends / competes |
+| --- | --- | --- | --- |
+| **M1** | remote configuration descriptor | A1 | independent (reduces M3's value) |
+| **M2** | control-plane transient reduction | A2 | ⇄ P3 (same `T_w`) |
+| **M3** | BDD factory owned scoping | A3 | independent (value drops after M1) |
+| **M4** | owned-mode hardening (Track / VXLAN / tunnel / BGP reachability) | A4 | owned dataplane implemented (opt-in) |
+| **M5** | dataplane prefix sharding / on-disk RIB+FIB | A5 | deferred |
+
+### Correctness / generality — section B
+
+- **C1** cyclic equal-cost BGP tie-break nondeterminism (known residual)
+- **C2** EIGRP/IS-IS/RIP out of scope
+- **C3** controller-side digest for owned mode
+
+### Operations / packaging — section C
+
+- **O1** defaults; **O2** k8s resources / `-Xmx`; **O3** CI demo matrix; **O4** benchmark automation;
+  **O5** METIS in the eval environment; **O6** partitioner weight calibration (← P0); **O7** docs sync.
+
+### Dependency graph
+
+```
+P0 ────┬─> P2  (evaluate H1 with owned on/off)
+       ├─> O6
+       └─> M2  (measure, then choose vs P3)
+C-PFX ─> P3 ─> P-X
+M1 (independent)             => lowers M3's value
+M4 (owned opt-in done)       => defaulting owned (O1); makes P2's memory payoff general
+M2 ⇄ P3                      (both target T_w)
+```
+
+### Recommended order
+
+1. P0
+2. C-PFX
+3. P2
+4. M1
+5. M2 or P3 (choose from P0's measurements)
+6. M4
+7. M3 / O2 / O3 / O4
+8. M5 (deferred)
+
 ## A. Memory / scale (ranked by expected payoff)
 
 ### A1. Remote configuration descriptor
