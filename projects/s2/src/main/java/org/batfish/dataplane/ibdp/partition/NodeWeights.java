@@ -14,6 +14,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import org.batfish.datamodel.BgpProcess;
 import org.batfish.datamodel.Configuration;
@@ -81,6 +82,15 @@ import org.batfish.datamodel.routing_policy.RoutingPolicy;
  * #V2_FULL_TABLE_WEIGHT}; the evaluation-only {@value #V2_SCALE_PROPERTY} override exists so
  * calibration can sweep it without a rebuild.
  *
+ * <p><b>Role-level peer scaling (O6 residual, {@value #ROLE_SCALE_PROPERTY}).</b> The calibrated
+ * {@link #BGP_PEER} coefficient is a single fixed multiplier fitted across all networks, but the
+ * measured core:edge cost ratio it should reproduce differs by shape. It is gated off by default;
+ * when enabled, {@link #adaptivePeerCoefficient} drops the peer term on networks whose busiest tier
+ * already has at least as many interfaces as their least-connected tier, and keeps it only when the
+ * peer term is needed to rank the roles (see the method and {@code
+ * docs/s2-port/PARTITIONING-PLAN.md} &sect;6.10). The {@value #PEER_SCALE_PROPERTY} override, when
+ * set, takes precedence and pins the coefficient for evaluation.
+ *
  * <p>Calibration instrumentation: when the {@value #DUMP_PROPERTY} system property names a file,
  * the {@link #compute(Map, Map)} overload writes a TSV of the per-node feature counts, the
  * full-table route estimate ({@value #CLOSURE_COLUMN}) and the effective weight there. It is off by
@@ -127,6 +137,23 @@ public final class NodeWeights {
 
   /** System property that enables the v2 topology (full-table) correction. Off by default. */
   public static final String V2_PROPERTY = "s2.nodeWeightsV2";
+
+  /**
+   * Evaluation-only override for the {@link #BGP_PEER} coefficient, used by the O6 cost-aware sweep
+   * (and by {@code scripts/calibrate-weights.py} style experiments) without a rebuild. Unset in
+   * normal use. A value of 0 drops the peer term, which the §6.9 residual analysis compares against
+   * the calibrated model.
+   */
+  public static final String PEER_SCALE_PROPERTY = "s2.nodeWeightsPeerScale";
+
+  /**
+   * System property that enables the adaptive role-level peer scaling (O6 residual). Off by
+   * default: it changes partition assignments in a way validated only on the O6 testbeds, so it is
+   * gated like the v2 topology correction. When enabled, the peer coefficient is chosen per network
+   * from the degree/interface structure instead of the fixed {@link #BGP_PEER} (see {@link
+   * #adaptivePeerCoefficient}).
+   */
+  public static final String ROLE_SCALE_PROPERTY = "s2.nodeWeightsRoleScale";
 
   /**
    * Weight per full-table route in the v2 topology correction: a router adds {@code
@@ -239,8 +266,13 @@ public final class NodeWeights {
 
   /** Apply the calibrated coefficients to a feature vector. */
   public static int weightOf(Features f) {
+    return weightOf(f, peerCoefficient());
+  }
+
+  /** Apply the calibrated coefficients to a feature vector with an explicit peer coefficient. */
+  public static int weightOf(Features f, int peerCoefficient) {
     return INTERFACE * f.interfaces
-        + BGP_PEER * f.peers
+        + peerCoefficient * f.peers
         + ORIGINATION_PREFIX * f.originationPrefixes
         + ACL_LINE * f.aclLines
         + POLICY_STATEMENT * f.policyStatements
@@ -248,13 +280,102 @@ public final class NodeWeights {
         + VRF * f.vrfs;
   }
 
+  /**
+   * The BGP peer coefficient, honoring the evaluation-only {@link #PEER_SCALE_PROPERTY} override.
+   * This single-node form cannot apply the adaptive {@link #ROLE_SCALE_PROPERTY} rule (which needs
+   * the whole population); see {@link #effectivePeerCoefficient}.
+   */
+  public static int peerCoefficient() {
+    String override = System.getProperty(PEER_SCALE_PROPERTY);
+    if (override == null || override.isEmpty()) {
+      return BGP_PEER;
+    }
+    return Integer.parseInt(override.trim());
+  }
+
+  /** Whether the adaptive role-level peer scaling is enabled ({@value #ROLE_SCALE_PROPERTY}). */
+  public static boolean roleScaleEnabled() {
+    return Boolean.parseBoolean(System.getProperty(ROLE_SCALE_PROPERTY, "false"));
+  }
+
+  /**
+   * The peer coefficient the calibrated model uses for a population of routers: the {@link
+   * #PEER_SCALE_PROPERTY} override if set, else the adaptive {@link #ROLE_SCALE_PROPERTY} rule if
+   * enabled, else the fixed {@link #BGP_PEER}.
+   */
+  static int effectivePeerCoefficient(Collection<Features> features) {
+    String override = System.getProperty(PEER_SCALE_PROPERTY);
+    if (override != null && !override.isEmpty()) {
+      return Integer.parseInt(override.trim());
+    }
+    if (!roleScaleEnabled()) {
+      return BGP_PEER;
+    }
+    return adaptivePeerCoefficient(features);
+  }
+
+  /**
+   * The O6-residual role-level rule. On a network whose busiest BGP tier (most peers) also has at
+   * least as many interfaces as its least-connected tier, the interface term already ranks the
+   * roles and adding the peer term only over-spreads the weights toward the paper's 2:1 FatTree
+   * ratio instead of the measured ~1.1:1, so the peer term is dropped (coefficient 0). When the
+   * busiest tier has <em>fewer</em> interfaces (e.g. the {@code s2-fat2} edge tier), the peer term
+   * is needed to keep the core above the edge and the calibrated {@link #BGP_PEER} is used. If
+   * every router has the same peer count there is no role signal, and the peer term is dropped as
+   * well. Deterministic; see {@code PARTITIONING-PLAN.md} &sect;6.10 for the measured evaluation.
+   */
+  static int adaptivePeerCoefficient(Collection<Features> features) {
+    if (features.isEmpty()) {
+      return 0;
+    }
+    int maxPeers = Integer.MIN_VALUE;
+    int minPeers = Integer.MAX_VALUE;
+    for (Features f : features) {
+      maxPeers = Math.max(maxPeers, f.peers);
+      minPeers = Math.min(minPeers, f.peers);
+    }
+    if (maxPeers == minPeers) {
+      return 0;
+    }
+    double highInterfaces = meanInterfacesAtPeers(features, maxPeers);
+    double lowInterfaces = meanInterfacesAtPeers(features, minPeers);
+    return highInterfaces < lowInterfaces ? BGP_PEER : 0;
+  }
+
+  /** Mean interface count of the routers with exactly {@code peers} BGP neighbors. */
+  private static double meanInterfacesAtPeers(Collection<Features> features, int peers) {
+    int count = 0;
+    int total = 0;
+    for (Features f : features) {
+      if (f.peers == peers) {
+        count++;
+        total += f.interfaces;
+      }
+    }
+    return count == 0 ? 0.0 : total / (double) count;
+  }
+
   /** Compute the base (feature-only) node weight of every configuration, keyed by hostname. */
   public static Map<String, Integer> compute(Map<String, Configuration> configs) {
-    Map<String, Integer> weights = new HashMap<>();
-    for (Configuration c : configs.values()) {
-      weights.put(c.getHostname(), compute(c));
-    }
+    Map<String, Integer> weights = baseWeights(configs);
     dumpIfRequested(configs, weights, Map.of());
+    return weights;
+  }
+
+  /**
+   * The base (feature-only) weight of every configuration, using {@link #effectivePeerCoefficient}
+   * for the population (so the adaptive role rule sees the whole network).
+   */
+  private static Map<String, Integer> baseWeights(Map<String, Configuration> configs) {
+    Map<String, Features> byHost = new TreeMap<>();
+    for (Configuration c : configs.values()) {
+      byHost.put(c.getHostname(), features(c));
+    }
+    int peerCoefficient = effectivePeerCoefficient(byHost.values());
+    Map<String, Integer> weights = new HashMap<>();
+    for (Map.Entry<String, Features> e : byHost.entrySet()) {
+      weights.put(e.getKey(), weightOf(e.getValue(), peerCoefficient));
+    }
     return weights;
   }
 
@@ -266,10 +387,7 @@ public final class NodeWeights {
    */
   public static Map<String, Integer> compute(
       Map<String, Configuration> configs, Map<String, ? extends Collection<String>> bgpAdjacency) {
-    Map<String, Integer> base = new HashMap<>();
-    for (Configuration c : configs.values()) {
-      base.put(c.getHostname(), compute(c));
-    }
+    Map<String, Integer> base = baseWeights(configs);
     Map<String, Integer> fullTableRoutes = fullTableRoutes(configs, bgpAdjacency);
     int scale = v2Enabled() ? v2FullTableWeight() : 0;
     Map<String, Integer> weights = new HashMap<>();

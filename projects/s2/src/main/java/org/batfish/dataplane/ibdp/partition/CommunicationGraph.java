@@ -2,6 +2,7 @@
 package org.batfish.dataplane.ibdp.partition;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -60,13 +61,23 @@ public final class CommunicationGraph {
   private final ImmutableMap<String, Integer> _weights;
   private final ImmutableMap<String, ImmutableMap<String, Integer>> _adjacency;
 
+  /**
+   * The bare undirected BGP session graph (hostname to neighbor hostnames), a subset of {@link
+   * #_adjacency}. Exposed separately so {@link AutoSchemeSelector} can tell a BGP overlay that does
+   * not follow the IGP (route reflectors / multi-hop iBGP) from a DCN where BGP sessions track the
+   * L3 links.
+   */
+  private final ImmutableMap<String, ImmutableSet<String>> _bgpAdjacency;
+
   private CommunicationGraph(
       ImmutableSortedSet<String> nodes,
       ImmutableMap<String, Integer> weights,
-      ImmutableMap<String, ImmutableMap<String, Integer>> adjacency) {
+      ImmutableMap<String, ImmutableMap<String, Integer>> adjacency,
+      ImmutableMap<String, ImmutableSet<String>> bgpAdjacency) {
     _nodes = nodes;
     _weights = weights;
     _adjacency = adjacency;
+    _bgpAdjacency = bgpAdjacency;
   }
 
   /** All router hostnames, in ascending order. */
@@ -109,6 +120,24 @@ public final class CommunicationGraph {
     return _adjacency.getOrDefault(node, ImmutableMap.of());
   }
 
+  /** The BGP session neighbors of {@code node}, in ascending hostname order. */
+  public Set<String> bgpNeighbors(String node) {
+    return _bgpAdjacency.getOrDefault(node, ImmutableSet.of());
+  }
+
+  /** Whether {@code a} and {@code b} have a BGP session (the bare session graph). */
+  public boolean hasBgpSession(String a, String b) {
+    return _bgpAdjacency.getOrDefault(a, ImmutableSet.of()).contains(b);
+  }
+
+  /**
+   * Whether the undirected edge {@code a}--{@code b} exists in the union graph but is <em>not</em>
+   * a BGP session (an L3 and/or OSPF adjacency only).
+   */
+  public boolean hasNonBgpEdge(String a, String b) {
+    return edgeWeight(a, b) > 0 && !hasBgpSession(a, b);
+  }
+
   /** The total estimated exchange weight of all edges (each undirected edge counted once). */
   public long totalEdgeWeight() {
     long total = 0;
@@ -122,16 +151,32 @@ public final class CommunicationGraph {
 
   /**
    * A synthetic graph for unit tests: {@code weights} is the node set and weights, {@code
-   * adjacency} the symmetric edge weights. Package-private and test-only.
+   * adjacency} the symmetric edge weights. No BGP session graph is attached (the union edges are
+   * treated as non-BGP), so the graph is undirected only; use the three-argument overload to test
+   * the BGP-overlay heuristic.
    */
   @com.google.common.annotations.VisibleForTesting
   static CommunicationGraph forTesting(
       Map<String, Integer> weights, Map<String, Map<String, Integer>> adjacency) {
+    return forTesting(weights, adjacency, Map.of());
+  }
+
+  /**
+   * A synthetic graph with an explicit BGP session graph, for the {@link AutoSchemeSelector} tests.
+   * The BGP adjacency is filtered to known nodes and symmetrized. Both maps use symmetric
+   * undirected edge weights.
+   */
+  @com.google.common.annotations.VisibleForTesting
+  static CommunicationGraph forTesting(
+      Map<String, Integer> weights,
+      Map<String, Map<String, Integer>> adjacency,
+      Map<String, Map<String, Integer>> bgpAdjacency) {
     ImmutableSortedSet<String> nodes =
         ImmutableSortedSet.copyOf(Comparator.naturalOrder(), weights.keySet());
     ImmutableMap.Builder<String, Integer> weightBuilder = ImmutableMap.builder();
     ImmutableMap.Builder<String, ImmutableMap<String, Integer>> adjacencyBuilder =
         ImmutableMap.builder();
+    Map<String, Set<String>> bgpSets = new TreeMap<>();
     for (String node : nodes) {
       weightBuilder.put(node, weights.getOrDefault(node, 0));
       Map<String, Integer> neighbors = new java.util.TreeMap<>();
@@ -144,8 +189,27 @@ public final class CommunicationGraph {
         }
       }
       adjacencyBuilder.put(node, ImmutableMap.copyOf(neighbors));
+      bgpSets.put(node, new TreeSet<>());
     }
-    return new CommunicationGraph(nodes, weightBuilder.build(), adjacencyBuilder.build());
+    for (String node : nodes) {
+      Map<String, Integer> edges = bgpAdjacency.get(node);
+      if (edges == null) {
+        continue;
+      }
+      for (String neighbor : edges.keySet()) {
+        if (!weights.containsKey(neighbor) || node.equals(neighbor)) {
+          continue;
+        }
+        bgpSets.get(node).add(neighbor);
+        bgpSets.get(neighbor).add(node);
+      }
+    }
+    ImmutableMap.Builder<String, ImmutableSet<String>> bgpBuilder = ImmutableMap.builder();
+    for (String node : nodes) {
+      bgpBuilder.put(node, ImmutableSet.copyOf(bgpSets.get(node)));
+    }
+    return new CommunicationGraph(
+        nodes, weightBuilder.build(), adjacencyBuilder.build(), bgpBuilder.build());
   }
 
   /** Build the union graph for a snapshot. */
@@ -184,7 +248,7 @@ public final class CommunicationGraph {
       adjacency.add(tail.getHostname(), head.getHostname(), OSPF);
     }
     Map<String, Integer> weights = NodeWeights.compute(configs, bgpAdjacency);
-    return adjacency.toGraph(weights);
+    return adjacency.toGraph(weights, bgpAdjacency);
   }
 
   /** Accumulates the per-pair topology mask deterministically. */
@@ -211,7 +275,8 @@ public final class CommunicationGraph {
       _mask.get(b).merge(a, topologyBit, (x, y) -> x | y);
     }
 
-    CommunicationGraph toGraph(Map<String, Integer> weights) {
+    CommunicationGraph toGraph(
+        Map<String, Integer> weights, Map<String, Set<String>> bgpAdjacency) {
       ImmutableSortedSet<String> nodes =
           ImmutableSortedSet.copyOf(Comparator.naturalOrder(), _nodes);
       ImmutableMap.Builder<String, Integer> weightBuilder = ImmutableMap.builder();
@@ -220,14 +285,23 @@ public final class CommunicationGraph {
       }
       ImmutableMap.Builder<String, ImmutableMap<String, Integer>> adjacencyBuilder =
           ImmutableMap.builder();
+      ImmutableMap.Builder<String, ImmutableSet<String>> bgpBuilder = ImmutableMap.builder();
       for (String node : nodes) {
         Map<String, Integer> neighbors = new TreeMap<>();
         for (Map.Entry<String, Integer> e : _mask.getOrDefault(node, Map.of()).entrySet()) {
           neighbors.put(e.getKey(), Integer.bitCount(e.getValue()) * DEFAULT_EDGE_WEIGHT);
         }
         adjacencyBuilder.put(node, ImmutableMap.copyOf(neighbors));
+        Set<String> bgp = new TreeSet<>();
+        for (String neighbor : bgpAdjacency.getOrDefault(node, Set.of())) {
+          if (_nodes.contains(neighbor) && !neighbor.equals(node)) {
+            bgp.add(neighbor);
+          }
+        }
+        bgpBuilder.put(node, ImmutableSet.copyOf(bgp));
       }
-      return new CommunicationGraph(nodes, weightBuilder.build(), adjacencyBuilder.build());
+      return new CommunicationGraph(
+          nodes, weightBuilder.build(), adjacencyBuilder.build(), bgpBuilder.build());
     }
   }
 

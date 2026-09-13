@@ -25,9 +25,11 @@ spec:
             # The controller also builds the vanilla dataplane and the reference
             # reachability analysis, so it uses the same heap budget as a worker:
             # -Xmx4g covers the largest verified snapshot (s2-giga) with headroom.
+            # The controller resolves the partition scheme; -Ds2.partition=auto selects it
+            # from the network shape (append -Ds2.partition=<scheme> to pin one).
             # Override per run via JAVA_TOOL_OPTIONS.
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xmx4g"
+              value: "-Xmx4g -Ds2.partition=auto"
           ports:
             - containerPort: 4090
           # Request is a scheduling floor; the transient peak is absorbed by the limit.

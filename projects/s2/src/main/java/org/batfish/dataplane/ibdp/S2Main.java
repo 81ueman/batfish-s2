@@ -47,6 +47,7 @@ import org.batfish.datamodel.UniverseIpSpace;
 import org.batfish.datamodel.Vrf;
 import org.batfish.datamodel.flow.Trace;
 import org.batfish.dataplane.TracerouteEngineImpl;
+import org.batfish.dataplane.ibdp.partition.AutoSchemeSelector;
 import org.batfish.dataplane.ibdp.partition.CommunicationGraph;
 import org.batfish.dataplane.ibdp.partition.PartitionScheme;
 import org.batfish.specifier.InterfaceLocation;
@@ -230,11 +231,14 @@ public final class S2Main {
     Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
 
     // The partition scheme is selected once on the controller and the assignment is computed here,
-    // then shipped to every worker (workers never recompute it). The default RANDOM reproduces the
-    // historical hash-shuffle round-robin, so stock demos are unchanged.
-    PartitionScheme scheme = PartitionScheme.fromSystemProperties();
+    // then shipped to every worker (workers never recompute it). The code default RANDOM reproduces
+    // the historical hash-shuffle round-robin; the runner defaults -Ds2.partition=auto, which
+    // resolves to a concrete scheme from the graph shape (see AutoSchemeSelector).
+    PartitionScheme requested = PartitionScheme.fromSystemProperties();
     CommunicationGraph graph =
         CommunicationGraph.build(snap.configs, snap.topologyContext, snap.bgpTopology);
+    AutoSchemeSelector.Selection selection = AutoSchemeSelector.select(requested, graph);
+    PartitionScheme scheme = selection.scheme();
     Map<String, Integer> assignment =
         CommunicationGraph.canonicalAssignment(
             scheme.partitioner().partition(graph, numWorkers, PARTITION_SEED), numWorkers);
@@ -247,10 +251,15 @@ public final class S2Main {
         totalLoad += load;
       }
       double meanLoad = totalLoad / (double) numWorkers;
+      String selectionNote =
+          selection.shape() == null
+              ? ""
+              : String.format(" (requested=AUTO, %s)", selection.describe());
       System.out.printf(
-          "S2 controller: partition scheme=%s workers=%d nodes=%d weighted-cut=%d"
+          "S2 controller: partition scheme=%s%s workers=%d nodes=%d weighted-cut=%d"
               + " imbalance(max/mean)=%.3f%n",
           scheme,
+          selectionNote,
           numWorkers,
           graph.nodes().size(),
           CommunicationGraph.cutWeight(graph, assignment),
@@ -653,9 +662,11 @@ public final class S2Main {
     String network = args[1];
     int numWorkers = Integer.parseInt(args[2]);
     S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
-    PartitionScheme scheme = PartitionScheme.fromSystemProperties();
+    PartitionScheme requested = PartitionScheme.fromSystemProperties();
     CommunicationGraph graph =
         CommunicationGraph.build(snap.configs, snap.topologyContext, snap.bgpTopology);
+    AutoSchemeSelector.Selection selection = AutoSchemeSelector.select(requested, graph);
+    PartitionScheme scheme = selection.scheme();
     Map<String, Integer> assignment =
         CommunicationGraph.canonicalAssignment(
             scheme.partitioner().partition(graph, numWorkers, PARTITION_SEED), numWorkers);
@@ -679,10 +690,15 @@ public final class S2Main {
       totalLoad += load;
     }
     double meanLoad = totalLoad / (double) numWorkers;
+    String selectionNote =
+        selection.shape() == null
+            ? ""
+            : String.format(" (requested=AUTO, %s)", selection.describe());
     System.out.printf(
-        "S2 partition: scheme=%s network=%s workers=%d nodes=%d weighted-cut=%d"
+        "S2 partition: scheme=%s%s network=%s workers=%d nodes=%d weighted-cut=%d"
             + " imbalance(max/mean)=%.3f%n",
         scheme,
+        selectionNote,
         network,
         numWorkers,
         graph.nodes().size(),

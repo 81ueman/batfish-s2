@@ -19,8 +19,10 @@ Knobs added for scale work:
 | `-Ds2.egpSchedule=<schedule>` | override the EGP schedule; S2 now defaults to `NODE_COLORED` (vanilla's deterministic schedule; C1). `ALL` restores the historical single-round schedule | `NODE_COLORED` (`-Ds2.egpSchedule=ALL` opts out) |
 | `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies); still gated by `descriptorShadowsSafe` (tracks / VNI / tunnel / IPsec fall back to full configs) | **on** (`-Ds2.descriptorShadows=false` disables) |
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
-| `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM (default) / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) | RANDOM (unchanged) |
+| `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) / AUTO (DCN/WAN classification) | code default RANDOM; **runner default `auto`** |
 | `-Ds2.nodeWeightsV2=true` | add the full-table propagation-closure term to the node weights (compresses the FatTree core/edge ratio; no assignment change on the current testbeds — see plan §6.9) | off |
+| `-Ds2.nodeWeightsRoleScale=true` | adaptive role-level peer coefficient: drop the peer term when the busiest BGP tier already has ≥ the interfaces of the least-connected tier (improves `s2-fat4` W=3 cost imbalance 1.061→1.047; plan §6.10) | off |
+| `-Ds2.nodeWeightsPeerScale=<int>` | evaluation-only override pinning the BGP peer coefficient (O6 sweeps) | unset |
 | `-Ds2.prefixSpacePositiveCacheOnly=true` | memoize only positive `PrefixSpace.containsPrefix` results (cuts the EGP transient; pure memoization) | off in shared code (stock unchanged); **on in the runner** (`scripts/local-demo.sh`, k8s worker manifest; `-Ds2.prefixSpacePositiveCacheOnly=false` disables) |
 | `S2_PREFIX_SHARDS=N` | control-plane (BGP RIB) prefix sharding, N rounds | 1 (off) |
 | `S2_PREFIX_SHARDS=auto` | auto shard count from the DPDG component weights (alias `-Ds2.prefixShardCount=auto`) | — |
@@ -33,7 +35,9 @@ shadows, each disabled with `=false`. The positive-only `PrefixSpace` memo is th
 feature whose shared-code default stays **off** (it lives in `projects/common`), so the
 *runner* turns it on: `scripts/local-demo.sh` exports it and the k8s worker manifest sets
 it in `JAVA_TOOL_OPTIONS` (append `-Ds2.prefixSpacePositiveCacheOnly=false` to disable).
-`-Ds2.partition` stays RANDOM and `S2_PREFIX_SHARDS` stays off — unchanged.
+The partitioner code default stays `RANDOM`, but the *runner* now sets `-Ds2.partition=auto`
+(local demo + both k8s manifests; append `-Ds2.partition=<scheme>` to pin). `S2_PREFIX_SHARDS`
+stays off — unchanged.
 
 With owned/descriptor mode on, workers no longer hold complete remote FIBs, so they cannot
 run the per-worker traceroute digest. The verification checks are therefore the **exact
@@ -75,7 +79,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 | id | task | depends |
 | --- | --- | --- |
-| **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS); controller computes and distributes the assignment | **Done**: new `.../ibdp/partition/` package + `NodePartitioner`, union graph/`NodeWeights`, `-Ds2.partition` (default RANDOM unchanged), assignment shipped in `Start.assignment`; metrics/eval in `PARTITIONING-PLAN.md` §6.6 (pre-`gpmetis`) and §6.7 (real METIS). P0 (weights) |
+| **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS / AUTO); controller computes and distributes the assignment | **Done**: new `.../ibdp/partition/` package + `NodePartitioner`, union graph/`NodeWeights`, `-Ds2.partition` (code default RANDOM unchanged; **runner default now `auto`**), assignment shipped in `Start.assignment`. **AUTO** (§3.4) classifies DCN/WAN with `AutoSchemeSelector` (tier names / BGP overlay / regular degree) and picks METIS when `gpmetis` is present, else NAME_ORDERED (DCN) / WEIGHTED_LPT_FM (WAN); the controller logs the selection. Metrics/eval in `PARTITIONING-PLAN.md` §6.6 (pre-`gpmetis`), §6.7 (real METIS), §6.10/§6.11 (O6 residual + AUTO). P0 (weights) |
 | **P3** | PrefixDependencyGraph (closure + DPDG + weighted WCC-LPT) | **Done**: `PrefixDependencyGraph.java` + `PrefixSharder` rewrite (weighted WCC-LPT, degenerate fallback); `PrefixSharderTest` extended |
 | **P-X** | shard-count selection | **Done**: `S2_PREFIX_SHARDS=auto` (`PrefixShardCountSelector`) picks N deterministically from the DPDG component weights under a per-shard budget (`-Ds2.prefixShardBudgetMiB`, default 192, cap 16); `scripts/shard-sweep.sh` + `M5-SCALE.md` record peak-vs-N |
 
@@ -99,10 +103,12 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 - **O1** defaults — **Done (2026-09-13)**: owned-only dataplane and descriptor shadows are on by
   default (each disabled with `=false`); the positive-only `PrefixSpace` memo is a **runner**
-  default (shared-code default stays off); `-Ds2.partition` stays RANDOM and `S2_PREFIX_SHARDS`
-  stays off. **O2** k8s resources / `-Xmx` — **Done (2026-09-13)**: `k8s/base/{controller,worker}.yaml`
-  pin `requests {memory: 2Gi, cpu: 1}` / `limits {memory: 6Gi}` and `-Xmx4g` (the worker also
-  carries `-Ds2.prefixSpacePositiveCacheOnly=true`); the measured-peak rationale is in `OPS.md`.
+  default (shared-code default stays off); the code default `-Ds2.partition` stays RANDOM but the
+  **runner now sets `auto`** (local demo + k8s manifests; `-Ds2.partition=<scheme>` overrides) and
+  `S2_PREFIX_SHARDS` stays off. **O2** k8s resources / `-Xmx` — **Done (2026-09-13)**:
+  `k8s/base/{controller,worker}.yaml` pin `requests {memory: 2Gi, cpu: 1}` / `limits {memory: 6Gi}`
+  and `-Xmx4g` (the worker also carries `-Ds2.prefixSpacePositiveCacheOnly=true` and
+  `-Ds2.partition=auto`); the measured-peak rationale is in `OPS.md`.
   **O3** CI — **Done (2026-09-13)**: `scripts/ci.sh` stages unit tests by default, the shared-code
   + public-API e2e regression stage with `--upstream`, and the demo matrix with `--matrix` (`--all`
   runs everything); the manual-only `.github/workflows/s2-ci.yml` exposes both heavier stages via
@@ -126,8 +132,15 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
   sweep of the coefficient (0..20) is identical. Pooled weight/route correlation rises 0.945→1.000
   (cross-network scale only; per-network unchanged). Left gated, default off; §6.9. The remaining
   lever is a role-level scale (or a cost-aware partitioner), not a component constant.
+  **O6 residual (role-level scaling), positive but gated off**: `-Ds2.nodeWeightsRoleScale=true`
+  makes the peer coefficient adaptive per network (`NodeWeights.adaptivePeerCoefficient`): 0 when the
+  busiest BGP tier already has ≥ the interfaces of the least-connected tier (s2-fat4-like), else the
+  calibrated 3 (s2-fat2-like). Measured-cost imbalance improves `s2-fat4` W=3 from 1.061 → 1.047 and
+  leaves `s2-fat2` (1.148) and the other testbeds unchanged (one assignment changes, no metric
+  change). A single peer coefficient cannot do both (`s2-fat2` needs ≥2, `s2-fat4` is best at 0;
+  `-Ds2.nodeWeightsPeerScale` sweep). Kept gated off like v2 pending broader validation; §6.10.
   **O7** docs sync — **Done (2026-09-13)**: `OPS.md`/`REMAINING.md` reflect the O1 defaults
-  (owned + descriptor on, runner positive-cache on, `-Ds2.partition=RANDOM`), the finalized k8s
+  (owned + descriptor on, runner positive-cache on, runner `-Ds2.partition=auto`), the finalized k8s
   resources, and the staged CI (`--upstream`/`--matrix`).
 
 ### Dependency graph
