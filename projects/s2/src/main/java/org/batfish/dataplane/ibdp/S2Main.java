@@ -217,6 +217,15 @@ public final class S2Main {
     return total;
   }
 
+  /** Print the controller's used and peak heap at a phase boundary (scale attribution). */
+  private static void controllerPhase(String phase) {
+    Runtime runtime = Runtime.getRuntime();
+    long used = runtime.totalMemory() - runtime.freeMemory();
+    System.err.printf(
+        "S2 controller phase %s: used heap %.1f MiB, peak %.1f MiB%n",
+        phase, used / 1048576.0, peakHeapBytes() / 1048576.0);
+  }
+
   // ---------------------------------------------------------------- controller
 
   private static void runController(String[] args) throws Exception {
@@ -226,10 +235,13 @@ public final class S2Main {
     int port = Integer.parseInt(args[4]);
 
     S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
+    controllerPhase("after snapshot load");
     assertDistributedProtocolsSupported(snap, numWorkers);
     snap.batfish.computeDataPlane(snap.snapshot);
     DataPlane vanilla = snap.batfish.loadDataPlane(snap.snapshot);
+    controllerPhase("after vanilla computeDataPlane");
     Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
+    controllerPhase("after vanillaRibs canonical");
 
     // The partition scheme is selected once on the controller and the assignment is computed here,
     // then shipped to every worker (workers never recompute it). The code default RANDOM reproduces
@@ -309,6 +321,7 @@ public final class S2Main {
     byte[] serializedExternalAdverts =
         serializeExternalAdverts(
             snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
+    controllerPhase("after serialize for shipping");
     try (S2ControllerServer server =
         new S2ControllerServer(
             port,
@@ -323,6 +336,7 @@ public final class S2Main {
       System.out.printf(
           "S2 controller listening on %d, waiting for %d workers%n", port, numWorkers);
       Map<Integer, S2ControlMessages.Result> results = server.awaitResults(3600);
+      controllerPhase("after awaitResults");
       Map<String, Map<String, List<AbstractRoute>>> merged = new TreeMap<>();
       for (S2ControlMessages.Result workerResult : results.values()) {
         workerResult.ribs.forEach(
@@ -359,6 +373,7 @@ public final class S2Main {
       // fixpoint on the full reference graph (seeded with the distributed result), so it could mask
       // a worker that dropped states.
       BDDReachabilityAnalysis referenceAnalysis = buildReachabilityAnalysis(snap, vanilla);
+      controllerPhase("after reference analysis build");
       JFactory referenceFactory = (JFactory) referenceAnalysis.getBDDPacket().getFactory();
       Map<StateExpr, BDD> mergedReachable = new HashMap<>();
       for (S2ControlMessages.Result workerResult : results.values()) {
@@ -367,6 +382,7 @@ public final class S2Main {
         }
       }
       Map<StateExpr, BDD> referenceReachable = referenceAnalysis.computeReverseReachableStates();
+      controllerPhase("after reference reverse-reachable");
       boolean symbolicMatch = mergedReachable.keySet().equals(referenceReachable.keySet());
       StateExpr firstSymbolicDiff = null;
       if (symbolicMatch) {
