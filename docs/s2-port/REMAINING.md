@@ -16,7 +16,7 @@ Knobs added for scale work:
 | (none) | controller ships parsed configs; workers do not re-parse | on |
 | `-Ds2.noShipConfigs=true` | worker parses the snapshot itself (reproduce the old floor) | off |
 | `-Ds2.ownedDataplane=true` | worker keeps full RIBs/FIBs only for owned nodes (remote get stub FIBs) | **on** (`-Ds2.ownedDataplane=false` disables) |
-| `-Ds2.egpSchedule=NODE_COLORED` | override the EGP schedule (S2 default is `ALL`); `NODE_COLORED` reproduces vanilla on cyclic equal-cost topologies (C1) | off |
+| `-Ds2.egpSchedule=<schedule>` | override the EGP schedule; S2 now defaults to `NODE_COLORED` (vanilla's deterministic schedule; C1). `ALL` restores the historical single-round schedule | `NODE_COLORED` (`-Ds2.egpSchedule=ALL` opts out) |
 | `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies); still gated by `descriptorShadowsSafe` (tracks / VNI / tunnel / IPsec fall back to full configs) | **on** (`-Ds2.descriptorShadows=false` disables) |
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
 | `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM (default) / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) | RANDOM (unchanged) |
@@ -91,7 +91,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 ### Correctness / generality — section B
 
-- **C1** cyclic equal-cost BGP tie-break nondeterminism — **Done (opt-in)**: root cause is the S2 engine forcing `Schedule.ALL` with the default `ARRIVAL_ORDER` BGP tie-breaker; `-Ds2.egpSchedule=NODE_COLORED` uses vanilla's deterministic schedule and matches vanilla on `s2-fat4` at 1 and 3 workers. Evidence in `C1-TIE-BREAK.md`.
+- **C1** cyclic equal-cost BGP tie-break nondeterminism — **Done (default on)**: root cause was the S2 engine forcing `Schedule.ALL` with the default `ARRIVAL_ORDER` BGP tie-breaker. S2 now defaults to vanilla's deterministic `NODE_COLORED` schedule and matches vanilla on `s2-fat4` at 1 and 3 workers; `-Ds2.egpSchedule=ALL` remains the escape hatch. Cross-worker coloring consistency is guaranteed because every worker colors the full node set + config-derived topology, and `reconcileEgpSchedule` fingerprints the schedule cluster-wide and falls back to `ALL` on any disagreement (no deadlock). Evidence in `C1-TIE-BREAK.md`.
 - **C2** EIGRP/IS-IS/RIP out of scope
 - **C3** controller-side digest for owned mode — **Done (documented)**: the RIB ⇒ forwarding implication (and its descriptor-mode variant) is documented in `S2Main`.
 
@@ -139,11 +139,10 @@ M2 ⇄ P3                      (both target T_w)
 
 ### Recommended order
 
-Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1.
+Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1, C1.
 
 1. **O2** k8s resources/`-Xmx` defaults; **O7** docs sync.
 2. **M5** (deferred)
-3. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
 
 (O5 METIS install is done — see the sweep in `PARTITIONING-PLAN.md` §6.7.)
 
@@ -224,10 +223,12 @@ Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0, O6, O1.
 ## B. Correctness / generality
 
 * **B1. Cyclic equal-cost BGP tie-break nondeterminism.** On a cyclic equal-cost topology the
-  distributed BGP fixpoint can pick a different (valid) route than single-machine Batfish. Root cause
-  and a default-off fix (`-Ds2.egpSchedule=NODE_COLORED`) are documented in `C1-TIE-BREAK.md`; with
-  the flag the `s2-fat4` FatTree matches vanilla at 1 and 3 workers. The residual risk (per-worker
-  coloring consistency for arbitrary topologies) is noted there.
+  distributed BGP fixpoint used to pick a different (valid) route than single-machine Batfish
+  because the S2 engine forced `Schedule.ALL` while vanilla uses `NODE_COLORED`. **Resolved by
+  default (C1)**: S2 now uses `NODE_COLORED`, its workers color the same full node set + topology,
+  and `reconcileEgpSchedule` enforces that cluster-wide (falling back to `ALL` on disagreement), so
+  `s2-fat4` matches vanilla at 1 and 3 workers. Documented in `C1-TIE-BREAK.md`; `ALL` remains a
+  debugging escape hatch.
 * **B2. EIGRP / IS-IS / RIP** are intentionally not distributed and are rejected for `>1` worker.
 * **B3. Owned-mode non-covered cases** — see A4.
 * **B4. Controller-side digest for owned mode.** Today, with `-Ds2.ownedDataplane`, workers return

@@ -115,11 +115,10 @@ public class S2FatTreeTieBreakTest {
     Map<String, Map<String, Set<String>>> stockColored2 = runStock(Schedule.NODE_COLORED);
     Map<String, Map<String, Set<String>>> stockAll1 = runStock(Schedule.ALL);
     Map<String, Map<String, Set<String>>> stockAll2 = runStock(Schedule.ALL);
-    Map<String, Map<String, Set<String>>> s2A = runS2(1, false);
-    Map<String, Map<String, Set<String>>> s2B = runS2(1, false);
-    Map<String, Map<String, Set<String>>> s2Colored1 = runS2(1, true);
-    Map<String, Map<String, Set<String>>> s2Colored3 = runS2(3, true);
-    Map<String, Map<String, Set<String>>> s2Default3 = runS2(3, false);
+    // With NODE_COLORED now the default, an unmodified S2 engine is the fix.
+    Map<String, Map<String, Set<String>>> s2A = runS2(1);
+    Map<String, Map<String, Set<String>>> s2B = runS2(1);
+    Map<String, Map<String, Set<String>>> s2Default3 = runS2(3);
     // Diagnostic: does the alternative bestPathComparator (prefer lower originatorIp) pin the
     // result down? It only affects the comparator, not the earlier EXACT_PATH AS-path check.
     Map<String, Map<String, Set<String>>> routerId1 =
@@ -132,10 +131,9 @@ public class S2FatTreeTieBreakTest {
     System.out.println("stock(NODE_COLORED) run1 == run2:  " + stockColored1.equals(stockColored2));
     System.out.println("vanilla == stock(ALL):             " + vanilla.equals(stockAll1));
     System.out.println("stock(ALL) run1 == run2:           " + stockAll1.equals(stockAll2));
-    System.out.println("s2(1w, ALL) run1 == run2:          " + s2A.equals(s2B));
-    System.out.println("vanilla == s2(1w, NODE_COLORED):   " + vanilla.equals(s2Colored1));
-    System.out.println("vanilla == s2(3w, NODE_COLORED):   " + vanilla.equals(s2Colored3));
-    System.out.println("vanilla == s2(3w, ALL):            " + vanilla.equals(s2Default3));
+    System.out.println("s2(1w, default) run1 == run2:      " + s2A.equals(s2B));
+    System.out.println("vanilla == s2(1w, default):        " + vanilla.equals(s2A));
+    System.out.println("vanilla == s2(3w, default):        " + vanilla.equals(s2Default3));
     System.out.println("stock(ALL, ROUTER_ID) run1==run2:  " + routerId1.equals(routerId2));
     System.out.println("vanilla == stock(ALL, ROUTER_ID):  " + vanilla.equals(routerId1));
     printDiffSummary("vanilla vs stock(ALL)", vanilla, stockAll1);
@@ -149,42 +147,36 @@ public class S2FatTreeTieBreakTest {
         "vanilla and stock(ALL) must differ on this topology",
         vanilla.equals(stockAll1),
         is(false));
-    // A globally-consistent NODE_COLORED schedule makes even the distributed S2 engine match
-    // vanilla (the fix, exercised here through a subclass so the mechanism is testable).
-    assertThat(vanilla.equals(s2Colored1), is(true));
-    assertThat(vanilla.equals(s2Colored3), is(true));
+    // The S2 default (NODE_COLORED) is deterministic and matches vanilla at 1 and 3 workers; the
+    // 3-worker assertion is also the cross-worker consistency check: a coloring mismatch would
+    // have misaligned the per-step barriers and hung the test rather than returned.
+    assertThat(s2A.equals(s2B), is(true));
+    assertThat(vanilla.equals(s2A), is(true));
+    assertThat(vanilla.equals(s2Default3), is(true));
+  }
+
+  /** The default (unmodified) S2 engine must reproduce vanilla at 1 and 3 workers. */
+  @Test
+  public void testDefaultScheduleReproducesVanilla() throws Exception {
+    Map<String, Map<String, Set<String>>> vanilla = computeVanilla();
+    assertThat(vanilla.equals(runS2(1)), is(true));
+    assertThat(vanilla.equals(runS2(3)), is(true));
   }
 
   /**
-   * The actual gate: {@code -Ds2.egpSchedule=NODE_COLORED} applied to the unmodified S2 engine must
-   * reproduce vanilla at 1 and 3 workers.
+   * {@code -Ds2.egpSchedule=ALL} remains the escape hatch: it restores the historical single-round
+   * schedule, which on this cyclic equal-cost topology selects a different fixed point than
+   * vanilla.
    */
   @Test
-  public void testEgpScheduleOverrideReproducesVanilla() throws Exception {
+  public void testAllScheduleEscapeHatch() throws Exception {
     Map<String, Map<String, Set<String>>> vanilla = computeVanilla();
-    System.setProperty("s2.egpSchedule", "NODE_COLORED");
+    System.setProperty("s2.egpSchedule", "ALL");
     try {
-      assertThat(vanilla.equals(runS2(1, false)), is(true));
-      assertThat(vanilla.equals(runS2(3, false)), is(true));
+      Map<String, Map<String, Set<String>>> all = runS2(1);
+      assertThat("ALL must still differ from vanilla on s2-fat4", vanilla.equals(all), is(false));
     } finally {
       System.clearProperty("s2.egpSchedule");
-    }
-  }
-
-  /**
-   * S2 engine variant that uses NODE_COLORED instead of the hard-coded ALL, to evaluate the fix.
-   */
-  private static final class S2ColoredEngine extends S2BdpEngine {
-    S2ColoredEngine(
-        IncrementalDataPlaneSettings settings,
-        Map<String, DistributedNode> nodes,
-        S2Cluster cluster) {
-      super(settings, nodes, cluster, null, ImmutableSet.of());
-    }
-
-    @Override
-    protected Schedule initialSchedule() {
-      return Schedule.NODE_COLORED;
     }
   }
 
@@ -218,8 +210,7 @@ public class S2FatTreeTieBreakTest {
     return canonical(result._dataPlane);
   }
 
-  private Map<String, Map<String, Set<String>>> runS2(int workers, boolean colored)
-      throws Exception {
+  private Map<String, Map<String, Set<String>>> runS2(int workers) throws Exception {
     Setups s = freshSetups();
     Map<String, Integer> assignment =
         NetworkPartitioner.partition(s.configs().keySet(), workers, 0L);
@@ -238,10 +229,7 @@ public class S2FatTreeTieBreakTest {
                 ? realByHost.get(host)
                 : DistributedNode.shadowOf(realByHost.get(host)));
       }
-      engines.add(
-          colored
-              ? new S2ColoredEngine(s.settings(), nodes, cluster)
-              : new S2BdpEngine(s.settings(), nodes, cluster, null, ImmutableSet.of()));
+      engines.add(new S2BdpEngine(s.settings(), nodes, cluster, null, ImmutableSet.of()));
     }
     ExecutorService pool = Executors.newFixedThreadPool(workers);
     try {
