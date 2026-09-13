@@ -1,5 +1,7 @@
 package org.batfish.dataplane.ibdp;
 
+import static org.batfish.datamodel.acl.AclLineMatchExprs.matchDst;
+
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
@@ -34,10 +36,13 @@ import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.DataPlane;
 import org.batfish.datamodel.FinalMainRib;
 import org.batfish.datamodel.Flow;
+import org.batfish.datamodel.FlowDisposition;
 import org.batfish.datamodel.ForwardingAnalysis;
 import org.batfish.datamodel.Interface;
 import org.batfish.datamodel.Ip;
 import org.batfish.datamodel.IpProtocol;
+import org.batfish.datamodel.IpSpace;
+import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.UniverseIpSpace;
 import org.batfish.datamodel.Vrf;
 import org.batfish.datamodel.flow.Trace;
@@ -92,6 +97,11 @@ public final class S2Main {
     return dir;
   }
 
+  /** Number of destination-prefix query shards (S2 prefix sharding); default 1 (no sharding). */
+  private static int queryShardCount() {
+    return Math.max(1, Integer.parseInt(System.getenv().getOrDefault("S2_SHARDS", "1")));
+  }
+
   /**
    * Shadow nodes delegate BGP and OSPF; EIGRP/IS-IS/RIP are not distributed, so a multi-worker run
    * of a snapshot that uses them would hit a null shadow process. Fail with a clear message.
@@ -143,7 +153,18 @@ public final class S2Main {
     DataPlane vanilla = snap.batfish.loadDataPlane(snap.snapshot);
     Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
 
-    try (S2ControllerServer server = new S2ControllerServer(port, numWorkers, endpoints)) {
+    // Prefix sharding: partition the destination prefix space. shardCount()==1 keeps the full space
+    // in a single shard (the historical behavior); >1 splits it so each worker only holds one
+    // shard's BDDs at a time.
+    List<Prefix> queryPrefixes = PrefixSharder.queryPrefixes(snap.configs);
+    List<IpSpace> queryShards = PrefixSharder.shard(queryPrefixes, queryShardCount());
+    IpSpace querySpace = PrefixSharder.union(queryShards);
+    System.out.printf(
+        "S2 prefix sharding: %d shard(s) over %d prefixes%n",
+        queryShards.size(), queryPrefixes.size());
+
+    try (S2ControllerServer server =
+        new S2ControllerServer(port, numWorkers, endpoints, queryShards)) {
       server.start();
       System.out.printf(
           "S2 controller listening on %d, waiting for %d workers%n", port, numWorkers);
@@ -165,12 +186,16 @@ public final class S2Main {
       // state-by-state against the reference. This is strict: the answer check below re-runs the
       // fixpoint on the full reference graph (seeded with the distributed result), so it could mask
       // a worker that dropped states.
-      BDDReachabilityAnalysis referenceAnalysis = buildReachabilityAnalysis(snap, vanilla);
+      BDDReachabilityAnalysis referenceAnalysis =
+          buildReachabilityAnalysis(snap, vanilla, null, querySpace);
       JFactory referenceFactory = (JFactory) referenceAnalysis.getBDDPacket().getFactory();
+      // Each (worker, shard) contributed a partial per-state map; OR them together. The union over
+      // a partition of the query equals the full query's reachable states.
       Map<StateExpr, BDD> mergedReachable = new HashMap<>();
-      for (S2ControlMessages.Result workerResult : results.values()) {
-        for (Map.Entry<StateExpr, String> e : workerResult.symbolicReachable.entrySet()) {
-          mergedReachable.put(e.getKey(), new BDDTransfer().load(referenceFactory, e.getValue()));
+      for (Map<StateExpr, String> shardResult : server.getShardResults()) {
+        for (Map.Entry<StateExpr, String> e : shardResult.entrySet()) {
+          BDD bdd = new BDDTransfer().load(referenceFactory, e.getValue());
+          mergedReachable.merge(e.getKey(), bdd, (a, b) -> a.or(b));
         }
       }
       Map<StateExpr, BDD> referenceReachable = referenceAnalysis.computeReverseReachableStates();
@@ -337,8 +362,13 @@ public final class S2Main {
 
         // Distributed symbolic reachability (M5) over the converged dataplane. Each worker builds
         // only its own switches' edges (OwnedForwardingAnalysis); the boundary edges into its
-        // states are pulled from the peers that own their sources.
-        BDDReachabilityAnalysis analysis = buildReachabilityAnalysis(snap, dp, ownedHosts);
+        // states are pulled from the peers that own their sources. The query is prefix-sharded
+        // (S2 prefix sharding): the controller sends the destination-prefix shards and each shard
+        // is
+        // run as its own fixpoint so only one shard's BDDs are live at a time.
+        IpSpace querySpace = PrefixSharder.union(start.queryShards);
+        BDDReachabilityAnalysis analysis =
+            buildReachabilityAnalysis(snap, dp, ownedHosts, querySpace);
         localAnalysisRef.set(analysis);
         JFactory factory = (JFactory) analysis.getBDDPacket().getFactory();
 
@@ -365,7 +395,6 @@ public final class S2Main {
                   new S2WorkerEndpoint(
                       routeEndpoint.getHost(), routeEndpoint.getPort() + BDD_PORT_OFFSET));
         }
-        Map<StateExpr, String> symbolicSerialized = new HashMap<>();
         S2ReachabilityWorker[] holder = new S2ReachabilityWorker[1];
         System.err.printf(
             "worker %d starting BDD sidecar on %d%n", workerId, sidecarPort + BDD_PORT_OFFSET);
@@ -385,13 +414,38 @@ public final class S2Main {
                 edge.preState, edge.postState, TransitionTransfer.load(factory, edge.transition));
           }
           System.out.printf(
-              "S2 worker %d generated %d local symbolic edges, pulled %d boundary edges%n",
-              workerId, holder[0].edgeCount() - pulledEdges.size(), pulledEdges.size());
-          Map<StateExpr, BDD> reachable = holder[0].run();
-          for (Map.Entry<StateExpr, BDD> e : reachable.entrySet()) {
-            symbolicSerialized.put(e.getKey(), new BDDTransfer().save(e.getValue()));
+              "S2 worker %d generated %d local symbolic edges, pulled %d boundary edges, %d query"
+                  + " shard(s)%n",
+              workerId,
+              holder[0].edgeCount() - pulledEdges.size(),
+              pulledEdges.size(),
+              start.queryShards.size());
+          // One fixpoint per query shard; serialize and ship the shard's results, then drop them so
+          // only one shard's BDDs are live at a time (this is the memory saving).
+          long peakResultNodes = 0;
+          long peakFactoryNodes = 0;
+          for (IpSpace shard : start.queryShards) {
+            BDD shardRoot =
+                analysis
+                    .getQueryHeaderSpaceBdd()
+                    .and(analysis.getBDDPacket().getDstIpSpaceToBDD().visit(shard));
+            Map<StateExpr, BDD> reachable = holder[0].run(shardRoot);
+            peakResultNodes = Math.max(peakResultNodes, factory.nodeCount(reachable.values()));
+            Map<StateExpr, String> symbolicSerializedShard = new HashMap<>();
+            for (Map.Entry<StateExpr, BDD> e : reachable.entrySet()) {
+              symbolicSerializedShard.put(e.getKey(), new BDDTransfer().save(e.getValue()));
+            }
+            out.writeObject(new S2ControlMessages.ShardResult(workerId, symbolicSerializedShard));
+            out.flush();
+            System.gc();
+            holder[0].collectGarbage();
+            peakFactoryNodes = Math.max(peakFactoryNodes, factory.getNodeNum());
           }
+          System.out.printf(
+              "S2 worker %d peak result BDD nodes %d (factory %d)%n",
+              workerId, peakResultNodes, peakFactoryNodes);
         }
+        Map<StateExpr, String> symbolicSerialized = new HashMap<>();
 
         long peakHeapBytes = peakHeapBytes();
         out.writeObject(
@@ -410,18 +464,16 @@ public final class S2Main {
 
   // ------------------------------------------------------------------- helpers
 
-  /** Build Batfish's BDD reachability analysis over the given dataplane (all interface sources). */
-  private static BDDReachabilityAnalysis buildReachabilityAnalysis(S2Snapshot snap, DataPlane dp) {
-    return buildReachabilityAnalysis(snap, dp, null);
-  }
-
   /**
-   * Like {@link #buildReachabilityAnalysis(S2Snapshot, DataPlane)}, but when {@code ownedHosts} is
-   * non-null the forwarding analysis is restricted to those switches so the worker generates only
-   * locally-owned edges. Cross-worker edges into owned states are pulled from their owners.
+   * Build Batfish's BDD reachability analysis over the given dataplane (all interface sources).
+   *
+   * <p>When {@code ownedHosts} is non-null the forwarding analysis is restricted to those switches
+   * so the worker generates only locally-owned edges; cross-worker edges into owned states are
+   * pulled from their owners. {@code querySpace} is the destination prefix space the query is
+   * restricted to (the union of the prefix shards).
    */
   private static BDDReachabilityAnalysis buildReachabilityAnalysis(
-      S2Snapshot snap, DataPlane dp, Set<String> ownedHosts) {
+      S2Snapshot snap, DataPlane dp, Set<String> ownedHosts, IpSpace querySpace) {
     BDDPacket packet = new BDDPacket();
     ForwardingAnalysis forwardingAnalysis =
         ownedHosts == null
@@ -444,7 +496,13 @@ public final class S2Main {
         }
       }
     }
-    return factory.bddReachabilityAnalysis(builder.build());
+    return factory.bddReachabilityAnalysis(
+        builder.build(),
+        matchDst(querySpace),
+        Set.of(),
+        Set.of(),
+        snap.configs.keySet(),
+        Set.of(FlowDisposition.ACCEPTED));
   }
 
   /** Data-plane check: traceroute between every pair of loopback addresses, as dispositions. */

@@ -4,6 +4,7 @@ import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
 import org.batfish.datamodel.AbstractRoute;
+import org.batfish.datamodel.IpSpace;
 
 /** Control-plane wire messages between S2 workers and the controller (milestone 3). */
 final class S2ControlMessages {
@@ -23,8 +24,24 @@ final class S2ControlMessages {
     private static final long serialVersionUID = 1L;
     final List<S2WorkerEndpoint> endpoints;
 
-    Start(List<S2WorkerEndpoint> endpoints) {
+    /** Query header-space shards (destination prefix space); each is run as its own fixpoint. */
+    final List<IpSpace> queryShards;
+
+    Start(List<S2WorkerEndpoint> endpoints, List<IpSpace> queryShards) {
       this.endpoints = endpoints;
+      this.queryShards = queryShards;
+    }
+  }
+
+  /** One worker's per-state reachable BDDs for a single query shard (prefix-sharding). */
+  static final class ShardResult implements Serializable {
+    private static final long serialVersionUID = 1L;
+    final int workerId;
+    final Map<org.batfish.symbolic.state.StateExpr, String> symbolicReachable;
+
+    ShardResult(int workerId, Map<org.batfish.symbolic.state.StateExpr, String> symbolicReachable) {
+      this.workerId = workerId;
+      this.symbolicReachable = symbolicReachable;
     }
   }
 

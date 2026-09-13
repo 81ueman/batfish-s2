@@ -146,6 +146,32 @@ of them fails fast with a clear message instead of an NPE
 delegation, leaving them unimplemented is fine as long as the snapshots use only BGP and
 OSPF — mixed BGP+OSPF networks are fully supported.
 
+## Query prefix sharding (experiment)
+
+`S2_SHARDS=N` (default 1) partitions the destination prefix space (interface addresses plus
+BGP origination networks) into N shards. Each worker runs the backward fixpoint once per
+shard with the query restricted to that shard, ships the shard's per-state BDDs, then drops
+them (`System.gc()` + BDD GC) so only one shard's BDDs are live at a time. The controller
+unions the shards; because backward reachability is linear in the query, the union is exact
+(`QueryShardingTest#testShardUnionMatchesFull`). All demos still report
+`symbolic=MATCH` with `S2_SHARDS>1`.
+
+Measured on `networks/s2-big` (6-node OSPF line, 197 prefixes), 3 workers:
+
+| shards | peak result BDD nodes / worker | peak heap / worker |
+| --- | --- | --- |
+| 1 | 200–203 | 225–297 MiB |
+| 8 | 158–161 | 279–387 MiB |
+| 16 | 157–159 | 287–463 MiB |
+| 32 | 153–155 | 233–393 MiB |
+
+The symbolic result shrinks ~20% and then saturates; peak JVM heap does **not** improve
+(the control plane dominates, and the per-shard GC/serialization adds overhead). So
+query/header-space sharding is not a memory win for these routing workloads. The paper's
+prefix sharding is the **control-plane (RIB)** one — that is the follow-up that would
+actually reduce memory at scale. `S2_SHARDS` is kept as an experimental knob, default 1
+(no behavior change).
+
 ## Known residual
 
 On a **cyclic equal-cost** topology (e.g. a 6-node ring), the distributed BGP fixpoint
@@ -169,6 +195,7 @@ scripts/local-demo.sh 3 s2-line
 scripts/local-demo.sh 3 s2-ospf
 scripts/local-demo.sh 3 s2-ospf-bgp   # eBGP + OSPF
 scripts/local-demo.sh 3 s2-redist     # OSPF<->BGP redistribution
+S2_SHARDS=8 scripts/local-demo.sh 3 s2-big   # experimental query prefix sharding
 
 # Kubernetes (OrbStack) — <workers> [network]
 scripts/build-s2.sh --image

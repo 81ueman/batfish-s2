@@ -154,5 +154,6 @@ networks/s2-line/     # 6-node scale snapshot
 networks/s2-ospf/     # 4-node OSPF snapshot
 networks/s2-ospf-bgp/ # eBGP + OSPF snapshot
 networks/s2-redist/   # OSPF<->BGP redistribution snapshot
+networks/s2-big/      # 6-node OSPF line with 197 prefixes (prefix-sharding measurement)
 docker/, k8s/, scripts/, docs/s2-port/
 ```
