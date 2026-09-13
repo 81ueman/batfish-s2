@@ -32,5 +32,13 @@ if ! kubectl -n s2 wait --for=condition=complete job/s2-controller --timeout=180
   exit 1
 fi
 
+echo "== waiting for verifier job =="
+if ! kubectl -n s2 wait --for=condition=complete job/s2-verifier --timeout=1800s; then
+  kubectl -n s2 describe job/s2-verifier || true
+  kubectl -n s2 logs job/s2-verifier || true
+  exit 1
+fi
+
 kubectl -n s2 logs job/s2-controller | tee "results/k8s-controller-${NETWORK}-${W}pod.log"
-echo "done: results/k8s-controller-${NETWORK}-${W}pod.log"
+kubectl -n s2 logs job/s2-verifier | tee "results/k8s-verifier-${NETWORK}-${W}pod.log"
+echo "done: results/k8s-controller-${NETWORK}-${W}pod.log results/k8s-verifier-${NETWORK}-${W}pod.log"

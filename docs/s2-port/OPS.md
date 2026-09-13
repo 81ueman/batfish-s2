@@ -6,8 +6,8 @@ install the tools the partition evaluation needs. Companion to `M5-SCALE.md` (me
 
 ## Default heap (`-Xmx`)
 
-The runner is spawned as one JVM per process (controller + `N` workers). Set the heap via the
-standard `JAVA_TOOL_OPTIONS` environment variable:
+The runner is spawned as one JVM per process (controller + `N` workers + verifier). Set the heap
+via the standard `JAVA_TOOL_OPTIONS` environment variable:
 
 ```sh
 JAVA_TOOL_OPTIONS=-Xmx4g scripts/local-demo.sh 3 s2-giga
@@ -78,38 +78,76 @@ main RIBs, checked against vanilla) plus the **distributed symbolic reachability
 comparison and the public-API **answer** check (`ribs=MATCH symbolic=MATCH answer=MATCH`).
 The digest check returns when both are disabled with the `=false` flags above (C3).
 
+## Controller / verifier split (A7)
+
+The controller is a **lightweight coordinator**: it parses the snapshot, resolves the partition
+scheme, ships configs, runs the distributed control/symbolic fixpoint, and collects the workers'
+results. It does *not* compute the vanilla single-machine dataplane or the reference BDD analysis,
+which is what used to make it ~2x a worker (controller peak 2637.0 MiB at `s2-giga`) and the
+scale-out bottleneck.
+
+Verification runs in a separate `verify` role (`S2Main verify <network> <numWorkers>`): a new JVM
+locally and a new `s2-verifier` Job on Kubernetes. The controller writes the workers' results to
+`$S2_OUTPUT_DIR/worker-results-<W>.bin` (atomically) and exits; the verifier loads the same
+snapshot, reads that file, does the vanilla + reference work, and writes `result-<W>worker.txt` in
+the same format (including the `S2 MATCH (...)` line). `scripts/local-demo.sh` runs the verifier
+after the workers finish, and `scripts/k8s-demo.sh` waits for both the controller and the verifier
+Jobs before logging them.
+
+Because the controller no longer builds the vanilla/reference dataplanes, its peak drops to the
+snapshot + configs + coordination working set (well under a worker's); the verifier carries the old
+verification budget. Measured locally with `-Xmx4g` at W=3, the controller peak fell **1326.2 →
+486.1 MiB** on `s2-mega` (the old peak was dominated by the vanilla dataplane and the reference
+analysis), while the verifier peaked at 809.4 MiB. (On the tiny `s2-line` the split is only 399.6 →
+367.5 MiB because there the peak is snapshot parsing.) On OrbStack Kubernetes the controller peaked
+at 145–160 MiB with `-Xmx1g`. The `controller:` field in `result-<W>worker.txt` is still in the same
+place, but now reports the **verifier** process's peak (the process that actually runs the vanilla +
+reference work); the controller's own peak is in its phase prints
+(`results/local-<net>-<W>/controller.log`).
+
 ## Kubernetes resource requests/limits
 
-`k8s/base/{controller,worker}.yaml` set the defaults; `k8s/overlays/{1,3}pod` only change the
-worker replica count and `WORKERS` (they do not touch resources or `JAVA_TOOL_OPTIONS`, so the
-base values apply to both overlays).
+`k8s/base/{controller,worker,verifier}.yaml` set the defaults; `k8s/overlays/{1,3}pod` change the
+worker replica count and `WORKERS` for the controller/verifier Jobs (they do not touch resources or
+`JAVA_TOOL_OPTIONS`, so the base values apply to both overlays).
 
 | container | request | limit | heap | why |
 | --- | --- | --- | --- | --- |
 | `worker` | `memory: 2Gi`, `cpu: 1` | `memory: 6Gi` | `-Xmx4g` | measured worst-worker peak **1938.1 MiB** on `s2-giga` with the O1 defaults (owned-only dataplane + descriptor shadows) on; 4g covers that and the pre-O1 fallback (owned/descriptor off: 2226.1 MiB shipped, 2513.1 MiB per-worker-parse) with headroom |
-| `controller` | `memory: 2Gi`, `cpu: 1` | `memory: 6Gi` | `-Xmx4g` | also builds the vanilla dataplane and the reference reachability analysis, so it uses the worker heap budget |
+| `controller` | `memory: 512Mi`, `cpu: 0.5` | `memory: 2Gi` | `-Xmx1g` | lightweight coordinator (A7): snapshot + partition + config shipping + result collection, no vanilla/reference dataplane |
+| `verifier` | `memory: 2Gi`, `cpu: 1` | `memory: 6Gi` | `-Xmx4g` | runs the vanilla dataplane and the reference BDD analysis, so it keeps the old controller budget |
 
 Notes:
 
-* **Limit vs. request.** The 6Gi limit is the 4g heap plus ~2Gi of non-heap (metaspace, code
-  cache, thread stacks, GC) headroom; it is what prevents an OOM-kill on the large snapshots. The
-  2Gi request is a scheduling floor: the retained set after a GC is small (tens of MiB, see
-  `M5-SCALE.md`), and the measured peak is *transient* control-plane/FIB allocation, so the limit
-  absorbs the peak and a larger request would only reduce scheduling density.
-* **Why no CPU limit.** Only a request (`cpu: 1`) is set: the dataplane/symbolic phases burst
-  across cores, so a CFS quota would throttle them without protecting anything (there is one heavy
-  Pod per run on the demo cluster). The fixpoint barriers serialize the distributed control plane,
-  which is what the 1-core request reflects.
-* The heap is set by the `JAVA_TOOL_OPTIONS` env in both base manifests, so it is visible and
+* **Limit vs. request.** The worker/verifier 6Gi limit is the 4g heap plus ~2Gi of non-heap
+  (metaspace, code cache, thread stacks, GC) headroom; it is what prevents an OOM-kill on the large
+  snapshots. The 2Gi request is a scheduling floor: the retained set after a GC is small (tens of
+  MiB, see `M5-SCALE.md`), and the measured peak is *transient* control-plane/FIB allocation, so
+  the limit absorbs the peak and a larger request would only reduce scheduling density. The
+  controller's 1g heap / 2Gi limit / 512Mi request reflect its much smaller coordinator working set
+  (A7).
+* **Why no CPU limit.** Only a request is set: the dataplane/symbolic phases burst across cores, so
+  a CFS quota would throttle them without protecting anything (there is one heavy Pod per run on
+  the demo cluster). The fixpoint barriers serialize the distributed control plane, which is what
+  the 1-core request reflects; the controller's 0.5-core request reflects its lighter work.
+* The heap is set by the `JAVA_TOOL_OPTIONS` env in all three base manifests, so it is visible and
   overridable (`kubectl set env` / `kubectl edit` / an overlay patch). The worker value also
-  carries the O1 runner default `-Ds2.prefixSpacePositiveCacheOnly=true`; both manifests carry the
-  partitioner runner default `-Ds2.partition=auto` (append `-Ds2.prefixSpacePositiveCacheOnly=false`
-  or `-Ds2.partition=<scheme>` to disable / pin). The JVM would otherwise derive its
-  max heap from the limit (~1.5 GiB at 6Gi), which is too small for `s2-giga`.
+  carries the O1 runner default `-Ds2.prefixSpacePositiveCacheOnly=true`; the controller carries
+  the partitioner runner default `-Ds2.partition=auto` (append
+  `-Ds2.prefixSpacePositiveCacheOnly=false` or `-Ds2.partition=<scheme>` to disable / pin). The JVM
+  would otherwise derive its max heap from the limit, which is too small for `s2-giga` (and the
+  controller wants only 1g anyway).
+* The controller and verifier Jobs share a small `ReadWriteOnce` PVC (`k8s/base/shared-pvc.yaml`)
+  mounted at `/s2/shared`, with `S2_OUTPUT_DIR=/s2/shared`: the controller writes
+  `worker-results-<W>.bin` there and the verifier reads it and writes `result-<W>worker.txt`. The
+  `s2-verifier` entrypoint waits (bounded) for the results file, so the two Jobs need no explicit
+  ordering.
 * The entrypoints still pass `-XX:-UseCompressedOops` (as measured). Do not remove it when
   comparing against the `M5-SCALE.md` numbers.
-* `scripts/k8s-demo.sh <1|3> [network]` renders the overlays and substitutes the snapshot name;
-  `scripts/compare-answers.sh [network]` asserts the 1-Pod and 3-Pod results both MATCH.
+* `scripts/k8s-demo.sh <1|3> [network]` renders the overlays and substitutes the snapshot name, then
+  waits for both the controller and the verifier Jobs and logs each;
+  `scripts/compare-answers.sh [network]` asserts the 1-Pod and 3-Pod results both MATCH (the MATCH
+  line now comes from the verifier log).
 
 ## Boundary RPC counters (P0)
 

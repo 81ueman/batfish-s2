@@ -58,5 +58,11 @@ for p in "${worker_pids[@]}"; do wait "$p" || true; done
 
 echo "== controller output =="
 cat "$S2_OUTPUT_DIR/controller.log"
+
+# Verification runs in a separate JVM (the controller is a lightweight coordinator and
+# exits as soon as it has written the workers' results). Same input/output dirs.
+echo "== verifier (separate JVM) =="
+java -jar "$JAR" verify "$NETWORK" "$W" 2>&1 | tee "$S2_OUTPUT_DIR/verify.log"
+
 echo "== result file =="
 cat "$S2_OUTPUT_DIR/result-${W}worker.txt" 2>/dev/null || echo "(missing)"

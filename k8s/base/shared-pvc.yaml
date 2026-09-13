@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s2-shared
+  namespace: s2
+  labels: {app: s2-shared}
+spec:
+  # The controller writes the worker results and exits before the verifier Job reads
+  # them, so a single-writer ReadWriteOnce volume is enough even on multi-node
+  # clusters. On the single-node demo cluster the node-local provisioner is fine.
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

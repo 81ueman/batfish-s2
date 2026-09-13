@@ -11,6 +11,11 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/env/0/value
         value: "1"
+  - target: {kind: Job, name: s2-verifier}
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: "1"
   - target: {kind: StatefulSet, name: s2-worker}
     patch: |-
       - op: replace

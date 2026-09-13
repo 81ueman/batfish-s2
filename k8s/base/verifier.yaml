@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: s2-verifier
+  namespace: s2
+  labels: {app: s2-verifier}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {app: s2-verifier}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verifier
+          image: s2:local
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/s2/entrypoint-verifier.sh"]
+          env:
+            - name: WORKERS
+              value: "1"
+            - name: NETWORK_NAME
+              value: "s2-triangle"
+            # Both Jobs share the controller's output volume, so the verifier can read
+            # worker-results-<W>.bin and write result-<W>worker.txt in the same place.
+            - name: S2_OUTPUT_DIR
+              value: /s2/shared
+            # The verifier does the work the controller used to do: the vanilla
+            # single-machine dataplane and the full reference BDD analysis. It therefore
+            # keeps the old controller heap budget (docs/s2-port/OPS.md; peaks in
+            # M5-SCALE.md). -Xmx4g covers the largest verified snapshot (s2-giga) with
+            # headroom. Override per run via JAVA_TOOL_OPTIONS.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx4g"
+          volumeMounts:
+            - name: shared
+              mountPath: /s2/shared
+          # Same budget the controller used to carry, for the same work: request is a
+          # scheduling floor, limit is 4g heap + ~2Gi non-heap/GC headroom. No CPU limit
+          # (the dataplane/symbolic phases burst across cores).
+          resources:
+            requests: {memory: "2Gi", cpu: "1"}
+            limits: {memory: "6Gi"}
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: s2-shared
