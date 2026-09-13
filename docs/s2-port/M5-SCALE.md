@@ -346,12 +346,21 @@ it is verified to match vanilla.
 
 1. **Owned-only dataplane (FIB / main RIB).** Build and retain FIBs and main RIBs only for
    owned nodes. The symbolic analysis is already owned-scoped (`OwnedForwardingAnalysis` +
-   pulled boundary edges) and `ribsOf` already filters to owned. The blockers are the three
-   consumers of *remote* forwarding: `reachabilityDigest` (a verification artifact — move it
-   to the controller or make it owned-pairs-only), `nextTopologyContext`'s global prune
-   (`initBgpTopology` reachability, VXLAN/IPsec/tunnel), and `IpsRoutedOutInterfacesFactory`.
-   Biggest lever: drops ~(1 - owned/total) of the retained FIB+RIB, i.e. ~2/3 at 16 nodes over
-   3 workers.
+   pulled boundary edges) and `ribsOf` already filters to owned. Biggest lever: drops
+   ~(1 - owned/total) of the retained FIB+RIB, i.e. ~2/3 at 16 nodes over 3 workers.
+   *Not yet implemented — see the finding below.* Restricting a worker to owned FIBs was tried
+   and fails in `ForwardingAnalysisImpl`: `computeArpTrueEdgeDestIp` /
+   `computeArpTrueEdgeNextHopIp` look up `arpReplies.get(receiver.getHostname())` for every L3
+   topology neighbor, and `arpReplies` / `routableIps` / `_vrfForwardingBehavior` are all
+   computed from the FIBs of *all* configs. An owned→remote edge still needs the remote
+   interface's ARP state (the source worker computes the transition it ships), so dropping
+   remote FIBs NPEs. The real prerequisite is a forwarding-analysis change that supplies
+   remote ARP/forwarding state without full remote FIBs — e.g. per-remote-interface
+   "connected/local-only" stub FIBs — verified against the full computation. The other
+   consumers to address alongside it: `reachabilityDigest` (a verification artifact — move to
+   the controller or derive from the exact RIB match), `nextTopologyContext`'s global prune
+   (`initBgpTopology` reachability — already disabled/unused when the check is off; plus
+   VXLAN/IPsec/tunnel), and `IpsRoutedOutInterfacesFactory`.
 
 2. **Scope the BDD factory to owned configs.** Add an optional `Set<String> localNodes` so
    `computeAclBDDs`, `computeTransformationRanges`, `BDDOutgoingOriginalFlowFilterManager`,
