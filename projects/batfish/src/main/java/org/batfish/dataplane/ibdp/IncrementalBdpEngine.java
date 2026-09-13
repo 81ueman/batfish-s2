@@ -146,6 +146,16 @@ public class IncrementalBdpEngine {
   }
 
   /**
+   * The nodes included in the *final* dataplane result. Stock returns every node. S2's distributed
+   * engine may return only its owned nodes so a worker does not retain remote final RIBs. The
+   * intermediate partial dataplane still covers all nodes (remote ones may hold stub FIBs needed
+   * for remote ARP state).
+   */
+  protected Map<String, Node> dataPlaneNodes(Map<String, Node> nodes) {
+    return nodes;
+  }
+
+  /**
    * Performs the iterative step in dataplane computations as topology changes.
    *
    * <p>The {@code currentTopologyContext} contains the connectivity learned so far in the network,
@@ -662,7 +672,7 @@ public class IncrementalBdpEngine {
     answerElement.setVersion(BatfishVersion.getVersionStatic());
     IncrementalDataPlane finalDataplane =
         IncrementalDataPlane.builder()
-            .setNodes(nodes)
+            .setNodes(dataPlaneNodes(nodes))
             .setPartialDataplane(currentDataplane)
             .setRetainAnnotatedRibs(retainAnnotatedRibs)
             .build();

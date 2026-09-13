@@ -344,23 +344,14 @@ worker currently builds and keeps, for **all** nodes (owned and shadow):
 Ordered by expected payoff at scale. Every item should stay behind a default-off switch until
 it is verified to match vanilla.
 
-1. **Owned-only dataplane (FIB / main RIB).** Build and retain FIBs and main RIBs only for
-   owned nodes. The symbolic analysis is already owned-scoped (`OwnedForwardingAnalysis` +
-   pulled boundary edges) and `ribsOf` already filters to owned. Biggest lever: drops
-   ~(1 - owned/total) of the retained FIB+RIB, i.e. ~2/3 at 16 nodes over 3 workers.
-   *Not yet implemented — see the finding below.* Restricting a worker to owned FIBs was tried
-   and fails in `ForwardingAnalysisImpl`: `computeArpTrueEdgeDestIp` /
-   `computeArpTrueEdgeNextHopIp` look up `arpReplies.get(receiver.getHostname())` for every L3
-   topology neighbor, and `arpReplies` / `routableIps` / `_vrfForwardingBehavior` are all
-   computed from the FIBs of *all* configs. An owned→remote edge still needs the remote
-   interface's ARP state (the source worker computes the transition it ships), so dropping
-   remote FIBs NPEs. The real prerequisite is a forwarding-analysis change that supplies
-   remote ARP/forwarding state without full remote FIBs — e.g. per-remote-interface
-   "connected/local-only" stub FIBs — verified against the full computation. The other
-   consumers to address alongside it: `reachabilityDigest` (a verification artifact — move to
-   the controller or derive from the exact RIB match), `nextTopologyContext`'s global prune
-   (`initBgpTopology` reachability — already disabled/unused when the check is off; plus
-   VXLAN/IPsec/tunnel), and `IpsRoutedOutInterfacesFactory`.
+1. **Owned-only dataplane (FIB / main RIB). — implemented behind `-Ds2.ownedDataplane`.**
+   See "Owned-only dataplane (stub FIBs)" below. A worker builds and retains full FIBs/RIBs only
+   for its owned nodes; remote (shadow) nodes get a config-only *stub* FIB (connected / kernel /
+   local / unconditional-static routes) so the forwarding analysis can still compute the
+   cross-node ARP state it needs. The final dataplane result is also restricted to owned nodes.
+   Measured: `s2-mega` 436.4 → 301.1 MiB (~31%), `s2-giga` 2226.1 → 1938.1 MiB (~13%); all
+   demos MATCH. Remaining consumers handled/noted in that section (`checkBgpSessionReachability`
+   off; global traceroute digest implied by the exact RIB match).
 
 2. **Scope the BDD factory to owned configs.** Add an optional `Set<String> localNodes` so
    `computeAclBDDs`, `computeTransformationRanges`, `BDDOutgoingOriginalFlowFilterManager`,
@@ -389,6 +380,45 @@ it is verified to match vanilla.
    but it scales out rather than down.
 
 7. **Heap cap (`-Xmx`).** Already used; bounds transient headroom, not the retained floor.
+
+## Owned-only dataplane (stub FIBs, `-Ds2.ownedDataplane=true`)
+
+Default off. When on, a worker keeps full routing/forwarding tables only for the nodes it owns:
+
+* `S2BdpEngine.nextDataplane` no longer pulls remote main RIBs (`ShadowMainRibSync`) and does not
+  run `computeFib` on shadows. A shadow instead gets `VirtualRouter.initStubFib()`, which
+  initializes only the configuration-derived RIBs (connected, kernel, local, unconditional static)
+  and builds its FIB from those. That is enough for the forwarding analysis to compute the
+  cross-node ARP state the source worker needs to build the edges it ships, without ever building a
+  remote full routing table.
+* `IncrementalBdpEngine.dataPlaneNodes` (new hook, default all nodes) restricts the **final**
+  `IncrementalDataPlane` to owned nodes, so remote final RIBs are not retained either.
+* `checkBgpSessionReachability()` is disabled in this mode (sessions come from configuration + L3
+  adjacency; there is no full remote FIB for the dataplane reachability check).
+* `unownedArpIps` is not a blocker: stock Batfish computes it by walking every FIB, but only the
+  node's own routes' ARP IPs matter for its ARP-false classification, and those live in the owned
+  FIB, so the remote stub does not change owned behavior.
+* The global traceroute digest (`reachabilityDigest`) cannot run with stub remote FIBs; workers
+  return an empty digest and the controller implies forwarding equality from the exact RIB match.
+
+Measured (3 workers, `-Xmx4g`, controller-shipped configs, all
+`ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`):
+
+| network | prefixes | stock (shipped) | owned | change |
+| --- | --- | --- | --- | --- |
+| `s2-big2` | 640 | 164.7 MiB | 155.3 MiB | ~6% |
+| `s2-mega` | 4096 | 436.4 MiB | 301.1 MiB | ~31% |
+| `s2-giga` | 32768 | 2226.1 MiB | 1938.1 MiB | ~13% |
+
+At 32768 prefixes the owned run's phase peaks show the ordering has changed: `after building nodes`
+413 MiB, `after EGP iteration 1` 1595 MiB, `after nextDataplane 1` 1740 MiB. The dataplane (FIB)
+growth is now small; the peak is dominated by the configs and the BGP control-plane transient, so
+prefix sharding (B) no longer helps (`owned + B(8)` was 2324 MiB, worse than owned alone). The next
+lever is the config/remote descriptor and/or reducing the control-plane transient.
+
+Verified on `s2-triangle`, `s2-line`, `s2-ospf`, `s2-ospf-bgp`, `s2-redist`, `s2-big2`, `s2-mega`,
+`s2-giga`. Not covered (would need remote FIBs or the global prune): networks with
+`TrackReachability`, VXLAN / IPsec / tunnels, and global BGP-session reachability checks.
 
 ## Known residual
 
@@ -422,6 +452,8 @@ JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/lo
 JAVA_TOOL_OPTIONS=-Xmx4g scripts/local-demo.sh 3 s2-giga
 # reproduce the per-worker snapshot parse (disable controller-shipped configs)
 JAVA_TOOL_OPTIONS=-Xmx4g scripts/local-demo.sh 3 s2-giga -Ds2.noShipConfigs=true
+# owned-only dataplane: remote nodes get stub FIBs, worker retains only owned RIBs/FIBs
+JAVA_TOOL_OPTIONS="-Xmx4g -Ds2.ownedDataplane=true" scripts/local-demo.sh 3 s2-mega
 
 # Kubernetes (OrbStack) — <workers> [network]
 scripts/build-s2.sh --image

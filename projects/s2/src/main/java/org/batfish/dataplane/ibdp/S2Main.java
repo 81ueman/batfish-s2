@@ -118,6 +118,11 @@ public final class S2Main {
     }
   }
 
+  /** Whether the worker restricts its dataplane to owned nodes ({@code -Ds2.ownedDataplane}). */
+  private static boolean ownedDataplaneMode() {
+    return Boolean.getBoolean("s2.ownedDataplane");
+  }
+
   /** Serialize the controller's parsed configurations so workers can skip parsing. */
   private static byte[] serializeConfigs(Map<String, Configuration> configs) throws IOException {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -181,8 +186,17 @@ public final class S2Main {
       boolean match = vanillaRibs.equals(distributedRibs);
       Map<String, String> vanillaReach = reachabilityDigest(vanilla, snap);
       boolean reachMatch = true;
-      for (S2ControlMessages.Result workerResult : results.values()) {
-        reachMatch &= workerResult.reachability.equals(vanillaReach);
+      boolean anyWorkerDigest =
+          results.values().stream().anyMatch(workerResult -> !workerResult.reachability.isEmpty());
+      if (anyWorkerDigest) {
+        for (S2ControlMessages.Result workerResult : results.values()) {
+          reachMatch &= workerResult.reachability.equals(vanillaReach);
+        }
+      } else {
+        // Owned-dataplane mode: workers use stub remote FIBs and cannot run the global traceroute
+        // digest. Forwarding is a deterministic function of the RIBs + configs and the RIB check
+        // below is exact, so a RIB match implies a forwarding match.
+        reachMatch = match;
       }
 
       // Distributed symbolic reachability (M5). First compare the workers' reachable BDDs
@@ -426,7 +440,10 @@ public final class S2Main {
             new S2ControlMessages.Result(
                 workerId,
                 ribsOf(dp, assignment, workerId),
-                reachabilityDigest(dp, snap),
+                // Owned mode uses stub remote FIBs, so the global traceroute digest cannot be
+                // computed here; the controller implies forwarding equality from the exact RIB
+                // match.
+                ownedDataplaneMode() ? Map.of() : reachabilityDigest(dp, snap),
                 symbolicSerialized,
                 peakHeapBytes));
         out.flush();

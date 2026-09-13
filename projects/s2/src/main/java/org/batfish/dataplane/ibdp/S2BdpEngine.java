@@ -29,6 +29,14 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   private final S2Coordinator _coordinator;
   private final @Nullable Runnable _shadowSync;
 
+  /**
+   * With {@code -Ds2.ownedDataplane=true}, a worker builds and retains full tables (RIBs, FIBs)
+   * only for the nodes it owns. Remote (shadow) nodes get a cheap config-only "stub" FIB so the
+   * forwarding analysis can still compute the cross-node ARP state, but no full remote routing
+   * table is ever built. Default off preserves stock behavior.
+   */
+  private final boolean _ownedDataplane = Boolean.getBoolean("s2.ownedDataplane");
+
   public S2BdpEngine(
       IncrementalDataPlaneSettings settings,
       Map<String, DistributedNode> nodes,
@@ -172,16 +180,62 @@ public class S2BdpEngine extends IncrementalBdpEngine {
       List<VirtualRouter> vrs,
       IpOwners currentIpOwners) {
     synchronized (DATAPLANE_LOCK) {
-      // Pull the owning workers' main RIBs into shadows so the forwarding analysis is complete.
-      if (_shadowSync != null) {
-        _shadowSync.run();
+      if (_ownedDataplane) {
+        // Owned mode: a shadow only needs enough of a FIB for the forwarding analysis to compute
+        // the cross-node ARP state (its interfaces' connected/local/static routes). Build that stub
+        // instead of pulling and computing the remote node's full tables.
+        nodes.forEach(
+            (host, node) -> {
+              boolean shadow = ((DistributedNode) node).isShadow();
+              for (VirtualRouter vr : node.getVirtualRouters()) {
+                if (shadow) {
+                  vr.initStubFib();
+                } else {
+                  vr.computeFib();
+                }
+              }
+            });
+      } else {
+        // Pull the owning workers' main RIBs into shadows so the forwarding analysis is complete.
+        if (_shadowSync != null) {
+          _shadowSync.run();
+        }
+        // Ensure every visible router has a FIB before the forwarding analysis is built over all
+        // nodes.
+        nodes.values().stream()
+            .flatMap(n -> n.getVirtualRouters().stream())
+            .forEach(VirtualRouter::computeFib);
       }
-      // Ensure every visible router has a FIB before the forwarding analysis is built over all
-      // nodes.
-      nodes.values().stream()
-          .flatMap(n -> n.getVirtualRouters().stream())
-          .forEach(VirtualRouter::computeFib);
       return super.nextDataplane(currentTopologyContext, nodes, vrs, currentIpOwners);
     }
+  }
+
+  /**
+   * In owned mode the final dataplane result contains only this worker's nodes, so remote final
+   * RIBs are never retained. The partial dataplane still covers all nodes (with stub FIBs).
+   */
+  @Override
+  protected Map<String, Node> dataPlaneNodes(Map<String, Node> nodes) {
+    if (!_ownedDataplane) {
+      return nodes;
+    }
+    Map<String, Node> owned = new HashMap<>();
+    nodes.forEach(
+        (host, node) -> {
+          if (!((DistributedNode) node).isShadow()) {
+            owned.put(host, node);
+          }
+        });
+    return owned;
+  }
+
+  /**
+   * Owned mode has no full remote FIBs, so dataplane-level BGP session reachability checks are
+   * skipped (sessions are established from configuration + L3 adjacency, sufficient for
+   * directly-connected peering). Stock behavior keeps the check.
+   */
+  @Override
+  protected boolean checkBgpSessionReachability() {
+    return !_ownedDataplane;
   }
 }

@@ -813,6 +813,28 @@ public final class VirtualRouter {
   }
 
   /** Compute the FIB from the main RIB */
+  /**
+   * Initialize only the configuration-derived RIBs (connected, kernel, local, unconditional static)
+   * and build this router's FIB from them.
+   *
+   * <p>S2 uses this to give a remote (shadow) router a cheap "stub" FIB. The forwarding analysis
+   * needs a neighboring node's ARP state to build cross-node edges, but not its full routing table,
+   * and a connected/local/static-only FIB is enough for the link-scoped ARP lookups. No dynamic
+   * protocol (BGP/OSPF/EIGRP/RIP) is initialized.
+   */
+  void initStubFib() {
+    initConnectedRib();
+    initKernelRoutes();
+    initLocalRib();
+    initStaticRibs();
+    importRib(_mainRib, _connectedRib);
+    importRib(_mainRib, _localRib);
+    for (StaticRoute sr : _unconditionalStatics) {
+      _mainRib.mergeRoute(annotateRoute(sr));
+    }
+    computeFib();
+  }
+
   public void computeFib() {
     _fib = null; // free the old one.
     String fibExportPolicyName = _vrf.getFibExportPolicy();
