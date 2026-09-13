@@ -16,7 +16,26 @@ cd "$(git rev-parse --show-toplevel)"
 mkdir -p results
 
 echo "== resetting namespace s2 =="
-kubectl delete namespace s2 --ignore-not-found --wait=true
+# Delete without --wait, then wait with a bound: the shared RWO PVC's pvc-protection finalizer can
+# otherwise stall namespace termination indefinitely (which would hang the next run's apply).
+kubectl delete namespace s2 --ignore-not-found --wait=false
+for _ in $(seq 1 90); do
+  kubectl get namespace s2 >/dev/null 2>&1 || break
+  # Clear the PVC finalizer if termination is stuck on it.
+  kubectl -n s2 patch pvc --all --type=merge -p '{"metadata":{"finalizers":null}}' >/dev/null 2>&1 || true
+  sleep 2
+done
+if kubectl get namespace s2 >/dev/null 2>&1; then
+  echo "== namespace s2 still terminating; force-finalizing =="
+  kubectl get namespace s2 -o json 2>/dev/null \
+    | python3 -c 'import sys,json;o=json.load(sys.stdin);o["spec"]["finalizers"]=[];print(json.dumps(o))' 2>/dev/null \
+    | kubectl replace --raw /api/v1/namespaces/s2/finalize -f - >/dev/null 2>&1 || true
+  sleep 3
+fi
+if kubectl get namespace s2 >/dev/null 2>&1; then
+  echo "ERROR: namespace s2 could not be deleted" >&2
+  exit 1
+fi
 
 echo "== applying k8s/overlays/${W}pod (network=${NETWORK}) =="
 # Render the overlay and substitute the snapshot name so we do not need one overlay per network.
