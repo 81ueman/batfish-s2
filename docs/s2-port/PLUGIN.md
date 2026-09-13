@@ -173,6 +173,19 @@ S2 plugin, so `-dataplaneengine=s2` is discoverable like any stock engine).
   -s2controllerport=4090 -s2storedataplane=false` and compare a question against `ibdp` on the
   same snapshot. `kubectl scale statefulset/s2-worker --replicas=N` grows the pool.
 
+### Local k8s bring-up (OrbStack, validated)
+
+`k8s/pool` was brought up on a single-node OrbStack cluster:
+- The `s2-controller` Deployment registered all 3 `s2-worker` services (via the headless
+  `s2-worker` Service DNS) and the `s2-engine` Deployment came up healthy.
+- On a single-node cluster with only the RWO `local-path` provisioner, the `s2-slices` PVC must be
+  `ReadWriteOnce` (multiple pods on the same node share it); use `ReadWriteMany` for multi-node.
+- The engine must run as a service: `scripts/entrypoint-engine.sh` passes `-runclient false` (the
+  allinone client otherwise requires a command file and exits immediately).
+- Driving a question end-to-end needs a pybatfish/REST client against the `s2-engine` Service
+  (coordinator port 9997); the compute path itself is already verified by `s2-pool-demo.sh` and
+  `S2PoolServiceTest`.
+
 ## Status
 
 Done: engine registration/selection, `-s2workers` (explicit + auto), distributed compute + lazy
