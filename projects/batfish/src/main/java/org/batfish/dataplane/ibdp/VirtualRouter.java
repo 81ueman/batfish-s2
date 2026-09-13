@@ -98,6 +98,7 @@ import org.batfish.datamodel.isis.IsisLevelSettings;
 import org.batfish.datamodel.isis.IsisNode;
 import org.batfish.datamodel.isis.IsisProcess;
 import org.batfish.datamodel.isis.IsisTopology;
+import org.batfish.datamodel.ospf.OspfTopology;
 import org.batfish.datamodel.route.nh.NextHop;
 import org.batfish.datamodel.route.nh.NextHopDiscard;
 import org.batfish.datamodel.route.nh.NextHopInterface;
@@ -331,18 +332,25 @@ public final class VirtualRouter {
       _mainRib.mergeRoute(annotateRoute(sr));
     }
 
-    _ospfProcesses =
-        _vrf.getOspfProcesses().entrySet().stream()
-            .collect(
-                ImmutableMap.toImmutableMap(
-                    Entry::getKey,
-                    e ->
-                        new OspfRoutingProcess(
-                            e.getValue(), _name, _c, topologyContext.getOspfTopology())));
+    initShadowOspfProcesses(topologyContext.getOspfTopology());
     _ospfProcesses.values().forEach(p -> p.initialize(_node));
 
     initEigrp();
     initBaseRipRoutes();
+  }
+
+  /**
+   * Create (but do not initialize) this VR's OSPF processes. A remote (shadow) VR is never
+   * iterated, but its owner's real OSPF processes look their neighbors up by process name and push
+   * messages into them, so the shadow needs the objects (with a remote {@code EnqueueProvider}
+   * installed).
+   */
+  void initShadowOspfProcesses(OspfTopology topology) {
+    _ospfProcesses =
+        _vrf.getOspfProcesses().entrySet().stream()
+            .collect(
+                ImmutableMap.toImmutableMap(
+                    Entry::getKey, e -> new OspfRoutingProcess(e.getValue(), _name, _c, topology)));
   }
 
   /**

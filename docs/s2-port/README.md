@@ -139,9 +139,10 @@ under `projects/s2/src/test/resources/...`). A loop testrig is unsuitable: vanil
 Batfish itself does not converge on it. `networks/s2-line/configs/{r1..r6}` is a
 6-node static eBGP line used for the M5 symbolic scale evidence and for the
 multi-hop distributed-control-plane regression test; it matches vanilla at 1, 3,
-and 6 workers. `networks/s2-ospf/configs/{r1..r4}` is a 4-node OSPF line used by the
-in-process IGP-phase-synchronization regression test (multi-process IGP is not
-supported yet, so only the 1-worker runner demo works).
+and 6 workers. `networks/s2-ospf/configs/{r1..r4}` is a 4-node OSPF line and
+`networks/s2-ospf-bgp/configs/{r1,r2,r3}` mixes eBGP with OSPF; both are supported
+(and tested) in the multi-process runner at 1 and 3 workers. EIGRP/IS-IS/RIP are not
+distributed and are rejected for `>1` worker.
 
 ## Layout added by this work
 
@@ -149,6 +150,7 @@ supported yet, so only the 1-worker runner demo works).
 projects/s2/          # our implementation + tests
 networks/s2-triangle/ # 3-node demo snapshot
 networks/s2-line/     # 6-node scale snapshot
-networks/s2-ospf/     # 4-node OSPF sync-test snapshot
+networks/s2-ospf/     # 4-node OSPF snapshot
+networks/s2-ospf-bgp/ # eBGP + OSPF snapshot
 docker/, k8s/, scripts/, docs/s2-port/
 ```

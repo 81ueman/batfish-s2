@@ -93,8 +93,8 @@ public final class S2Main {
   }
 
   /**
-   * Shadow nodes only delegate BGP today, so multi-worker runs of snapshots that use OSPF/EIGRP/
-   * IS-IS/RIP hit a null shadow process. Fail with a clear message instead of an NPE.
+   * Shadow nodes delegate BGP and OSPF; EIGRP/IS-IS/RIP are not distributed, so a multi-worker run
+   * of a snapshot that uses them would hit a null shadow process. Fail with a clear message.
    */
   private static void assertDistributedProtocolsSupported(S2Snapshot snap, int numWorkers) {
     if (numWorkers <= 1) {
@@ -102,14 +102,13 @@ public final class S2Main {
     }
     for (Configuration c : snap.configs.values()) {
       for (Vrf vrf : c.getVrfs().values()) {
-        if (!vrf.getOspfProcesses().isEmpty()
-            || !vrf.getEigrpProcesses().isEmpty()
+        if (!vrf.getEigrpProcesses().isEmpty()
             || vrf.getIsisProcess() != null
             || vrf.getRipProcess() != null) {
           throw new UnsupportedOperationException(
-              "Multi-worker distributed IGP is not supported yet (only eBGP): "
+              "Multi-worker distributed routing supports only eBGP and OSPF: "
                   + c.getHostname()
-                  + " uses OSPF/EIGRP/IS-IS/RIP. Run with 1 worker or use the in-process "
+                  + " uses EIGRP/IS-IS/RIP. Run with 1 worker or use the in-process "
                   + "S2DistributedControlPlaneTest.");
         }
       }
@@ -316,7 +315,10 @@ public final class S2Main {
         for (String host : snap.configs.keySet()) {
           if (assignment.get(host) != workerId) {
             DistributedNode shadow = nodes.get(host);
-            shadow.installRemoteBgpProviders(client, start.endpoints.get(assignment.get(host)));
+            S2WorkerEndpoint owner = start.endpoints.get(assignment.get(host));
+            shadow.installRemoteBgpProviders(client, owner);
+            shadow.installRemoteOspfProviders(
+                client, owner, snap.topologyContext.getOspfTopology());
           }
         }
 

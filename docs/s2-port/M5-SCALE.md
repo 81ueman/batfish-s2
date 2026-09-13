@@ -105,18 +105,40 @@ before any symbolic reachability), which are now fixed:
    `initRipInternalRoutes`, and the EIGRP/IS-IS/OSPF-external phases in
    `computeDependentRoutesIteration`), their convergence loops are made global via the
    `hasNotReachedIgpFixedPoint` hook, and the OSPF internal schedule is `ALL`
-   (deterministic). `S2DistributedControlPlaneTest#testOspfMatchesVanilla` runs a 4-node
-   OSPF line at 1 and 3 workers.
+   (deterministic).
 
 With these, `s2-line` matches vanilla at 1, 3, and 6 workers and multi-worker runs no
 longer hang.
 
-**IGP scope note.** Shadow nodes only delegate BGP today, so the *multi-process* runner
-supports eBGP only. The IGP synchronization above is exercised by the in-process
-`S2BdpEngine` test (where shadows share the real nodes). Multi-worker OSPF/IS-IS/EIGRP/
-RIP in the multi-process runner would additionally need shadow IGP delegation; until
-then the runner fails fast with a clear message instead of an NPE
-(`S2Main.assertDistributedProtocolsSupported`).
+## Distributed OSPF
+
+OSPF is now distributed in the multi-process runner too. The wiring mirrors BGP's shadow
+delegation:
+
+* A shadow VR is never iterated, but a real OSPF process looks its neighbors up by
+  process name and **pushes** messages into the neighbor's queues
+  (`OspfRoutingProcess.getNeighborProcess` → `enqueueMessagesIntra/Inter/Type1/Type2`).
+* `VirtualRouter.initShadowOspfProcesses` gives each shadow the (inert) OSPF process
+  objects, and `DistributedNode.installRemoteOspfProviders` installs a
+  `RemoteOspfEnqueueProvider` on them. That provider serializes the would-be enqueue and
+  ships it over the sidecar; the owner's `S2SidecarHandlers` enqueues it on the real
+  process. The queues are `ConcurrentLinkedQueue`, so the sidecar thread is safe.
+* `OspfRoutingProcess.EnqueueProvider` is the pluggable hook; `OspfTopology.EdgeId` is
+  now `Serializable`.
+
+Verified end to end with the multi-process runner: `s2-ospf` (OSPF only) and
+`s2-ospf-bgp` (eBGP + OSPF) both report
+`ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH` at 1 and 3 workers, and
+`S2RemoteSidecarTest#testRemoteOspfSidecar` / `testRemoteOspfBgpSidecar` exercise the
+sidecar path in-process.
+
+**Protocol scope note.** Only eBGP and OSPF are distributed. EIGRP, IS-IS, and RIP are
+not (they have different cross-node shapes: EIGRP/IS-IS also push into a neighbor's
+structures, RIP pulls the neighbor's RIP RIB). A multi-worker run of a snapshot using any
+of them fails fast with a clear message instead of an NPE
+(`S2Main.assertDistributedProtocolsSupported`). Since those protocols have no shadow
+delegation, leaving them unimplemented is fine as long as the snapshots use only BGP and
+OSPF — mixed BGP+OSPF networks are fully supported.
 
 ## Known residual
 
@@ -138,7 +160,8 @@ bazel build //projects/s2:s2_main_deploy.jar
 scripts/local-demo.sh 1
 scripts/local-demo.sh 3
 scripts/local-demo.sh 3 s2-line
-scripts/local-demo.sh 1 s2-ospf   # OSPF: 1 worker only (multi-worker IGP not supported)
+scripts/local-demo.sh 3 s2-ospf
+scripts/local-demo.sh 3 s2-ospf-bgp   # eBGP + OSPF
 
 # Kubernetes (OrbStack)
 scripts/build-s2.sh --image
@@ -153,8 +176,12 @@ scripts/compare-answers.sh
 * Backward worker: `S2ReachabilityWorker.java`
 * Local forwarding view: `OwnedForwardingAnalysis.java`
 * Boundary edges: `S2SidecarHandlers.java`, `S2Messages.java`, `S2StateHosts.java`
+* OSPF delegation: `RemoteOspfEnqueueProvider.java`, `OspfRoutingProcess.EnqueueProvider`,
+  `DistributedNode.installRemoteOspfProviders`, `VirtualRouter.initShadowOspfProcesses`
 * BDD transport: `S2BddSidecar.java`
 * BDD codec: `projects/bdd/src/main/java/net/sf/javabdd/BDDTransfer.java`
 * Transition codec: `projects/batfish/.../transition/TransitionTransfer.java`
 * Tests: `ScaledReachabilityTest`, `TransitionTransferTest`, `DistributedReachabilityTest`,
-  `S2DistributedControlPlaneTest` (`testMultiHopLineMatchesVanilla`, `testOspfMatchesVanilla`)
+  `S2DistributedControlPlaneTest` (`testMultiHopLineMatchesVanilla`, `testOspfMatchesVanilla`,
+  `testOspfBgpMatchesVanilla`), `S2RemoteSidecarTest` (`testRemoteOspfSidecar`,
+  `testRemoteOspfBgpSidecar`)

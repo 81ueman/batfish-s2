@@ -6,7 +6,12 @@ import java.util.Set;
 import org.batfish.datamodel.AbstractRoute;
 import org.batfish.datamodel.AnnotatedRoute;
 import org.batfish.datamodel.Bgpv4Route;
+import org.batfish.datamodel.OspfExternalType1Route;
+import org.batfish.datamodel.OspfExternalType2Route;
+import org.batfish.datamodel.OspfInterAreaRoute;
+import org.batfish.datamodel.OspfIntraAreaRoute;
 import org.batfish.datamodel.bgp.BgpTopology;
+import org.batfish.datamodel.ospf.OspfTopology.EdgeId;
 import org.batfish.dataplane.rib.RouteAdvertisement;
 import org.batfish.symbolic.state.StateExpr;
 
@@ -104,6 +109,91 @@ final class S2Messages {
 
     BoundaryEdgesResponse(List<SerializedEdge> edges) {
       this.edges = edges;
+    }
+  }
+
+  /** Generic acknowledgement for requests whose reply carries no data. */
+  static final class Ack implements Serializable {
+    private static final long serialVersionUID = 1L;
+  }
+
+  /**
+   * An OSPF message a shadow process would enqueue on its owner's real process. One request class
+   * per OSPF route type; the receiver enqueues it locally.
+   */
+  abstract static class OspfEnqueueRequest implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    final String hostname;
+    final String vrf;
+    final String process;
+    final EdgeId edge;
+
+    OspfEnqueueRequest(String hostname, String vrf, String process, EdgeId edge) {
+      this.hostname = hostname;
+      this.vrf = vrf;
+      this.process = process;
+      this.edge = edge;
+    }
+  }
+
+  static final class OspfIntraRequest extends OspfEnqueueRequest {
+    private static final long serialVersionUID = 1L;
+    final List<RouteAdvertisement<OspfIntraAreaRoute>> routes;
+
+    OspfIntraRequest(
+        String hostname,
+        String vrf,
+        String process,
+        EdgeId edge,
+        List<RouteAdvertisement<OspfIntraAreaRoute>> routes) {
+      super(hostname, vrf, process, edge);
+      this.routes = routes;
+    }
+  }
+
+  static final class OspfInterRequest extends OspfEnqueueRequest {
+    private static final long serialVersionUID = 1L;
+    final List<RouteAdvertisement<OspfInterAreaRoute>> routes;
+
+    OspfInterRequest(
+        String hostname,
+        String vrf,
+        String process,
+        EdgeId edge,
+        List<RouteAdvertisement<OspfInterAreaRoute>> routes) {
+      super(hostname, vrf, process, edge);
+      this.routes = routes;
+    }
+  }
+
+  static final class OspfType1Request extends OspfEnqueueRequest {
+    private static final long serialVersionUID = 1L;
+    final List<RouteAdvertisement<OspfExternalType1Route>> routes;
+
+    OspfType1Request(
+        String hostname,
+        String vrf,
+        String process,
+        EdgeId edge,
+        List<RouteAdvertisement<OspfExternalType1Route>> routes) {
+      super(hostname, vrf, process, edge);
+      this.routes = routes;
+    }
+  }
+
+  static final class OspfType2Request extends OspfEnqueueRequest {
+    private static final long serialVersionUID = 1L;
+    final List<RouteAdvertisement<OspfExternalType2Route>> routes;
+
+    OspfType2Request(
+        String hostname,
+        String vrf,
+        String process,
+        EdgeId edge,
+        List<RouteAdvertisement<OspfExternalType2Route>> routes) {
+      super(hostname, vrf, process, edge);
+      this.routes = routes;
     }
   }
 }

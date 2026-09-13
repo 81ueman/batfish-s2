@@ -1,0 +1,16 @@
+hostname r3
+
+interface Loopback0
+ ip address 3.3.3.3 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.0.23.2 255.255.255.252
+
+router ospf 1
+ network 3.3.3.3 0.0.0.0 area 0
+ network 10.0.23.0 0.0.0.3 area 0
+
+router bgp 65003
+ bgp router-id 3.3.3.3
+ network 3.3.3.3 mask 255.255.255.255
+ neighbor 10.0.23.1 remote-as 65002

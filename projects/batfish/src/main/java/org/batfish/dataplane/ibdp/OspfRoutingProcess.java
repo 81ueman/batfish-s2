@@ -14,6 +14,7 @@ import java.util.AbstractMap.SimpleEntry;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
@@ -121,6 +122,32 @@ final class OspfRoutingProcess implements RoutingProcess<OspfTopology, OspfRoute
 
   private @Nonnull Map<OspfTopology.EdgeId, Queue<RouteAdvertisement<OspfExternalType2Route>>>
       _type2IncomingRoutes = ImmutableMap.of();
+
+  /**
+   * When set, messages that would be enqueued on this process (a shadow process in a distributed
+   * run) are handed to this sink instead of the local queues. The owner of the real process
+   * installs a sink that forwards the messages over the sidecar.
+   */
+  private @Nullable EnqueueProvider _enqueueProvider;
+
+  /**
+   * Sink for messages that {@link OspfRoutingProcess#enqueueMessagesIntra} and friends would put on
+   * a neighbor's queues. Used by S2 to forward cross-worker OSPF messages to the owning worker.
+   */
+  public interface EnqueueProvider {
+    void enqueueIntra(EdgeId edge, List<RouteAdvertisement<OspfIntraAreaRoute>> routes);
+
+    void enqueueInter(EdgeId edge, List<RouteAdvertisement<OspfInterAreaRoute>> routes);
+
+    void enqueueType1(EdgeId edge, List<RouteAdvertisement<OspfExternalType1Route>> routes);
+
+    void enqueueType2(EdgeId edge, List<RouteAdvertisement<OspfExternalType2Route>> routes);
+  }
+
+  /** Install a sink for cross-worker messages; only meaningful on a shadow process. */
+  public void setEnqueueProvider(@Nullable EnqueueProvider enqueueProvider) {
+    _enqueueProvider = enqueueProvider;
+  }
 
   /* State we need to maintain between iterations */
 
@@ -1649,6 +1676,10 @@ final class OspfRoutingProcess implements RoutingProcess<OspfTopology, OspfRoute
    */
   @VisibleForTesting
   void enqueueMessagesIntra(EdgeId edge, Stream<RouteAdvertisement<OspfIntraAreaRoute>> routes) {
+    if (_enqueueProvider != null) {
+      _enqueueProvider.enqueueIntra(edge, routes.collect(ImmutableList.toImmutableList()));
+      return;
+    }
     Queue<RouteAdvertisement<OspfIntraAreaRoute>> queue = _intraAreaIncomingRoutes.get(edge);
     assert queue != null;
     routes.forEach(queue::add);
@@ -1664,6 +1695,10 @@ final class OspfRoutingProcess implements RoutingProcess<OspfTopology, OspfRoute
   @VisibleForTesting
   void enqueueMessagesInter(
       EdgeId edge, Collection<RouteAdvertisement<OspfInterAreaRoute>> routes) {
+    if (_enqueueProvider != null) {
+      _enqueueProvider.enqueueInter(edge, ImmutableList.copyOf(routes));
+      return;
+    }
     assert _interAreaIncomingRoutes.containsKey(edge);
     _interAreaIncomingRoutes.get(edge).addAll(routes);
   }
@@ -1674,8 +1709,12 @@ final class OspfRoutingProcess implements RoutingProcess<OspfTopology, OspfRoute
    * @param edge {@link EdgeId} as with edge head pointing at {@code this} process
    * @param routes collection of route advertisements
    */
-  private void enqueueMessagesType1(
+  void enqueueMessagesType1(
       EdgeId edge, Collection<RouteAdvertisement<OspfExternalType1Route>> routes) {
+    if (_enqueueProvider != null) {
+      _enqueueProvider.enqueueType1(edge, ImmutableList.copyOf(routes));
+      return;
+    }
     assert _type1IncomingRoutes.containsKey(edge);
     _type1IncomingRoutes.get(edge).addAll(routes);
   }
@@ -1686,8 +1725,12 @@ final class OspfRoutingProcess implements RoutingProcess<OspfTopology, OspfRoute
    * @param edge {@link EdgeId} as with edge head pointing at {@code this} process
    * @param routes collection of route advertisements
    */
-  private void enqueueMessagesType2(
+  void enqueueMessagesType2(
       EdgeId edge, Collection<RouteAdvertisement<OspfExternalType2Route>> routes) {
+    if (_enqueueProvider != null) {
+      _enqueueProvider.enqueueType2(edge, ImmutableList.copyOf(routes));
+      return;
+    }
     assert _type2IncomingRoutes.containsKey(edge);
     _type2IncomingRoutes.get(edge).addAll(routes);
   }

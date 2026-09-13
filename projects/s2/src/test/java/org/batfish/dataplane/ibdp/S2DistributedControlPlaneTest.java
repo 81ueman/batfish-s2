@@ -46,6 +46,8 @@ public class S2DistributedControlPlaneTest {
       ImmutableList.of("r1", "r2", "r3", "r4", "r5", "r6");
   private static final String OSPF_TESTRIG = "org/batfish/dataplane/testrigs/s2-ospf";
   private static final List<String> OSPF_CONFIGS = ImmutableList.of("r1", "r2", "r3", "r4");
+  private static final String OSPF_BGP_TESTRIG = "org/batfish/dataplane/testrigs/s2-ospf-bgp";
+  private static final List<String> OSPF_BGP_CONFIGS = ImmutableList.of("r1", "r2", "r3");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
@@ -70,6 +72,12 @@ public class S2DistributedControlPlaneTest {
   @Test
   public void testOspfMatchesVanilla() throws Exception {
     assertDistributedMatchesVanilla(OSPF_TESTRIG, OSPF_CONFIGS, new int[] {1, 3});
+  }
+
+  /** A network using both eBGP and OSPF must match vanilla at 1 and 3 workers. */
+  @Test
+  public void testOspfBgpMatchesVanilla() throws Exception {
+    assertDistributedMatchesVanilla(OSPF_BGP_TESTRIG, OSPF_BGP_CONFIGS, new int[] {1, 3});
   }
 
   private void assertDistributedMatchesVanilla(

@@ -64,8 +64,45 @@ final class S2SidecarHandlers {
       if (request instanceof S2Messages.BoundaryEdgesRequest) {
         return boundary.handle(request);
       }
+      // Cross-worker OSPF messages: a shadow process forwards what it would have enqueued on the
+      // real neighbor; the owner enqueues it locally.
+      if (request instanceof S2Messages.OspfIntraRequest) {
+        S2Messages.OspfIntraRequest r = (S2Messages.OspfIntraRequest) request;
+        ospfProcess(nodeMap, r).enqueueMessagesIntra(r.edge, r.routes.stream());
+        return new S2Messages.Ack();
+      }
+      if (request instanceof S2Messages.OspfInterRequest) {
+        S2Messages.OspfInterRequest r = (S2Messages.OspfInterRequest) request;
+        ospfProcess(nodeMap, r).enqueueMessagesInter(r.edge, r.routes);
+        return new S2Messages.Ack();
+      }
+      if (request instanceof S2Messages.OspfType1Request) {
+        S2Messages.OspfType1Request r = (S2Messages.OspfType1Request) request;
+        ospfProcess(nodeMap, r).enqueueMessagesType1(r.edge, r.routes);
+        return new S2Messages.Ack();
+      }
+      if (request instanceof S2Messages.OspfType2Request) {
+        S2Messages.OspfType2Request r = (S2Messages.OspfType2Request) request;
+        ospfProcess(nodeMap, r).enqueueMessagesType2(r.edge, r.routes);
+        return new S2Messages.Ack();
+      }
       throw new IllegalArgumentException("Unknown sidecar request " + request.getClass());
     };
+  }
+
+  private static OspfRoutingProcess ospfProcess(
+      java.util.Map<String, Node> nodeMap, S2Messages.OspfEnqueueRequest request) {
+    OspfRoutingProcess process =
+        nodeMap
+            .get(request.hostname)
+            .getVirtualRouterOrThrow(request.vrf)
+            .getOspfProcesses()
+            .get(request.process);
+    if (process == null) {
+      throw new IllegalStateException(
+          "No OSPF process " + request.process + " on " + request.hostname + "/" + request.vrf);
+    }
+    return process;
   }
 
   /**

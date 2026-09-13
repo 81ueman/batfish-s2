@@ -4,6 +4,7 @@ import java.util.Collection;
 import java.util.Optional;
 import javax.annotation.Nullable;
 import org.batfish.datamodel.Configuration;
+import org.batfish.datamodel.ospf.OspfTopology;
 
 /**
  * A {@link Node} that participates in S2's distributed computation.
@@ -25,6 +26,7 @@ import org.batfish.datamodel.Configuration;
 public class DistributedNode extends Node {
 
   private final boolean _owns;
+
   /** Non-null only for the in-JVM (milestone 1) shadow that delegates to a real node object. */
   private final @Nullable DistributedNode _delegate;
 
@@ -66,6 +68,24 @@ public class DistributedNode extends Node {
         process.setOutgoingRoutesProvider(
             new RemoteOutgoingRoutesProvider(client, owner, hostname, vrf));
       }
+    }
+  }
+
+  /** Install sidecar-backed sinks on this shadow's OSPF processes. */
+  public void installRemoteOspfProviders(
+      S2SidecarClient client, S2WorkerEndpoint owner, OspfTopology topology) {
+    if (!isShadow() || _delegate != null) {
+      throw new IllegalStateException("installRemoteOspfProviders requires a remote shadow node");
+    }
+    String hostname = getConfiguration().getHostname();
+    for (String vrf : getConfiguration().getVrfs().keySet()) {
+      VirtualRouter vr = getVirtualRouterOrThrow(vrf);
+      vr.initShadowOspfProcesses(topology);
+      vr.getOspfProcesses()
+          .forEach(
+              (processName, process) ->
+                  process.setEnqueueProvider(
+                      new RemoteOspfEnqueueProvider(client, owner, hostname, vrf, processName)));
     }
   }
 

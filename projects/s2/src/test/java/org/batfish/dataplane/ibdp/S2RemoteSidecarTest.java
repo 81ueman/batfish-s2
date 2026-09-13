@@ -42,14 +42,34 @@ public class S2RemoteSidecarTest {
 
   private static final String TESTRIG = "org/batfish/dataplane/testrigs/s2-triangle";
   private static final List<String> CONFIGS = ImmutableList.of("r1", "r2", "r3");
+  private static final String OSPF_TESTRIG = "org/batfish/dataplane/testrigs/s2-ospf";
+  private static final List<String> OSPF_CONFIGS = ImmutableList.of("r1", "r2", "r3", "r4");
+  private static final String OSPF_BGP_TESTRIG = "org/batfish/dataplane/testrigs/s2-ospf-bgp";
+  private static final List<String> OSPF_BGP_CONFIGS = ImmutableList.of("r1", "r2", "r3");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
   @Test
   public void testRemoteSidecarOneAndThreeWorkers() throws Exception {
+    runAndAssert(TESTRIG, CONFIGS);
+  }
+
+  /** Exercises the sidecar-backed OSPF message forwarding (shadow enqueue -> owner). */
+  @Test
+  public void testRemoteOspfSidecar() throws Exception {
+    runAndAssert(OSPF_TESTRIG, OSPF_CONFIGS);
+  }
+
+  /** A network using both eBGP and OSPF must match vanilla across the distributed workers. */
+  @Test
+  public void testRemoteOspfBgpSidecar() throws Exception {
+    runAndAssert(OSPF_BGP_TESTRIG, OSPF_BGP_CONFIGS);
+  }
+
+  private void runAndAssert(String testrig, List<String> testrigConfigs) throws Exception {
     Batfish batfish =
         BatfishTestUtils.getBatfishFromTestrigText(
-            TestrigText.builder().setConfigurationFiles(TESTRIG, CONFIGS).build(), _folder);
+            TestrigText.builder().setConfigurationFiles(testrig, testrigConfigs).build(), _folder);
     NetworkSnapshot snapshot = batfish.getSnapshot();
     batfish.computeDataPlane(snapshot);
     DataPlane vanilla = batfish.loadDataPlane(snapshot);
@@ -126,7 +146,9 @@ public class S2RemoteSidecarTest {
       for (String host : configs.keySet()) {
         if (assignment.get(host) != w) {
           DistributedNode shadow = workerNodes.get(w).get(host);
-          shadow.installRemoteBgpProviders(client, endpoints.get(assignment.get(host)));
+          S2WorkerEndpoint owner = endpoints.get(assignment.get(host));
+          shadow.installRemoteBgpProviders(client, owner);
+          shadow.installRemoteOspfProviders(client, owner, tc.getOspfTopology());
         }
       }
     }
