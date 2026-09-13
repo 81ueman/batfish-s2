@@ -80,7 +80,10 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 ### Operations / packaging — section C
 
-- **O1** defaults; **O2** k8s resources / `-Xmx`; **O3** CI demo matrix; **O4** benchmark automation;
+- **O1** defaults; **O2** k8s resources / `-Xmx`; **O3** CI demo matrix — **Done**:
+  `scripts/ci.sh` (unit tests by default, `--matrix` opt-in) + manual-only
+  `.github/workflows/s2-ci.yml`; **O4** benchmark automation — **Done**:
+  `scripts/bench-table.sh` (cached size-ladder x mode markdown table);
   **O5** METIS in the eval environment; **O6** partitioner weight calibration (← P0): **v1 shipped**
   (`NodeWeights`, documented additive feature sum; also added `--weights` to
   `scripts/partition-metrics.py`); fitting the coefficients to single-worker phase peaks is still

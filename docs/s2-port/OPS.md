@@ -99,9 +99,65 @@ scripts/partition-metrics.py --workers 3 --assignment assign.txt networks/s2-lin
 See the module docstring for the assignment-file format and `--edge-weights`. Dependency-free
 (stdlib only); it does not need METIS.
 
-## CI demo matrix (O3)
+## Benchmark table generation (O4)
 
-`scripts/ci-matrix.sh` runs the full tie-stable demo matrix
+`scripts/bench-table.sh` runs a parameterized size ladder x mode(s) through `scripts/bench.sh`
+and emits the markdown metrics table used in `M5-SCALE.md`:
+
+| network | prefixes | mode | max peak MiB | controller MiB | engine s (w0) | wall s |
+
+Each cell is `(network, workers, mode, S2_PREFIX_SHARDS)` and is cached in
+`results/bench-table.cache.tsv`, so the table can be regenerated **incrementally**: a re-run skips
+cells it has already measured (cached cells whose result was not `MATCH` are retried unless
+`--keep-failures`). `--list` prints the plan — every cell with its cache state — without running
+anything.
+
+```sh
+# preview the default ladder (s2-big-bgp s2-big2 s2-huge s2-mega s2-giga) in default+owned
+scripts/bench-table.sh --list
+
+# a couple of small cells (this is the acceptance demo)
+S2_BASE_PORT=19000 scripts/bench-table.sh \
+  --ladder "s2-triangle s2-line" --modes "default" --workers 3
+
+# the full ladder: forward the heap, or sweep shard counts
+JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench-table.sh --workers 3 --modes "default owned"
+scripts/bench-table.sh --workers 3 --shards "1 8" --modes "owned"
+```
+
+The base `JAVA_TOOL_OPTIONS` and the per-cell `S2_PREFIX_SHARDS` are forwarded to every
+`bench.sh`/`local-demo.sh` run; a cell whose shard count is not 1 is labelled `<mode>+B<n>` in the
+`mode` column. `prefixes` is the origination (loopback) count, auto-detected from
+`networks/<net>/configs` and overridable with `--ladder "s2-big2:640 ..."`. Raw per-cell
+`bench.sh` output is kept under `results/bench-table-logs/`. Sample output from the 2-cell run:
+
+```markdown
+| network | prefixes | mode | max peak MiB | controller MiB | engine s (w0) | wall s |
+| --- | --- | --- | --- | --- | --- | --- |
+| s2-triangle | 3 | default | 141.4 | 248.0 | 3.3 | 8 |
+| s2-line | 6 | default | 140.0 | 266.3 | 3.3 | 8 |
+```
+
+Numbers are host- and JVM-dependent; use them for relative comparisons, not as absolutes.
+
+## CI entry point (O3)
+
+`scripts/ci.sh` is the conservative CI entry point. By default it runs only the unit tests; the
+demo matrix is opt-in:
+
+```sh
+scripts/ci.sh                              # bazel test //projects/s2:s2_tests
+scripts/ci.sh --list                       # print the plan, run nothing
+scripts/ci.sh --matrix                     # unit tests, then the demo matrix
+scripts/ci.sh --matrix --workers 3 --networks "s2-triangle s2-ospf"
+S2_CI_MATRIX=1 scripts/ci.sh               # same as --matrix (still runs the unit tests)
+```
+
+`.github/workflows/s2-ci.yml` wraps it as a **manual-only** (`workflow_dispatch`) workflow: the
+default run does the unit tests, and ticking `run_matrix` (plus an optional worker count) adds the
+demo matrix on a second job. It never runs on push/PR.
+
+The matrix itself is `scripts/ci-matrix.sh`: it runs the full tie-stable demo matrix
 (`s2-triangle s2-line s2-ospf s2-ospf-bgp s2-redist s2-agg s2-static s2-external`) at 3 workers
 in both default and `-Ds2.ownedDataplane=true` modes, and prints a pass/fail summary grepped from
 the `MATCH` result. It is **opt-in** because it is slow:

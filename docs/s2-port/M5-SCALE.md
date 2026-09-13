@@ -474,6 +474,12 @@ bazel test //projects/s2:s2_tests
 # env (JAVA_TOOL_OPTIONS, S2_PREFIX_SHARDS) is forwarded to each run
 scripts/bench.sh "1 3" "s2-line s2-mega"
 JAVA_TOOL_OPTIONS="-Xmx4g -Ds2.ownedDataplane=true" scripts/bench.sh "3" "s2-mega s2-giga"
+# full size ladder x mode(s), cached so the table regenerates incrementally (O4)
+scripts/bench-table.sh --list
+JAVA_TOOL_OPTIONS=-Xmx4g scripts/bench-table.sh --workers 3 --modes "default owned"
+# conservative CI: unit tests only by default; --matrix adds the demo matrix (O3)
+scripts/ci.sh
+scripts/ci.sh --matrix --workers 3
 
 # local multi-process (workers, optional network; defaults to s2-triangle)
 bazel build //projects/s2:s2_main_deploy.jar
