@@ -18,6 +18,8 @@ Knobs added for scale work:
 | `-Ds2.ownedDataplane=true` | worker keeps full RIBs/FIBs only for owned nodes (remote get stub FIBs) | off |
 | `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies) | off |
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
+| `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM (default) / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (fallback if `gpmetis` absent) | RANDOM |
+| `-Ds2.prefixSpacePositiveCacheOnly=true` | memoize only positive `PrefixSpace.containsPrefix` results (cuts the EGP transient; pure memoization) | off |
 | `S2_PREFIX_SHARDS=N` | control-plane (BGP RIB) prefix sharding, N rounds | 1 (off) |
 | `S2_PREFIX_SHARDS=auto` | auto shard count from the DPDG component weights (alias `-Ds2.prefixShardCount=auto`) | — |
 | `-Ds2.prefixShardBudgetMiB=M` | per-shard live-BGP-RIB budget used by `auto` (smaller ⇒ more shards, cap 16) | 192 |
@@ -65,7 +67,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 | id | task | section | depends / competes |
 | --- | --- | --- | --- |
 | **M1** | remote configuration descriptor | A1 | **Done (opt-in)**: `-Ds2.descriptorShadows=true`, `RemoteNodeDescriptor`; ACL-heavy testbed `networks/s2-acl` |
-| **M2** | control-plane transient reduction | A2 | ⇄ P3 (same `T_w`) |
+| **M2** | control-plane transient reduction | A2 | **Done**: root cause was an unbounded negative-result memo in `PrefixSpace.containsPrefix` (O(N^2) per router); opt-in positive-only cache (`-Ds2.prefixSpacePositiveCacheOnly`) cuts the s2-giga EGP peak ~40-48%; default off (stock unchanged) |
 | **M3** | BDD factory owned scoping | A3 | **Done**: nullable `localNodes` on `BDDReachabilityAnalysisFactory`, wired from `S2Main` |
 | **M4** | owned-mode hardening (Track / VXLAN / tunnel / BGP reachability) | A4 | **Done**: owned mode falls back to full configs when tracks/VNIs/tunnel/IPsec are present; BGP reachability disabled in owned mode |
 | **M5** | dataplane prefix sharding / on-disk RIB+FIB | A5 | deferred |
@@ -98,13 +100,12 @@ M2 ⇄ P3                      (both target T_w)
 
 ### Recommended order
 
-Done (merged): C-PFX, P3, P-X, M1, M3, M4, C3, P0 (except weight calibration O6).
+Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0 (except weight calibration O6).
 
-1. **P2** node→worker partitioner (with O6 weight calibration + partition-quality metrics from P0)
-2. **M2** control-plane transient reduction (the remaining DPDG/P3 follow-up)
-3. **O1** defaults / **O2** k8s / **O3** CI matrix / **O4** bench automation / **O5** METIS
-4. **M5** (deferred)
-5. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
+1. **O6** weight calibration (v1 weights exist; calibrate against single-worker phase peaks)
+2. **O1** defaults (decide whether to make owned / descriptor / positive-cache default) / **O5** METIS install for real partitioner eval / **O3**/**O4** CI+bench automation
+3. **M5** (deferred)
+4. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
 
 ## A. Memory / scale (ranked by expected payoff)
 
