@@ -20,16 +20,25 @@ def _iface(idx):
     return "GigabitEthernet0/%d" % idx
 
 
+def _extra_prefix(octet, i):
+    """The i-th extra /32 originated by the switch whose octet is ``octet``.
+
+    ``10.<octet>.<i//256>.<i%256>`` keeps prefixes unique per switch for up to 65536 extra
+    originations (a plain ``i+1`` fourth octet overflows past 254), matching networks/s2-giga.
+    """
+    return "10.%d.%d.%d" % (octet, i // 256, i % 256)
+
+
 def _write_config(path, name, asn, loopback, ifaces, extra_originations, neighbors):
     """ifaces: list of (name, ip, mask); neighbors: list of (peer_ip, peer_asn, iface_name)."""
     lines = ["hostname %s" % name, ""]
     lines += ["interface Loopback0", " ip address %s 255.255.255.255" % loopback, ""]
     for i in range(extra_originations):
-        # 10.100.<switch>.<1+i>/32 is unique per switch and per host.
+        # A /32 unique per switch and per host.
         octet = int(loopback.split(".")[2])
         lines += [
             "interface Loopback%d" % (i + 1),
-            " ip address 10.100.%d.%d 255.255.255.255" % (octet, i + 1),
+            " ip address %s 255.255.255.255" % _extra_prefix(octet, i),
             "",
         ]
     for name_, ip, mask in ifaces:
@@ -38,7 +47,7 @@ def _write_config(path, name, asn, loopback, ifaces, extra_originations, neighbo
     lines.append(" network %s mask 255.255.255.255" % loopback)
     for i in range(extra_originations):
         octet = int(loopback.split(".")[2])
-        lines.append(" network 10.100.%d.%d mask 255.255.255.255" % (octet, i + 1))
+        lines.append(" network %s mask 255.255.255.255" % _extra_prefix(octet, i))
     for peer_ip, peer_asn, _ in neighbors:
         lines.append(" neighbor %s remote-as %d" % (peer_ip, peer_asn))
     lines.append("")
