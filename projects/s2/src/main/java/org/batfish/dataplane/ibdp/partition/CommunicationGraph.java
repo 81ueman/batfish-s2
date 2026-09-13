@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import org.batfish.datamodel.BgpPeerConfigId;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.Edge;
@@ -152,8 +153,12 @@ public final class CommunicationGraph {
       Map<String, Configuration> configs,
       TopologyContext topologyContext,
       BgpTopology bgpTopology) {
-    Map<String, Integer> weights = NodeWeights.compute(configs);
     MutableAdjacency adjacency = new MutableAdjacency(configs.keySet());
+    // The bare BGP session graph (undirected), used by the v2 full-table node-weight correction.
+    Map<String, Set<String>> bgpAdjacency = new TreeMap<>();
+    for (String node : configs.keySet()) {
+      bgpAdjacency.put(node, new TreeSet<>());
+    }
     // L3 adjacencies.
     for (Edge edge : topologyContext.getLayer3Topology().getEdges()) {
       adjacency.add(edge.getNode1(), edge.getNode2(), L3);
@@ -161,7 +166,15 @@ public final class CommunicationGraph {
     // BGP sessions.
     for (com.google.common.graph.EndpointPair<BgpPeerConfigId> pair :
         bgpTopology.getGraph().edges()) {
-      adjacency.add(pair.source().getHostname(), pair.target().getHostname(), BGP);
+      String source = pair.source().getHostname();
+      String target = pair.target().getHostname();
+      adjacency.add(source, target, BGP);
+      if (!source.equals(target)
+          && bgpAdjacency.containsKey(source)
+          && bgpAdjacency.containsKey(target)) {
+        bgpAdjacency.get(source).add(target);
+        bgpAdjacency.get(target).add(source);
+      }
     }
     // OSPF adjacencies.
     OspfTopology ospf = topologyContext.getOspfTopology();
@@ -170,6 +183,7 @@ public final class CommunicationGraph {
       OspfNeighborConfigId head = edgeId.getHead();
       adjacency.add(tail.getHostname(), head.getHostname(), OSPF);
     }
+    Map<String, Integer> weights = NodeWeights.compute(configs, bgpAdjacency);
     return adjacency.toGraph(weights);
   }
 

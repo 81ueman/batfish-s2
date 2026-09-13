@@ -1,6 +1,6 @@
 # S2 ネットワーク分割（ノード割当・prefix sharding）設計メモ & 評価計画
 
-- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）。P2 は完了し、`gpmetis` 導入後の実測を §6.7 に記録（METIS = 品質参照、既定は RANDOM）**
+- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）。P2 は完了し、`gpmetis` 導入後の実測を §6.7 に記録（METIS = 品質参照、既定は RANDOM）。O6 ノード重み校准（§6.8）と v2 トポロジ補正（§6.9, opt-in）を実装・測定**
 - Date: 2026-09-13（更新）
 - 対象リポジトリ: `batfish-s2`（branch `master`）
 - 関連: `docs/s2-port/M5-SCALE.md`, `docs/s2-port/REMAINING.md`, `nv-papers/papers/s2-2025.pdf`, `XJTU-NetVerify/s2`（参考実装）
@@ -110,7 +110,17 @@ simulation 前は経路数が未知。以下を段階的に:
    - ACL・policy の行数（forwarding/BDD コストの代理）
    - static route 数、redistribution 有無、VRF 数
    - 重み = `α·interfaces + β·(peers·origination_prefixes) + γ·acl_lines + …`（係数は P0 で単一 worker 実測から当てる）
-2. **トポロジ補正（v2, 推奨）**: BGP session グラフ上で「フルテーブルを受ける」ノード（RR/border）の重みを、伝播閉包サイズで増幅。FatTree の解析式（論文 §4.1）も利用。
+2. **トポロジ補正（v2, 実装済み・opt-in）**: BGP session グラフ上で各ノードの**伝播閉包**を求める。
+   具体的には、同一 BGP 連結成分で originate される prefix 数 `fullTableRoutes(v)`（= そのノードが
+   受信・保持するフルテーブルの推定経路数）を計算し、`weight(v) = base(v) +
+   V2_FULL_TABLE_WEIGHT · fullTableRoutes(v)` とする。FatTree の全ノードは同一 BGP 成分なので補正項は
+   ネットワーク共通の定数になり、config 特徴だけの core:edge 比（peers 項により k=4 で 1.5）を実測比
+   （~1.10）側へ圧縮する（K=2 で 1.071、K=2.4 でちょうど 1.10）。閉包がノードごとに異なる場合
+   （多重 BGP 成分、部分テーブルしか受けないノード）は閉包の大きいノードを比例的に重くする。
+   `-Ds2.nodeWeightsV2=true` で有効（既定 off、デモ不変）。係数は `NodeWeights.V2_FULL_TABLE_WEIGHT`。
+   **注意**: この補正は重みの*比*を直すが、現 testbed では閉包が成分定数なので重みの*差*を変えず、
+   `WEIGHTED_LPT_FM` の assignment とコスト考慮 imbalance は不変だった。実測と限界は §6.9。
+   論文 §4.1 の FatTree 解析式も同節で検討する。
 3. **2-pass profiling（optional）**: 1-worker（または小 worker 数）の制御プレーンだけ先に回し、実 RIB サイズを測ってから partition。精度は最高だが、最悪ケースで単一 worker に収まる必要があるため補助扱い。
 
 ### 3.3 アルゴリズム
@@ -375,7 +385,7 @@ protocol ごとの対象 prefix を閉じる:
 
 `s2-fat2` は改善。`s2-fat4` W=3 はわずかに悪化する: calibrated weight は peers を強く評価し
 core:edge の重み比 18:12=1.5 に対し実測コスト比は 44:40=1.10 のため。線形 config 特徴 1 本では
-core/edge のコスト比を表現できず、根本対策は §3.2 の topology 補正 (v2)（本タスクの範囲外）。
+core/edge のコスト比を表現できず、根本対策は §3.2 の topology 補正 (v2)。これは §6.9 で実装・測定した。
 
 **既定挙動.** 既定 scheme は `RANDOM` で重みを使わないため不変。`s2-line` / `s2-mega` のデモは
 MATCH のまま。calibrated `WEIGHTED_LPT_FM` でも `s2-line` / `s2-fat2` / `s2-mega` は MATCH
@@ -383,6 +393,74 @@ MATCH のまま。calibrated `WEIGHTED_LPT_FM` でも `s2-line` / `s2-fat2` / `s
 
 変更ファイル: `NodeWeights.java`（`Features` + `-Ds2.nodeWeightsDump` + calibrated coefficients）、
 `NodePartitionerTest.java`、`scripts/calibrate-weights.py`（新規）。
+
+### 6.9 O6 v2 トポロジ補正（フルテーブル閉包）の実装と実測（2026-09-13）
+
+**実装.** §3.2 v2 を `NodeWeights` に実装した。BGP session グラフ（`BgpTopology` の
+hostname 隣接）を `CommunicationGraph.build` が構築し、`NodeWeights.compute(configs, bgpAdjacency)`
+に渡す。各ノードについて BGP 連結成分を求め、その成分内で originate される prefix 数の総和
+`fullTableRoutes(v)`（= そのノードが受信するフルテーブルの推定経路数、伝播閉包）を計算し、
+
+```
+weight_v2(v) = base(v) + V2_FULL_TABLE_WEIGHT * fullTableRoutes(v)
+```
+
+とする。`-Ds2.nodeWeightsV2=true` で有効（既定 off。既定 scheme `RANDOM` は重みを使わないため
+デモ不変）。係数 `V2_FULL_TABLE_WEIGHT = 2`、較正用 override `-Ds2.nodeWeightsV2Scale`。
+dump (`-Ds2.nodeWeightsDump`) に `bgpClosure` 列を追加し、`scripts/calibrate-weights.py` は
+`fit --origin-closure-weight K` で補正込みの相関を出せる。
+
+**重み比の補正.** `s2-fat4`: base core/agg=18, edge=12（比 1.50）、実測コスト比 44:40=1.10。
+v2 (K=2) は 90:84（比 1.071）、K=2.4 で 1.100。`s2-fat2`: base 10:8、v2 (K=2) 27:25。
+
+**評価 (1): 相関**（weight vs 測定 route 数）。補正項は testbed の BGP 連結成分が 1 個のため
+**ノード間では定数**で、within-network の Pearson/Spearman は base と完全に同一（§6.8 の
+calibrated 列と同じ）。pooled のみ K=2 で Pearson 0.945→1.000、Spearman 0.988→0.998 に上がるが、
+これはネットワーク規模（閉包）と総 route 数の cross-network scale を拾ったもので、partitioner が
+比較する within-network 順序ではない（pooled fit を避ける §6.8 の理由と同じ）。
+
+**評価 (2): コスト考慮 imbalance**（`WEIGHTED_LPT_FM` の assignment を測定 route コストで採点、
+max/mean）。base → v2 (K=2)：
+
+| network | W | base (calibrated) | v2 | v1 (参考) |
+| --- | --- | --- | --- | --- |
+| s2-line | 2 / 3 | 1.000 / 1.071 | 1.000 / 1.071 | 1.000 / 1.071 |
+| s2-fat2 | 2 | **1.148** | 1.148 | 1.279 |
+| s2-fat4 | 2 | 1.000 | 1.000 | 1.000 |
+| s2-fat4 | 3 | **1.061** | 1.061 | **1.047** |
+| s2-ospf | 3 | 1.125 | 1.125 | — |
+| s2-ospf-bgp | 2 | 1.176 | 1.176 | — |
+| s2-redist | 2 / 3 | 1.143 / 1.143 | 1.143 / 1.143 | — |
+| s2-static | 2 | 1.111 | 1.111 | — |
+| s2-agg | 3 | 1.250 | 1.250 | — |
+| s2-external | 2 | 1.273 | 1.273 | — |
+| s2-big2 | 3 | 1.199 | 1.199 | — |
+| s2-big-bgp | 3 | 1.003 | 1.003 | — |
+| s2-huge | 3 | 1.125 | 1.125 | — |
+| s2-mega | 3 | 1.125 | 1.125 | — |
+
+**v2 は全 testbed で assignment・imbalance を変えなかった**（per-worker 測定コストまで一致）。
+理由: 現 testbed は BGP 連結成分が 1 個なので補正項は全ノード共通の定数であり、重みの*差*を
+変えない。`WEIGHTED_LPT_FM` の LPT は重み降順で、FM の改善量は cut 辺重みのみ、load cap は
+平均重みに比例するため、一様な定数シフトでは最終 assignment が変わらない。係数を K=0..20 で
+sweep しても同一だった。
+
+**探索的知見（peer 項との緊張）.** v2 の閉包項ではなく BGP peer 係数を 0 にすると（`weight =
+interfaces + static + vrfs + 閉包`）`s2-fat4` W=3 は 1.061→**1.047**（v1 と同じ最適）に戻るが、
+`s2-fat2` W=2 は 1.148→**1.213** に悪化する。すなわち core/edge の大小は role 依存で、fat2 は
+peers 項を必要とし fat4 は過大評価になる。この緊張は成分定数の補正では解けない（線形 config
+特徴 1 本の限界）。
+
+**結論.** v2 は設計意図どおり重み比を実測比へ圧縮するが、assignment / コスト考慮 imbalance を
+改善しないため **既定 off のまま gate する**（`-Ds2.nodeWeightsV2=true`）。多重 BGP 成分や部分
+テーブルの WAN では閉包がノード固有になり得るため、機構としては残す。FatTree の core/edge 比を
+partition 結果に反映させるには、成分定数ではなく role ごとの重みスケール（例: 実測コスト比での
+再校准、または FM の目的関数に測定コストを入れる）が必要で、本 O6 の範囲外。
+
+**検証.** `bazel test //projects/s2:s2_tests` = 73 tests / 0 failures（v2 の成分閉包・加算・既定 off を
+`NodePartitionerTest` に追加）。既定デモ `s2-line` / `s2-mega`（scheme RANDOM）は
+`ribs/reachability/symbolic/answer = MATCH`。v2 を有効にした `WEIGHTED_LPT_FM` の `s2-line` W=3 も
+MATCH。
 
 ---
 
@@ -422,7 +500,7 @@ MATCH のまま。calibrated `WEIGHTED_LPT_FM` でも `s2-line` / `s2-fat2` / `s
 ## 9. 未決事項
 
 1. P1 相当は実装済み。残るのは owned-mode hardening の caveat（Track/VXLAN/tunnel/BGP reachability）を誰がいつ埋めるか。
-2. ノード重み推定の係数をどの testbed で校准するか: **解決（O6, §6.8）** = 13 testbed / 89 ノードのノード別 main-RIB route 数を測定コストとし、within-network 非負 ridge で `interfaces:peers:static = 1:3:1`、`originationPrefixes = policyStatements = 0` に校准。FatTree の順序逆転を解消（負相関 1→0）。残: core/edge のコスト比は config 特徴では表現できないため §3.2 v2 topology 補正が必要。
+2. ノード重み推定の係数をどの testbed で校准するか: **解決（O6, §6.8）** = 13 testbed / 89 ノードのノード別 main-RIB route 数を測定コストとし、within-network 非負 ridge で `interfaces:peers:static = 1:3:1`、`originationPrefixes = policyStatements = 0` に校准。FatTree の順序逆転を解消（負相関 1→0）。残: core/edge のコスト比は config 特徴では表現できない。**v2 topology 補正（フルテーブル閉包）は実装済み・opt-in（§6.9）** だが、現 testbed では閉包が成分定数のため assignment は不変で、既定 off のまま。比を実際の partition に効かせるには role 別スケール等が必要（O6 residual）。
 3. METIS を評価環境に常設するか（Docker image に入れるか）: **評価環境には導入済み**（§6.7）。
    Docker image への同梱は未対応。`gpmetis` 不在時は `WEIGHTED_LPT_FM` にフォールバックする。
 4. prefix shard 数を実行時にどう決めるか: **解決（P-X）** = `S2_PREFIX_SHARDS=auto` が DPDG の成分重みから決定的に N を選ぶ（`PrefixShardCountSelector`、予算 `-Ds2.prefixShardBudgetMiB`、上限 16）。`scripts/shard-sweep.sh` で peak-vs-N を測定し既定を正当化（`M5-SCALE.md`）。

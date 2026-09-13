@@ -19,6 +19,7 @@ Knobs added for scale work:
 | `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies) | off |
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
 | `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM (default) / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) | RANDOM |
+| `-Ds2.nodeWeightsV2=true` | add the full-table propagation-closure term to the node weights (compresses the FatTree core/edge ratio; no assignment change on the current testbeds — see plan §6.9) | off |
 | `-Ds2.prefixSpacePositiveCacheOnly=true` | memoize only positive `PrefixSpace.containsPrefix` results (cuts the EGP transient; pure memoization) | off |
 | `S2_PREFIX_SHARDS=N` | control-plane (BGP RIB) prefix sharding, N rounds | 1 (off) |
 | `S2_PREFIX_SHARDS=auto` | auto shard count from the DPDG component weights (alias `-Ds2.prefixShardCount=auto`) | — |
@@ -93,7 +94,16 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
   `policyStatements=0`, `aclLines=1` (unidentifiable from RIBs, corroborated by `s2-acl` phase peaks).
   FatTree core/edge ordering is fixed (negative correlations 1→0). `scripts/calibrate-weights.py` +
   `-Ds2.nodeWeightsDump` are the tooling; see `PARTITIONING-PLAN.md` §6.8. Residual: cross-shape cost
-  magnitudes still need the plan §3.2 v2 topology correction. **O7** docs sync.
+  magnitudes still need the plan §3.2 v2 topology correction.
+  **v2 topology correction (full-table propagation closure) is implemented but opt-in and does not
+  improve the metrics**: `-Ds2.nodeWeightsV2=true` adds `V2_FULL_TABLE_WEIGHT * fullTableRoutes(v)`
+  (prefixes originated in `v`'s BGP component), which compresses the FatTree core/edge weight ratio
+  (18:12 → 90:84 at K=2) but is a per-component constant on the testbeds, so the `WEIGHTED_LPT_FM`
+  assignment and the measured-cost imbalance are unchanged on all 17 testbed/worker combinations; a
+  sweep of the coefficient (0..20) is identical. Pooled weight/route correlation rises 0.945→1.000
+  (cross-network scale only; per-network unchanged). Left gated, default off; §6.9. The remaining
+  lever is a role-level scale (or a cost-aware partitioner), not a component constant.
+  **O7** docs sync.
 
 ### Dependency graph
 

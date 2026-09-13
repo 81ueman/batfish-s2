@@ -5,10 +5,16 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import org.batfish.datamodel.BgpProcess;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.Interface;
@@ -51,9 +57,34 @@ import org.batfish.datamodel.routing_policy.RoutingPolicy;
  *   <li>{@link #VRF} per VRF: per-VRF processes and tables.
  * </ul>
  *
+ * <p><b>Topology correction (v2, {@value #V2_PROPERTY}).</b> The additive feature model above is a
+ * static proxy; it cannot express the absolute <em>magnitude</em> of a router's retained RIB,
+ * because before simulation the route count is unknown. The dominant term in the measured main RIB
+ * is the <em>full table</em>: on a connected BGP domain every router ends up holding (a best route
+ * for) every prefix originated anywhere in its domain. The correction estimates that full table
+ * directly from the BGP session graph. For a router {@code v}, {@code fullTableRoutes(v)} is the
+ * number of prefixes originated by any router in {@code v}'s BGP connected component (its
+ * propagation closure); {@code v} receives a best route for each of them. The corrected weight is
+ *
+ * <pre>{@code weight(v) = baseWeight(v) + V2_FULL_TABLE_WEIGHT * fullTableRoutes(v)}</pre>
+ *
+ * <p>Adding a router's full-table size in route units is the part the config features miss. On a
+ * DCN the whole fabric is one BGP component, so every router receives the same full table: the term
+ * is a large common load, and it compresses the feature-only core/edge weight ratio (peers give
+ * core/agg a 1.5x feature ratio on FatTree) toward the measured cost ratio (~1.10, because the full
+ * table dominates). On a WAN with several BGP components, or a router that sees only a partial
+ * table, routers with a larger propagation closure are weighted proportionally more. The correction
+ * is deterministic and a pure function of the configs plus the BGP session graph.
+ *
+ * <p>It is <em>off by default</em> (it changes partition assignments, so stock demos are unchanged)
+ * and enabled with {@code -Ds2.nodeWeightsV2=true}. The coefficient is {@link
+ * #V2_FULL_TABLE_WEIGHT}; the evaluation-only {@value #V2_SCALE_PROPERTY} override exists so
+ * calibration can sweep it without a rebuild.
+ *
  * <p>Calibration instrumentation: when the {@value #DUMP_PROPERTY} system property names a file,
- * the {@link #compute(Map)} overload writes a TSV of the per-node feature counts there. It is off
- * by default and has no effect on the weight.
+ * the {@link #compute(Map, Map)} overload writes a TSV of the per-node feature counts, the
+ * full-table route estimate ({@value #CLOSURE_COLUMN}) and the effective weight there. It is off by
+ * default and has no effect on the weight.
  */
 public final class NodeWeights {
 
@@ -93,6 +124,28 @@ public final class NodeWeights {
 
   /** Weight per VRF. */
   public static final int VRF = 1;
+
+  /** System property that enables the v2 topology (full-table) correction. Off by default. */
+  public static final String V2_PROPERTY = "s2.nodeWeightsV2";
+
+  /**
+   * Weight per full-table route in the v2 topology correction: a router adds {@code
+   * V2_FULL_TABLE_WEIGHT * fullTableRoutes(v)} to its base weight. The calibrated base coefficients
+   * are on the order of the number of BGP peers (1&ndash;3), while a FatTree full table is tens of
+   * routes; a small multiplier is enough to make the common full-table term dominant, which is what
+   * flattens the feature-only core/edge ratio. Tuned on the O6 testbeds (see {@code
+   * docs/s2-port/PARTITIONING-PLAN.md} &sect;6.9).
+   */
+  public static final int V2_FULL_TABLE_WEIGHT = 2;
+
+  /**
+   * Evaluation-only override for {@link #V2_FULL_TABLE_WEIGHT} ({@value}). Used by {@code
+   * scripts/calibrate-weights.py} to sweep the coefficient without rebuilding; unset in normal use.
+   */
+  public static final String V2_SCALE_PROPERTY = "s2.nodeWeightsV2Scale";
+
+  /** The dump column holding the estimated full-table route count (see the class doc). */
+  public static final String CLOSURE_COLUMN = "bgpClosure";
 
   /** System property naming a file to dump the per-node feature counts to (calibration only). */
   public static final String DUMP_PROPERTY = "s2.nodeWeightsDump";
@@ -195,13 +248,35 @@ public final class NodeWeights {
         + VRF * f.vrfs;
   }
 
-  /** Compute the node weight of every configuration, keyed by hostname. */
+  /** Compute the base (feature-only) node weight of every configuration, keyed by hostname. */
   public static Map<String, Integer> compute(Map<String, Configuration> configs) {
     Map<String, Integer> weights = new HashMap<>();
     for (Configuration c : configs.values()) {
       weights.put(c.getHostname(), compute(c));
     }
-    dumpIfRequested(configs);
+    dumpIfRequested(configs, weights, Map.of());
+    return weights;
+  }
+
+  /**
+   * Compute the effective node weight of every configuration, applying the v2 topology correction
+   * (see the class doc) against the BGP session graph when {@link #V2_PROPERTY} is enabled.
+   *
+   * @param bgpAdjacency the undirected BGP session graph (hostname to neighbor hostnames)
+   */
+  public static Map<String, Integer> compute(
+      Map<String, Configuration> configs, Map<String, ? extends Collection<String>> bgpAdjacency) {
+    Map<String, Integer> base = new HashMap<>();
+    for (Configuration c : configs.values()) {
+      base.put(c.getHostname(), compute(c));
+    }
+    Map<String, Integer> fullTableRoutes = fullTableRoutes(configs, bgpAdjacency);
+    int scale = v2Enabled() ? v2FullTableWeight() : 0;
+    Map<String, Integer> weights = new HashMap<>();
+    for (String host : base.keySet()) {
+      weights.put(host, base.get(host) + scale * fullTableRoutes.getOrDefault(host, 0));
+    }
+    dumpIfRequested(configs, weights, fullTableRoutes);
     return weights;
   }
 
@@ -210,13 +285,76 @@ public final class NodeWeights {
     return weightOf(features(c));
   }
 
+  /** Whether the v2 topology (full-table) correction is enabled ({@value #V2_PROPERTY}). */
+  public static boolean v2Enabled() {
+    return Boolean.parseBoolean(System.getProperty(V2_PROPERTY, "false"));
+  }
+
+  /** The v2 full-table route coefficient, honoring the evaluation-only override. */
+  public static int v2FullTableWeight() {
+    String override = System.getProperty(V2_SCALE_PROPERTY);
+    if (override == null || override.isEmpty()) {
+      return V2_FULL_TABLE_WEIGHT;
+    }
+    return Integer.parseInt(override.trim());
+  }
+
+  /**
+   * The estimated size of the full table each router receives: for every router, the number of
+   * prefixes originated by routers in its BGP connected component. {@code bgpAdjacency} is the
+   * (undirected) BGP session graph; neighbors outside {@code configs} are ignored, and a router
+   * with no session forms a singleton component. Deterministic: components are explored in hostname
+   * order.
+   */
+  public static Map<String, Integer> fullTableRoutes(
+      Map<String, Configuration> configs, Map<String, ? extends Collection<String>> bgpAdjacency) {
+    Map<String, Integer> own = new HashMap<>();
+    for (Configuration c : configs.values()) {
+      own.put(c.getHostname(), features(c).originationPrefixes);
+    }
+    Map<String, Integer> result = new HashMap<>();
+    Set<String> visited = new HashSet<>();
+    for (String start : new TreeSet<>(configs.keySet())) {
+      if (!visited.add(start)) {
+        continue;
+      }
+      Deque<String> queue = new ArrayDeque<>();
+      queue.add(start);
+      Set<String> component = new TreeSet<>();
+      while (!queue.isEmpty()) {
+        String node = queue.remove();
+        component.add(node);
+        Collection<String> neighbors = bgpAdjacency.get(node);
+        if (neighbors == null) {
+          continue;
+        }
+        for (String neighbor : neighbors) {
+          if (configs.containsKey(neighbor) && visited.add(neighbor)) {
+            queue.add(neighbor);
+          }
+        }
+      }
+      int total = 0;
+      for (String node : component) {
+        total += own.getOrDefault(node, 0);
+      }
+      for (String node : component) {
+        result.put(node, total);
+      }
+    }
+    return result;
+  }
+
   /**
    * Write the per-node feature counts to the file named by {@link #DUMP_PROPERTY}, if set. Used by
    * {@code scripts/calibrate-weights.py} through the offline {@code S2Main partition} role. The
    * dump is sorted by hostname so it is deterministic; it is never written unless the property is
    * set.
    */
-  private static void dumpIfRequested(Map<String, Configuration> configs) {
+  private static void dumpIfRequested(
+      Map<String, Configuration> configs,
+      Map<String, Integer> weights,
+      Map<String, Integer> fullTableRoutes) {
     String path = System.getProperty(DUMP_PROPERTY);
     if (path == null || path.isEmpty()) {
       return;
@@ -224,14 +362,19 @@ public final class NodeWeights {
     List<String> hosts = new ArrayList<>(configs.keySet());
     hosts.sort(null);
     StringBuilder sb = new StringBuilder();
-    sb.append("hostname\t").append(String.join("\t", Features.columnNames())).append("\tweight\n");
+    sb.append("hostname\t")
+        .append(String.join("\t", Features.columnNames()))
+        .append('\t')
+        .append(CLOSURE_COLUMN)
+        .append("\tweight\n");
     for (String host : hosts) {
       Features f = features(configs.get(host));
       sb.append(host);
       for (int v : f.values()) {
         sb.append('\t').append(v);
       }
-      sb.append('\t').append(weightOf(f)).append('\n');
+      sb.append('\t').append(fullTableRoutes.getOrDefault(host, 0));
+      sb.append('\t').append(weights.getOrDefault(host, 0)).append('\n');
     }
     try {
       Files.writeString(Paths.get(path), sb.toString());
