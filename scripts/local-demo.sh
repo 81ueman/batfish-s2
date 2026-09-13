@@ -7,8 +7,13 @@ W="${1:?usage: local-demo.sh <numWorkers> [network]}"
 NETWORK="${2:-s2-triangle}"
 cd "$(git rev-parse --show-toplevel)"
 
-# Clean up workers from a previous (possibly interrupted) run that still hold ports.
-pkill -f "s2_main_deploy.jar" 2>/dev/null || true
+# Free only the ports this run will use, so concurrent runs (other worktrees/agents) are not
+# disturbed. Override the base port with S2_BASE_PORT to run several demos at once.
+BASE_PORT="${S2_BASE_PORT:-14090}"
+for p in $(seq "$BASE_PORT" $((BASE_PORT + W))); do
+  pids=$(lsof -ti tcp:"$p" 2>/dev/null || true)
+  if [[ -n "$pids" ]]; then kill $pids 2>/dev/null || true; fi
+done
 sleep 1
 
 JAR="bazel-bin/projects/s2/s2_main_deploy.jar"
@@ -18,10 +23,10 @@ export S2_INPUT_DIR="$PWD/networks"
 export S2_OUTPUT_DIR="$PWD/results/local-${NETWORK}-${W}"
 mkdir -p "$S2_OUTPUT_DIR"
 
-CTRL_PORT=14090
+CTRL_PORT="$BASE_PORT"
 endpoints=""
 for i in $(seq 0 $((W - 1))); do
-  port=$((14091 + i))
+  port=$((BASE_PORT + 1 + i))
   endpoints="${endpoints}${endpoints:+,}127.0.0.1:${port}"
 done
 
@@ -34,7 +39,7 @@ sleep 3
 echo "== starting ${W} worker(s) =="
 worker_pids=()
 for i in $(seq 0 $((W - 1))); do
-  port=$((14091 + i))
+  port=$((BASE_PORT + 1 + i))
   java -jar "$JAR" worker "$NETWORK" "$i" "$W" 127.0.0.1 "$CTRL_PORT" "$port" \
     > "$S2_OUTPUT_DIR/worker-${i}.log" 2>&1 &
   worker_pids+=($!)
