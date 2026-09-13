@@ -3,6 +3,10 @@
 package org.batfish.dataplane.ibdp;
 
 import com.google.auto.service.AutoService;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -53,23 +57,18 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
 
   @Override
   public ComputeDataPlaneResult computeDataPlane(NetworkSnapshot snapshot) {
+    String sliceDir = _batfish.getSettingsConfiguration().getString(Settings.ARG_S2_SLICE_DIR, "");
     Map<String, Configuration> configurations = _batfish.loadConfigurations(snapshot);
-    Set<BgpAdvertisement> externalAdverts =
-        _batfish.loadExternalBgpAnnouncements(snapshot, configurations);
-
     TopologyProvider topologyProvider = _batfish.getTopologyProvider();
     TopologyContext topologyContext =
-        TopologyContext.builder()
-            .setIpsecTopology(topologyProvider.getInitialIpsecTopology(snapshot))
-            .setIsisTopology(
-                IsisTopology.initIsisTopology(
-                    configurations, topologyProvider.getInitialLayer3Topology(snapshot)))
-            .setLayer3Topology(topologyProvider.getInitialLayer3Topology(snapshot))
-            .setLayer1Topologies(topologyProvider.getLayer1Topologies(snapshot))
-            .setL3Adjacencies(topologyProvider.getInitialL3Adjacencies(snapshot))
-            .setOspfTopology(topologyProvider.getInitialOspfTopology(snapshot))
-            .setTunnelTopology(topologyProvider.getInitialTunnelTopology(snapshot))
-            .build();
+        buildTopologyContext(snapshot, configurations, topologyProvider);
+    if (!sliceDir.isEmpty()) {
+      // An out-of-process S2 pool already produced the per-host slices (Kubernetes shared storage);
+      // serve questions from them lazily instead of computing in-process.
+      return computeFromSlices(topologyContext, Paths.get(sliceDir));
+    }
+    Set<BgpAdvertisement> externalAdverts =
+        _batfish.loadExternalBgpAnnouncements(snapshot, configurations);
 
     int numWorkers = resolveNumWorkers(configurations);
     Map<String, Integer> assignment =
@@ -106,6 +105,38 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
         numWorkers,
         ((IncrementalBdpAnswerElement) result._answerElement).getDependentRoutesIterations());
     return result;
+  }
+
+  /** Build the topology context the S2 engine needs, as {@link IncrementalDataPlanePlugin} does. */
+  private static TopologyContext buildTopologyContext(
+      NetworkSnapshot snapshot,
+      Map<String, Configuration> configurations,
+      TopologyProvider topologyProvider) {
+    return TopologyContext.builder()
+        .setIpsecTopology(topologyProvider.getInitialIpsecTopology(snapshot))
+        .setIsisTopology(
+            IsisTopology.initIsisTopology(
+                configurations, topologyProvider.getInitialLayer3Topology(snapshot)))
+        .setLayer3Topology(topologyProvider.getInitialLayer3Topology(snapshot))
+        .setLayer1Topologies(topologyProvider.getLayer1Topologies(snapshot))
+        .setL3Adjacencies(topologyProvider.getInitialL3Adjacencies(snapshot))
+        .setOspfTopology(topologyProvider.getInitialOspfTopology(snapshot))
+        .setTunnelTopology(topologyProvider.getInitialTunnelTopology(snapshot))
+        .build();
+  }
+
+  /** Serve the data plane lazily from per-host slices written by an out-of-process S2 pool. */
+  private ComputeDataPlaneResult computeFromSlices(TopologyContext topologyContext, Path sliceDir) {
+    S2HostSlices slices;
+    try {
+      slices = S2DirectoryHostSlices.read(sliceDir);
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to read S2 host slices from " + sliceDir, e);
+    }
+    _logger.infof(
+        "S2: serving the data plane from %d host slices under %s", slices.hosts().size(), sliceDir);
+    return new ComputeDataPlaneResult(
+        new IncrementalBdpAnswerElement(), S2LazyDataPlane.of(slices), topologyContext);
   }
 
   /** Run the workers concurrently and assemble their owned data planes lazily. */

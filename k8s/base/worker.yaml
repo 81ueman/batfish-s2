@@ -40,9 +40,16 @@ spec:
             # or -Ds2.partition=<scheme> to override.
             - name: JAVA_TOOL_OPTIONS
               value: "-Xmx4g -Ds2.prefixSpacePositiveCacheOnly=true -Ds2.partition=WEIGHTED_LPT_FM"
+            # Each worker persists its owned hosts' per-host data-plane slices here, so a Batfish
+            # engine (the s2 dataplane plugin, -s2slicedir) can serve questions from them lazily.
+            - name: S2_SLICE_DIR
+              value: /s2/shared/slices
           ports:
             - containerPort: 4091
             - containerPort: 5091
+          volumeMounts:
+            - name: shared
+              mountPath: /s2/shared
           # Request is a scheduling floor; the transient peak is absorbed by the limit.
           # 2Gi is above the retained working set (tens of MiB after GC) and near the
           # typical transient; 6Gi = 4g heap + ~2Gi non-heap/GC headroom, which also
@@ -51,6 +58,10 @@ spec:
           resources:
             requests: {memory: "1Gi", cpu: "0.5"}
             limits: {memory: "6Gi"}
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: s2-shared
 ---
 apiVersion: v1
 kind: Service

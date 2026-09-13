@@ -30,6 +30,8 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
   public static final String ARG_S2_STORE_DATA_PLANE = "s2storedataplane";
 
+  public static final String ARG_S2_SLICE_DIR = "s2slicedir";
+
   private static final String ARG_DEBUG_FLAGS = "debugflags";
 
   private static final String ARG_PARSE_REUSE = "parsereuse";
@@ -374,6 +376,14 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     return _config.getBoolean(ARG_S2_STORE_DATA_PLANE);
   }
 
+  /**
+   * A directory of per-host data-plane slices produced by an out-of-process S2 worker pool. When
+   * set, the {@code s2} engine serves questions from those slices instead of computing in-process.
+   */
+  public String getS2SliceDir() {
+    return _config.getString(ARG_S2_SLICE_DIR, "");
+  }
+
   private void initConfigDefaults() {
     setDefaultProperty(BfConsts.ARG_ALWAYS_INCLUDE_ANSWER_IN_WORK_JSON_LOG, false);
     setDefaultProperty(BfConsts.ARG_BDP_DETAIL, false);
@@ -430,6 +440,7 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     setDefaultProperty(ARG_DATAPLANE_ENGINE_NAME, "ibdp");
     setDefaultProperty(ARG_S2_WORKERS, 0);
     setDefaultProperty(ARG_S2_STORE_DATA_PLANE, true);
+    setDefaultProperty(ARG_S2_SLICE_DIR, "");
   }
 
   private void initOptions() {
@@ -615,6 +626,11 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
     addBooleanOption(ARG_S2_STORE_DATA_PLANE, "whether to persist the computed data plane to disk");
 
+    addOption(
+        ARG_S2_SLICE_DIR,
+        "directory of per-host data-plane slices produced by an out-of-process S2 pool",
+        "s2 slice dir");
+
     // deprecated and ignored
     for (String deprecatedStringArg :
         new String[] {
@@ -734,6 +750,7 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     getStringOptionValue(ARG_DATAPLANE_ENGINE_NAME);
     getIntOptionValue(ARG_S2_WORKERS);
     getBooleanOptionValue(ARG_S2_STORE_DATA_PLANE);
+    getStringOptionValue(ARG_S2_SLICE_DIR);
   }
 
   public void setCanExecute(boolean canExecute) {
@@ -847,6 +864,10 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
   public void setS2StoreDataPlane(boolean store) {
     _config.setProperty(ARG_S2_STORE_DATA_PLANE, store);
+  }
+
+  public void setS2SliceDir(String sliceDir) {
+    _config.setProperty(ARG_S2_SLICE_DIR, sliceDir);
   }
 
   public void setQuestionName(QuestionId questionName) {

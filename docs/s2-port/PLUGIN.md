@@ -77,26 +77,37 @@ pybatfish ── init_snapshot / question ──▶ Batfish (coordinator/worker 
   PVC (snapshot input + per-host data-plane blocks). `N = kubectl scale` (pool size). Resources per
   `OPS.md` (worker request 1Gi / limit 6Gi / `-Xmx4g`).
 * **Control plane = live RPC.** The fixpoint reuses the runner's controller/sidecar protocol
-  (`S2ControlMessages`, `S2ControllerServer`, `S2SidecarServer`); the in-process `S2Cluster`
-  (barriers) gains a network implementation.
+  (`S2ControlMessages`, `S2ControllerServer`, `S2SidecarServer`); the worker-side network barrier
+  `S2RemoteCoordinator` already exists (the plugin reuses it; in-process runs use `S2Cluster`).
 * **Data plane = per-host blocks.** Each worker writes its owned nodes' slices to shared storage
   (the same per-host granularity as `PerHostDataPlane`); the engine's lazy `DataPlane` reads a host's
   block on demand (with an LRU). This is what makes a data plane larger than one JVM answerable.
 * **Failure/consistency:** a worker dying mid-fixpoint fails that snapshot's run (retry); slices are
   keyed by snapshot id so a version is pinned.
 
-### What must be added for this
+### Two-stage flow (implemented seam)
 
-1. **Network `S2Coordinator`** — replace `S2Cluster` (in-process) with an RPC-barrier implementation.
+The engine can serve the data plane **from per-host slices produced by an out-of-process pool**,
+which is the concrete Kubernetes step:
+
+1. **Produce.** The S2 worker pool computes the fixpoint and each worker writes its owned hosts'
+   slices to the shared volume (`S2_SLICE_DIR`, default `<S2_OUTPUT_DIR>/slices`; the `s2-worker`
+   StatefulSet mounts the PVC there). `S2Main worker` does this now.
+2. **Serve.** A Batfish engine runs with `-dataplaneengine=s2 -s2slicedir=/s2/shared/slices
+   -s2storedataplane=false`; questions are answered lazily from the slices (`S2DirectoryHostSlices` →
+   `S2LazyDataPlane`), so only the touched hosts are read. Verified by
+   `S2DataPlanePluginTest#testS2EngineServesFromSliceDirectory`.
+
+### What must be added to fully automate this
+
+1. **Persistent controller service** (choice A): a long-lived `s2-controller` Deployment + Service the
+   worker pool connects to and the engine drives per snapshot. The worker-side network barrier
+   (`S2RemoteCoordinator`) and the controller/sidecar servers already exist from the runner.
 2. **Worker service** — a long-lived Pod that joins the pool, accepts a snapshot assignment, runs its
-   shard, persists its per-host slices, and waits for the next snapshot.
-3. **Remote host-slice source** — the `S2LazyDataPlane` seam is in place: per-host slices are
-   exposed as `HostDataPlaneSlice` and resolved through `S2HostSlices` (in-process now; a
-   directory/shared-storage source covers the PVC model). Remaining: a live fetch-from-owner source
-   keyed by snapshot id, with an LRU, wired to the pool.
-4. **Pool discovery + settings** — headless Service (DNS) + a settings key (e.g. `s2workerpool`); auto
+   shard, writes its slices, and waits for the next snapshot.
+3. **Pool discovery + settings** — headless Service (DNS) + a settings key (e.g. `s2workerpool`); auto
    `N` from the pool size.
-5. **Snapshot shipping/cleanup** — shared PVC or object store; GC the slices after the run.
+4. **Slice GC** — clean the snapshot's slice directory after the run.
 
 ## Scale verification
 
@@ -112,10 +123,11 @@ pybatfish ── init_snapshot / question ──▶ Batfish (coordinator/worker 
 ## Status
 
 Done: engine registration/selection, `-s2workers` (explicit + auto), distributed compute + lazy
-global data plane, stock-question equivalence, protocol fallback, storage flag, launcher, and the
-pluggable per-host slice source (`S2HostSlices`: in-process + directory-backed) under the lazy data
-plane.
+global data plane, stock-question equivalence, protocol fallback, `s2storedataplane`, launcher, the
+pluggable per-host slice source (`S2HostSlices`: in-process + directory-backed), **slice production
+by the worker pool** (`S2_SLICE_DIR`; the k8s `s2-worker` StatefulSet mounts it), and **serving from
+those slices** (`-s2slicedir`, lazily).
 
-Next (large): the remote worker pool on Kubernetes (A.1) — network coordinator, long-lived worker
-service, live fetch-from-owner slice source, pool discovery, slice GC — then the scale verification
-above.
+Next (large): automate the two stages with a **persistent controller service** (choice A) — the
+engine drives the pool per snapshot while the worker-side barrier/servers are reused — plus pool
+discovery/auto-`N`, slice GC, and the scale verification above.

@@ -649,6 +649,15 @@ public final class S2Main {
                     false)
                 ._dataPlane;
 
+        // Persist this worker's owned hosts' slices so an out-of-process engine (the s2 dataplane
+        // plugin, serving questions with s2slicedir) can read them lazily. S2_SLICE_DIR overrides
+        // the default under S2_OUTPUT_DIR (the Kubernetes shared volume).
+        String sliceDirEnv = System.getenv("S2_SLICE_DIR");
+        Path sliceDir =
+            sliceDirEnv != null ? Paths.get(sliceDirEnv) : outputDir().resolve("slices");
+        S2DirectoryHostSlices.write(sliceDir, S2InProcessHostSlices.of(List.of(dp)));
+        System.out.printf("S2 worker %d wrote slices to %s%n", workerId, sliceDir);
+
         // Distributed symbolic reachability (M5) over the converged dataplane. Each worker builds
         // only its own switches' edges (OwnedForwardingAnalysis); the boundary edges into its
         // states are pulled from the peers that own their sources.
