@@ -27,6 +27,7 @@ public final class S2ControllerServer implements AutoCloseable {
 
   private final int _numWorkers;
   private final List<S2WorkerEndpoint> _endpoints;
+  private final Map<String, Integer> _assignment;
   private final byte[] _configs;
   private final byte[] _externalAdverts;
   private final Map<Integer, byte[]> _ownedConfigsByWorker;
@@ -108,6 +109,7 @@ public final class S2ControllerServer implements AutoCloseable {
       int port,
       int numWorkers,
       List<S2WorkerEndpoint> endpoints,
+      Map<String, Integer> assignment,
       byte[] configs,
       byte[] externalAdverts,
       Map<Integer, byte[]> ownedConfigsByWorker,
@@ -115,6 +117,7 @@ public final class S2ControllerServer implements AutoCloseable {
       throws IOException {
     _numWorkers = numWorkers;
     _endpoints = endpoints;
+    _assignment = assignment;
     _configs = configs;
     _externalAdverts = externalAdverts;
     _ownedConfigsByWorker = ownedConfigsByWorker;
@@ -170,7 +173,7 @@ public final class S2ControllerServer implements AutoCloseable {
               _descriptors == null ? null : _ownedConfigsByWorker.get(entry.getKey());
           workerOut.writeObject(
               new S2ControlMessages.Start(
-                  _endpoints, _configs, _externalAdverts, ownedConfigs, _descriptors));
+                  _endpoints, _assignment, _configs, _externalAdverts, ownedConfigs, _descriptors));
           workerOut.flush();
         }
       }

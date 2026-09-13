@@ -54,7 +54,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 | id | task | depends |
 | --- | --- | --- |
-| **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS); controller computes and distributes the assignment | P0 (weights) |
+| **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS); controller computes and distributes the assignment | **Done**: new `.../ibdp/partition/` package + `NodePartitioner`, union graph/`NodeWeights`, `-Ds2.partition` (default RANDOM unchanged), assignment shipped in `Start.assignment`; metrics/eval in `PARTITIONING-PLAN.md` §6.6. P0 (weights) |
 | **P3** | PrefixDependencyGraph (closure + DPDG + weighted WCC-LPT) | **Done**: `PrefixDependencyGraph.java` + `PrefixSharder` rewrite (weighted WCC-LPT, degenerate fallback); `PrefixSharderTest` extended |
 | **P-X** | shard-count selection | P3 |
 
@@ -77,7 +77,10 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 ### Operations / packaging — section C
 
 - **O1** defaults; **O2** k8s resources / `-Xmx`; **O3** CI demo matrix; **O4** benchmark automation;
-  **O5** METIS in the eval environment; **O6** partitioner weight calibration (← P0); **O7** docs sync.
+  **O5** METIS in the eval environment; **O6** partitioner weight calibration (← P0): **v1 shipped**
+  (`NodeWeights`, documented additive feature sum; also added `--weights` to
+  `scripts/partition-metrics.py`); fitting the coefficients to single-worker phase peaks is still
+  pending; **O7** docs sync.
 
 ### Dependency graph
 

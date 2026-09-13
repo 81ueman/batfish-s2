@@ -25,11 +25,17 @@ Usage:
   scripts/partition-metrics.py networks/s2-triangle
   scripts/partition-metrics.py --workers 3 --seed 0 networks/s2-fat4
   scripts/partition-metrics.py --workers 3 networks/s2-triangle --assignment assign.txt
+  scripts/partition-metrics.py networks/s2-triangle \
+      --assignment assign.txt --weights weights.txt
   scripts/partition-metrics.py --json networks/s2-triangle
 
 An explicit assignment file is either JSON (`{"r1": 0, "r2": 1}`) or one
 `hostname worker` pair per line (`#`-comments allowed). Hosts missing from the
 file are reported and assigned to worker 0.
+
+An explicit weights file is either JSON (`{"r1": 12, "r2": 7}`) or one
+`hostname weight` pair per line. It overrides the script's built-in feature sum;
+`S2Main partition` writes both files so the metrics use the Java node weights.
 
 Dependencies: Python 3 standard library only.
 """
@@ -88,10 +94,8 @@ class Node:
         self.interfaces = 0
         self.peers = 0
         self.origination_prefixes = 0
-
-    @property
-    def weight(self) -> int:
-        return self.interfaces + self.peers + self.origination_prefixes
+        # Default weight is the built-in feature sum; `--weights` overrides it.
+        self.weight = 0
 
 
 def _parse_intf_address(line: str):
@@ -171,6 +175,9 @@ def parse_config(path: Path) -> Config:
             elif "/" in parts[1]:
                 cfg.node.origination_prefixes += 1
             continue
+    cfg.node.weight = (
+        cfg.node.interfaces + cfg.node.peers + cfg.node.origination_prefixes
+    )
     return cfg
 
 
@@ -226,6 +233,27 @@ def load_assignment(path: Path):
         parts = re.split(r"[\s,=]+", line)
         if len(parts) < 2:
             raise ValueError(f"bad assignment line: {line!r}")
+        mapping[parts[0]] = int(parts[1])
+    return mapping
+
+
+def load_weights(path: Path):
+    """Load a `hostname weight` (or JSON) mapping, as written by `S2Main partition`."""
+    text = path.read_text(encoding="utf-8")
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return {str(k): int(v) for k, v in obj.items()}
+    except json.JSONDecodeError:
+        pass
+    mapping = {}
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = re.split(r"[\s,=]+", line)
+        if len(parts) < 2:
+            raise ValueError(f"bad weight line: {line!r}")
         mapping[parts[0]] = int(parts[1])
     return mapping
 
@@ -344,6 +372,13 @@ def main(argv=None):
         help="explicit hostname->worker mapping (JSON or 'host worker' lines)",
     )
     parser.add_argument(
+        "--weights",
+        type=Path,
+        default=None,
+        help="explicit hostname->weight mapping (JSON or 'host weight' lines); overrides the "
+        "built-in feature sum (use with the Java `S2Main partition` output)",
+    )
+    parser.add_argument(
         "--edge-weights",
         choices=("uniform", "estimated"),
         default="uniform",
@@ -363,6 +398,19 @@ def main(argv=None):
 
     nodes, edges, _address_owner = build_graph(configs)
     hosts = set(nodes)
+
+    if args.weights is not None:
+        weights = load_weights(args.weights)
+        missing = sorted(hosts - set(weights))
+        if missing:
+            print(
+                f"warning: {len(missing)} host(s) missing from weights, keeping built-in weight: "
+                f"{missing}",
+                file=sys.stderr,
+            )
+        for host in hosts:
+            if host in weights:
+                nodes[host].weight = weights[host]
 
     if args.assignment is not None:
         assignment = load_assignment(args.assignment)

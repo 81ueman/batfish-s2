@@ -234,13 +234,41 @@ protocol ごとの対象 prefix を閉じる:
 - throughput: balance 改善が wall time に反映されること（通信 cut 単独では効かない想定）。
 - DCN/WAN で自動選択が破綻しないこと。
 
+### 6.6 P2 評価結果（2026-09-13, `gpmetis` 未導入）
+
+`S2Main partition`（Java の node weight）→ `scripts/partition-metrics.py --assignment ...
+--weights ... --edge-weights estimated`（cut は script 側の L3+BGP union グラフ）。imbalance は
+`max/mean`、cut は推定重み。`METIS` はフォールバックのため `WEIGHTED_LPT_FM` と同値。
+
+| network | W | RANDOM imbalance / cut | NAME_ORDERED | WEIGHTED_LPT_FM | GREEDY_REGION | METIS(=fallback) |
+| --- | --- | --- | --- | --- | --- | --- |
+| s2-triangle | 2 | 1.333 / 6 | 1.333 / 6 | 1.333 / 6 | 1.333 / 6 | 1.333 / 6 |
+| s2-line | 3 | 1.077 / 15 | 1.077 / 15 | 1.077 / **6** | 1.500 / **6** | 1.077 / 6 |
+| s2-ospf-bgp | 2 | 1.222 / 6 | 1.222 / 6 | 1.222 / 6 | 1.389 / **3** | 1.222 / 6 |
+| s2-fat4 (20) | 3 | 1.050 / 60 | 1.050 / 69 | 1.050 / **36** | 1.050 / **36** | 1.050 / 36 |
+| s2-big2 (10) | 3 | 1.195 / 27 | 1.199 / 27 | 1.195 / **21** | 1.199 / **6** | 1.195 / 21 |
+
+知見: balance は全 scheme でほぼ同等（weight-aware scheme はごく僅かに改善）。cut は
+`WEIGHTED_LPT_FM` が RANDOM を一貫して下回る（`s2-line` 15→6、`s2-fat4` 60→36、`s2-big2`
+27→21）。`GREEDY_REGION` は BGP session グラフが密な `s2-big2` で最小 cut だが balance を
+やや犠牲にする（locality 優先の設計どおり）。`NAME_ORDERED` は `s2-fat4` で RANDOM より
+悪化し、名前規則だけでは DCN で十分でないことを示す。3-node 網 × 3 worker は 1 node/worker
+で scheme 差が出ない（想定どおり）。
+
 ---
 
 ## 7. マイルストーン
 
 - **P0 計測基盤**: **概ね実装済み** = `scripts/gen-topology.py`（FatTree/line）、`scripts/bench.sh`（＋phase 時刻）、`scripts/partition-metrics.py`（imbalance/cut）、`scripts/ci-matrix.sh`、sidecar RPC stats、`OPS.md`。残: 重み校准（O6）。知見: FatTree eBGP k≥4 は tie 不安定（C1）→ MATCH 検証は tie 安定網で。
 - **P1 shadow lazy 化・boundary-only 化**: **概ね実装済み（opt-in）** = `-Ds2.ownedDataplane`（config 由来 stub FIB、`IncrementalBdpEngine.dataPlaneNodes` で最終 dataplane を owned 限定）。caveat は **M4 で堅牢化済み**（tracks/VNI/tunnel/IPsec は full にフォールバック）。加えて **M1 `-Ds2.descriptorShadows`** で remote の policy 本体を削減。
-- **P2 partitioner プラグイン化**: 未着手。新パッケージ（例 `.../ibdp/partition/`）に schemes を実装。controller が assignment を算出・配布。
+- **P2 partitioner プラグイン化**: **完了（2026-09-13）**。新パッケージ `.../ibdp/partition/`
+  に `NodePartitioner` + `RANDOM` / `NAME_ORDERED` / `WEIGHTED_LPT_FM` / `GREEDY_REGION` /
+  `METIS` を実装。controller が union 通信グラフと `NodeWeights` を構築して assignment を1回だけ
+  算出し、`S2ControlMessages.Start.assignment` で配布、worker は再計算しない。`-Ds2.partition=<scheme>`
+  で選択（既定 `RANDOM` = 従来の hash-shuffle round-robin、デモ不変）。`METIS` は `gpmetis -seed=0`
+  を起動し、バイナリ不在時は `WEIGHTED_LPT_FM` にフォールバックする。評価 CLI `S2Main partition
+  <net> <W>` が assignment と node weight を出力し、`scripts/partition-metrics.py
+  --assignment ... --weights ...` で imbalance / weighted cut を測る（`--weights` は今回追加）。
 - **P3 `PrefixDependencyGraph`**: **完了** = `PrefixDependencyGraph.java` + `PrefixSharder` 刷新（weighted WCC-LPT、degenerate フォールバック、決定性）、`PrefixSharderTest` 拡張。
 - **P4 評価 → 既定 scheme 決定 → `M5-SCALE.md` / `README.md` 更新**: 未着手。
 

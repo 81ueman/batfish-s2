@@ -26,6 +26,13 @@ final class S2ControlMessages {
     final boolean descriptorShadows;
 
     /**
+     * The controller-computed node &rarr; worker assignment (hostname to worker index). Workers use
+     * this instead of independently recomputing {@code NetworkPartitioner}: the scheme is selected
+     * once on the controller ({@code -Ds2.partition=<scheme>}) and any randomness lives only there.
+     */
+    final Map<String, Integer> assignment;
+
+    /**
      * Java-serialized {@code SortedMap<String, Configuration>} of all snapshot configs, produced by
      * the controller so workers do not re-parse. May be null (fall back to parsing on the worker).
      */
@@ -54,11 +61,13 @@ final class S2ControlMessages {
 
     Start(
         List<S2WorkerEndpoint> endpoints,
+        Map<String, Integer> assignment,
         byte[] configs,
         byte[] externalAdverts,
         byte[] ownedConfigs,
         byte[] descriptors) {
       this.endpoints = endpoints;
+      this.assignment = assignment;
       this.configs = configs;
       this.externalAdverts = externalAdverts;
       this.ownedConfigs = ownedConfigs;

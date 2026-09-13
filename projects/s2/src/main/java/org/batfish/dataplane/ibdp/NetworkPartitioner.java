@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.batfish.dataplane.ibdp;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.batfish.dataplane.ibdp.partition.RandomPartitioner;
 
 /**
  * Assigns switches (hostnames) to workers.
  *
- * <p>Milestone 1 uses a balanced random-ish assignment. Later milestones can add the expert/METIS
- * schemes from the paper. Deterministic for a fixed seed.
+ * <p>This is the historical default partitioner: a deterministic balanced round-robin over a
+ * seed-derived hash shuffle. It is kept for source compatibility and is now a thin delegate to
+ * {@link RandomPartitioner}, the {@code RANDOM} scheme of the pluggable partitioner in {@code
+ * org.batfish.dataplane.ibdp.partition}. New code should select a scheme with {@code
+ * -Ds2.partition=<scheme>} and let the controller compute and ship the assignment.
  */
 public final class NetworkPartitioner {
+
+  private static final RandomPartitioner RANDOM = new RandomPartitioner();
 
   private NetworkPartitioner() {}
 
@@ -25,24 +27,6 @@ public final class NetworkPartitioner {
    * @return hostname -&gt; worker index, with the load as balanced as possible
    */
   public static Map<String, Integer> partition(Set<String> hostnames, int numWorkers, long seed) {
-    if (numWorkers < 1) {
-      throw new IllegalArgumentException("numWorkers must be >= 1");
-    }
-    List<String> sorted = new ArrayList<>(hostnames);
-    // Deterministic shuffle: sort by a hash derived from the seed so results are reproducible.
-    sorted.sort(Comparator.comparingLong(h -> mix(seed, h)));
-    Map<String, Integer> assignment = new HashMap<>();
-    for (int i = 0; i < sorted.size(); i++) {
-      assignment.put(sorted.get(i), i % numWorkers);
-    }
-    return assignment;
-  }
-
-  private static long mix(long seed, String hostname) {
-    long h = seed * 0x9E3779B97F4A7C15L + hostname.hashCode();
-    h ^= (h >>> 33);
-    h *= 0xFF51AFD7ED558CCDL;
-    h ^= (h >>> 33);
-    return h;
+    return RANDOM.partition(hostnames, numWorkers, seed);
   }
 }

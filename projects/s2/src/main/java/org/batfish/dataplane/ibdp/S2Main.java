@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
@@ -46,6 +47,8 @@ import org.batfish.datamodel.UniverseIpSpace;
 import org.batfish.datamodel.Vrf;
 import org.batfish.datamodel.flow.Trace;
 import org.batfish.dataplane.TracerouteEngineImpl;
+import org.batfish.dataplane.ibdp.partition.CommunicationGraph;
+import org.batfish.dataplane.ibdp.partition.PartitionScheme;
 import org.batfish.specifier.InterfaceLocation;
 import org.batfish.specifier.IpSpaceAssignment;
 import org.batfish.symbolic.state.StateExpr;
@@ -68,11 +71,14 @@ public final class S2Main {
    */
   private static final int BDD_PORT_OFFSET = 1000;
 
+  /** Fixed partition seed: the controller computes the assignment once and ships it to workers. */
+  private static final long PARTITION_SEED = 0L;
+
   private S2Main() {}
 
   public static void main(String[] args) throws Exception {
     if (args.length == 0) {
-      throw new IllegalArgumentException("usage: S2Main controller|worker ...");
+      throw new IllegalArgumentException("usage: S2Main controller|worker|partition ...");
     }
     switch (args[0]) {
       case "controller":
@@ -80,6 +86,9 @@ public final class S2Main {
         break;
       case "worker":
         runWorker(args);
+        break;
+      case "partition":
+        runPartition(args);
         break;
       default:
         throw new IllegalArgumentException("unknown role " + args[0]);
@@ -215,6 +224,34 @@ public final class S2Main {
     DataPlane vanilla = snap.batfish.loadDataPlane(snap.snapshot);
     Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
 
+    // The partition scheme is selected once on the controller and the assignment is computed here,
+    // then shipped to every worker (workers never recompute it). The default RANDOM reproduces the
+    // historical hash-shuffle round-robin, so stock demos are unchanged.
+    PartitionScheme scheme = PartitionScheme.fromSystemProperties();
+    CommunicationGraph graph =
+        CommunicationGraph.build(snap.configs, snap.topologyContext, snap.bgpTopology);
+    Map<String, Integer> assignment =
+        CommunicationGraph.canonicalAssignment(
+            scheme.partitioner().partition(graph, numWorkers, PARTITION_SEED), numWorkers);
+    {
+      long[] loads = CommunicationGraph.loads(graph, assignment, numWorkers);
+      long maxLoad = 0;
+      long totalLoad = 0;
+      for (long load : loads) {
+        maxLoad = Math.max(maxLoad, load);
+        totalLoad += load;
+      }
+      double meanLoad = totalLoad / (double) numWorkers;
+      System.out.printf(
+          "S2 controller: partition scheme=%s workers=%d nodes=%d weighted-cut=%d"
+              + " imbalance(max/mean)=%.3f%n",
+          scheme,
+          numWorkers,
+          graph.nodes().size(),
+          CommunicationGraph.cutWeight(graph, assignment),
+          meanLoad == 0.0 ? 0.0 : maxLoad / meanLoad);
+    }
+
     // Descriptor-shadow mode (-Ds2.descriptorShadows=true): ship each worker only its owned configs
     // plus a shared reduced descriptor for every remote node, instead of the full snapshot. Stays
     // off by default; also requires config shipping and a snapshot the shadow path can answer
@@ -229,8 +266,6 @@ public final class S2Main {
     Map<Integer, byte[]> ownedConfigsByWorker = null;
     byte[] serializedDescriptors = null;
     if (descriptorShadows) {
-      Map<String, Integer> assignment =
-          NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, 0L);
       Map<Integer, SortedMap<String, Configuration>> ownedByWorker = new HashMap<>();
       Map<String, RemoteNodeDescriptor> descriptors = new TreeMap<>();
       for (Map.Entry<String, Configuration> e : snap.configs.entrySet()) {
@@ -263,6 +298,7 @@ public final class S2Main {
             port,
             numWorkers,
             endpoints,
+            assignment,
             serializedConfigs,
             serializedExternalAdverts,
             ownedConfigsByWorker,
@@ -432,8 +468,13 @@ public final class S2Main {
               ? S2Snapshot.fromConfigs(configs)
               : S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
       assertDistributedProtocolsSupported(snap, numWorkers);
+      // The controller computes the assignment once and ships it; workers must use it verbatim
+      // rather than recomputing. Fall back to the historical RANDOM partition only if an older
+      // controller omitted it.
       Map<String, Integer> assignment =
-          NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, 0L);
+          start.assignment != null
+              ? start.assignment
+              : NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, PARTITION_SEED);
       Set<String> ownedHosts = new HashSet<>();
       assignment.forEach(
           (host, owner) -> {
@@ -590,6 +631,54 @@ public final class S2Main {
   }
 
   // ------------------------------------------------------------------- helpers
+
+  /**
+   * Stand-alone partition CLI for offline evaluation: {@code S2Main partition <network>
+   * <numWorkers>} computes the assignment for the scheme in {@code -Ds2.partition} and writes it,
+   * plus the node weights, under {@code $S2_OUTPUT_DIR}. {@code scripts/partition-metrics.py}
+   * consumes both. No workers or dataplane are started.
+   */
+  private static void runPartition(String[] args) throws Exception {
+    String network = args[1];
+    int numWorkers = Integer.parseInt(args[2]);
+    S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
+    PartitionScheme scheme = PartitionScheme.fromSystemProperties();
+    CommunicationGraph graph =
+        CommunicationGraph.build(snap.configs, snap.topologyContext, snap.bgpTopology);
+    Map<String, Integer> assignment =
+        CommunicationGraph.canonicalAssignment(
+            scheme.partitioner().partition(graph, numWorkers, PARTITION_SEED), numWorkers);
+    Path out = outputDir();
+    String base = network + "-" + scheme.name().toLowerCase(Locale.ROOT) + "-" + numWorkers + "w";
+    Path assignmentFile = out.resolve("assignment-" + base + ".txt");
+    Path weightsFile = out.resolve("weights-" + base + ".txt");
+    StringBuilder assignmentText = new StringBuilder();
+    StringBuilder weightsText = new StringBuilder();
+    for (String host : graph.nodes()) {
+      assignmentText.append(host).append(' ').append(assignment.get(host)).append('\n');
+      weightsText.append(host).append(' ').append(graph.weight(host)).append('\n');
+    }
+    Files.writeString(assignmentFile, assignmentText.toString());
+    Files.writeString(weightsFile, weightsText.toString());
+    long[] loads = CommunicationGraph.loads(graph, assignment, numWorkers);
+    long maxLoad = 0;
+    long totalLoad = 0;
+    for (long load : loads) {
+      maxLoad = Math.max(maxLoad, load);
+      totalLoad += load;
+    }
+    double meanLoad = totalLoad / (double) numWorkers;
+    System.out.printf(
+        "S2 partition: scheme=%s network=%s workers=%d nodes=%d weighted-cut=%d"
+            + " imbalance(max/mean)=%.3f%n",
+        scheme,
+        network,
+        numWorkers,
+        graph.nodes().size(),
+        CommunicationGraph.cutWeight(graph, assignment),
+        meanLoad == 0.0 ? 0.0 : maxLoad / meanLoad);
+    System.out.printf("assignment: %s%nweights: %s%n", assignmentFile, weightsFile);
+  }
 
   /** Build Batfish's BDD reachability analysis over the given dataplane (all interface sources). */
   private static BDDReachabilityAnalysis buildReachabilityAnalysis(S2Snapshot snap, DataPlane dp) {

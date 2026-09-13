@@ -1,0 +1,279 @@
+// SPDX-License-Identifier: Apache-2.0
+package org.batfish.dataplane.ibdp.partition;
+
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSortedSet;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import org.batfish.datamodel.BgpPeerConfigId;
+import org.batfish.datamodel.Configuration;
+import org.batfish.datamodel.Edge;
+import org.batfish.datamodel.bgp.BgpTopology;
+import org.batfish.datamodel.ospf.OspfNeighborConfigId;
+import org.batfish.datamodel.ospf.OspfTopology;
+import org.batfish.dataplane.ibdp.TopologyContext;
+
+/**
+ * The union communication graph of an S2 snapshot, used by the node &rarr; worker partitioners.
+ *
+ * <p>Vertices are router hostnames; a vertex is weighted by {@link NodeWeights} (an estimate of its
+ * control-plane load). Undirected edges are the union of three topologies (port plan &sect;3.1):
+ *
+ * <ul>
+ *   <li>L3 adjacencies ({@link TopologyContext#getLayer3Topology()});
+ *   <li>BGP sessions ({@link BgpTopology}), which is the essential graph on WANs where multi-hop
+ *       iBGP sessions do not follow L3 links;
+ *   <li>OSPF adjacencies ({@link TopologyContext#getOspfTopology()}).
+ * </ul>
+ *
+ * <p>An edge's weight is an estimate of the exchange volume across it. In v1 an edge's weight is
+ * the number of distinct topologies that connect the pair (1 for an L3-only or BGP-only or
+ * OSPF-only adjacency, up to 3 when all three agree). Topology edge sets are directed and list both
+ * orientations of a link; the bitmask below makes the undirected edge weight independent of that
+ * duplication. This is deliberately simple and documented rather than calibrated; the partition
+ * objective weights balance first and cut second, and the paper finds the cut has little effect on
+ * peak memory (&sect;5.6).
+ *
+ * <p>Building is deterministic: vertices and neighbor lists are sorted by hostname.
+ */
+public final class CommunicationGraph {
+
+  /** One unit per distinct topology connecting a pair (see the class doc). */
+  public static final int DEFAULT_EDGE_WEIGHT = 1;
+
+  /** Bit for an L3 adjacency in the per-pair topology mask. */
+  private static final int L3 = 1;
+
+  /** Bit for a BGP session in the per-pair topology mask. */
+  private static final int BGP = 2;
+
+  /** Bit for an OSPF adjacency in the per-pair topology mask. */
+  private static final int OSPF = 4;
+
+  private final ImmutableSortedSet<String> _nodes;
+  private final ImmutableMap<String, Integer> _weights;
+  private final ImmutableMap<String, ImmutableMap<String, Integer>> _adjacency;
+
+  private CommunicationGraph(
+      ImmutableSortedSet<String> nodes,
+      ImmutableMap<String, Integer> weights,
+      ImmutableMap<String, ImmutableMap<String, Integer>> adjacency) {
+    _nodes = nodes;
+    _weights = weights;
+    _adjacency = adjacency;
+  }
+
+  /** All router hostnames, in ascending order. */
+  public Set<String> nodes() {
+    return _nodes;
+  }
+
+  /** The estimated load weight of {@code node}. */
+  public int weight(String node) {
+    return _weights.getOrDefault(node, 0);
+  }
+
+  /** The estimated load weights, keyed by hostname. */
+  public Map<String, Integer> weights() {
+    return _weights;
+  }
+
+  /** Sum of all node weights. */
+  public long totalWeight() {
+    long total = 0;
+    for (int w : _weights.values()) {
+      total += w;
+    }
+    return total;
+  }
+
+  /**
+   * The estimated exchange weight of the undirected edge between {@code a} and {@code b}, or {@code
+   * 0} if they are not adjacent.
+   */
+  public int edgeWeight(String a, String b) {
+    ImmutableMap<String, Integer> neighbors = _adjacency.get(a);
+    return neighbors == null ? 0 : neighbors.getOrDefault(b, 0);
+  }
+
+  /**
+   * The neighbors of {@code node} with their estimated edge weights, in ascending hostname order.
+   */
+  public Map<String, Integer> neighbors(String node) {
+    return _adjacency.getOrDefault(node, ImmutableMap.of());
+  }
+
+  /** The total estimated exchange weight of all edges (each undirected edge counted once). */
+  public long totalEdgeWeight() {
+    long total = 0;
+    for (ImmutableMap<String, Integer> neighbors : _adjacency.values()) {
+      for (int w : neighbors.values()) {
+        total += w;
+      }
+    }
+    return total / 2;
+  }
+
+  /**
+   * A synthetic graph for unit tests: {@code weights} is the node set and weights, {@code
+   * adjacency} the symmetric edge weights. Package-private and test-only.
+   */
+  @com.google.common.annotations.VisibleForTesting
+  static CommunicationGraph forTesting(
+      Map<String, Integer> weights, Map<String, Map<String, Integer>> adjacency) {
+    ImmutableSortedSet<String> nodes =
+        ImmutableSortedSet.copyOf(Comparator.naturalOrder(), weights.keySet());
+    ImmutableMap.Builder<String, Integer> weightBuilder = ImmutableMap.builder();
+    ImmutableMap.Builder<String, ImmutableMap<String, Integer>> adjacencyBuilder =
+        ImmutableMap.builder();
+    for (String node : nodes) {
+      weightBuilder.put(node, weights.getOrDefault(node, 0));
+      Map<String, Integer> neighbors = new java.util.TreeMap<>();
+      Map<String, Integer> edges = adjacency.get(node);
+      if (edges != null) {
+        for (Map.Entry<String, Integer> e : edges.entrySet()) {
+          if (weights.containsKey(e.getKey())) {
+            neighbors.put(e.getKey(), e.getValue());
+          }
+        }
+      }
+      adjacencyBuilder.put(node, ImmutableMap.copyOf(neighbors));
+    }
+    return new CommunicationGraph(nodes, weightBuilder.build(), adjacencyBuilder.build());
+  }
+
+  /** Build the union graph for a snapshot. */
+  public static CommunicationGraph build(
+      Map<String, Configuration> configs,
+      TopologyContext topologyContext,
+      BgpTopology bgpTopology) {
+    Map<String, Integer> weights = NodeWeights.compute(configs);
+    MutableAdjacency adjacency = new MutableAdjacency(configs.keySet());
+    // L3 adjacencies.
+    for (Edge edge : topologyContext.getLayer3Topology().getEdges()) {
+      adjacency.add(edge.getNode1(), edge.getNode2(), L3);
+    }
+    // BGP sessions.
+    for (com.google.common.graph.EndpointPair<BgpPeerConfigId> pair :
+        bgpTopology.getGraph().edges()) {
+      adjacency.add(pair.source().getHostname(), pair.target().getHostname(), BGP);
+    }
+    // OSPF adjacencies.
+    OspfTopology ospf = topologyContext.getOspfTopology();
+    for (OspfTopology.EdgeId edgeId : ospf.edges()) {
+      OspfNeighborConfigId tail = edgeId.getTail();
+      OspfNeighborConfigId head = edgeId.getHead();
+      adjacency.add(tail.getHostname(), head.getHostname(), OSPF);
+    }
+    return adjacency.toGraph(weights);
+  }
+
+  /** Accumulates the per-pair topology mask deterministically. */
+  private static final class MutableAdjacency {
+    private final Set<String> _nodes;
+    private final Map<String, Map<String, Integer>> _mask = new TreeMap<>();
+
+    MutableAdjacency(Set<String> nodes) {
+      _nodes = nodes;
+      for (String node : nodes) {
+        _mask.put(node, new TreeMap<>());
+      }
+    }
+
+    void add(String a, String b, int topologyBit) {
+      if (a == null || b == null || a.equals(b)) {
+        return;
+      }
+      if (!_nodes.contains(a) || !_nodes.contains(b)) {
+        // Topology can mention nodes that are not configurations (should not happen); ignore.
+        return;
+      }
+      _mask.get(a).merge(b, topologyBit, (x, y) -> x | y);
+      _mask.get(b).merge(a, topologyBit, (x, y) -> x | y);
+    }
+
+    CommunicationGraph toGraph(Map<String, Integer> weights) {
+      ImmutableSortedSet<String> nodes =
+          ImmutableSortedSet.copyOf(Comparator.naturalOrder(), _nodes);
+      ImmutableMap.Builder<String, Integer> weightBuilder = ImmutableMap.builder();
+      for (String node : nodes) {
+        weightBuilder.put(node, weights.getOrDefault(node, 0));
+      }
+      ImmutableMap.Builder<String, ImmutableMap<String, Integer>> adjacencyBuilder =
+          ImmutableMap.builder();
+      for (String node : nodes) {
+        Map<String, Integer> neighbors = new TreeMap<>();
+        for (Map.Entry<String, Integer> e : _mask.getOrDefault(node, Map.of()).entrySet()) {
+          neighbors.put(e.getKey(), Integer.bitCount(e.getValue()) * DEFAULT_EDGE_WEIGHT);
+        }
+        adjacencyBuilder.put(node, ImmutableMap.copyOf(neighbors));
+      }
+      return new CommunicationGraph(nodes, weightBuilder.build(), adjacencyBuilder.build());
+    }
+  }
+
+  /** The set of nodes with at least one neighbor in a different worker, in ascending order. */
+  static List<String> boundaryNodes(CommunicationGraph graph, Map<String, Integer> assignment) {
+    List<String> boundary = new ArrayList<>();
+    for (String node : graph.nodes()) {
+      int owner = assignment.get(node);
+      for (Map.Entry<String, Integer> e : graph.neighbors(node).entrySet()) {
+        if (assignment.get(e.getKey()) != owner) {
+          boundary.add(node);
+          break;
+        }
+      }
+    }
+    return boundary;
+  }
+
+  /** Compute the cut weight of an assignment (sum of edge weights crossing a worker boundary). */
+  public static long cutWeight(CommunicationGraph graph, Map<String, Integer> assignment) {
+    Map<String, Integer> edgeSeen = new HashMap<>();
+    long cut = 0;
+    for (String u : graph.nodes()) {
+      int uOwner = assignment.get(u);
+      for (Map.Entry<String, Integer> e : graph.neighbors(u).entrySet()) {
+        String v = e.getKey();
+        if (uOwner == assignment.get(v)) {
+          continue;
+        }
+        // Count each undirected edge once: only when u < v.
+        if (u.compareTo(v) < 0) {
+          cut += e.getValue();
+        }
+      }
+    }
+    return cut;
+  }
+
+  /** The per-worker node weights of an assignment, indexed by worker. */
+  public static long[] loads(
+      CommunicationGraph graph, Map<String, Integer> assignment, int numWorkers) {
+    long[] loads = new long[numWorkers];
+    for (String node : graph.nodes()) {
+      loads[assignment.get(node)] += graph.weight(node);
+    }
+    return loads;
+  }
+
+  /** Build an assignment from a hostname -&gt; worker index map, validating the range. */
+  public static Map<String, Integer> canonicalAssignment(
+      Map<String, Integer> assignment, int numWorkers) {
+    Map<String, Integer> canonical = new TreeMap<>();
+    for (Map.Entry<String, Integer> e : assignment.entrySet()) {
+      int worker = e.getValue();
+      if (worker < 0 || worker >= numWorkers) {
+        throw new IllegalStateException(
+            "partitioner assigned " + e.getKey() + " to out-of-range worker " + worker);
+      }
+      canonical.put(e.getKey(), worker);
+    }
+    return canonical;
+  }
+}
