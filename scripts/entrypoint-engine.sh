@@ -19,4 +19,4 @@ S2_ARGS="${S2_ARGS} -s2storedataplane=false"
 S2_ARGS="${S2_ARGS} -s2slicedir=${SLICE_DIR}"
 
 exec java -XX:-UseCompressedOops \
-  -jar /s2/allinone.jar -batfishargs "${S2_ARGS}" "$@"
+  -jar /s2/allinone.jar -runclient false -batfishargs "${S2_ARGS}" "$@"

@@ -48,3 +48,4 @@ results/
 containers/
 
 docker/s2_main_deploy.jar
+docker/allinone_main_deploy.jar
