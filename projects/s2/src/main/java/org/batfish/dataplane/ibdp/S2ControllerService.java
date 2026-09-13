@@ -2,6 +2,8 @@
 
 package org.batfish.dataplane.ibdp;
 
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.ObjectInputStream;
@@ -209,6 +211,25 @@ public final class S2ControllerService implements AutoCloseable {
         } else {
           session.send(new S2ControlMessages.SumResponse(run.sums.check(request.value)));
         }
+      } else if (message instanceof S2ControlMessages.UnownedArpIpsRequest) {
+        S2ControlMessages.UnownedArpIpsRequest request =
+            (S2ControlMessages.UnownedArpIpsRequest) message;
+        if (run == null || run.runId != request.runId || run.failure != null) {
+          // Benign reply so the worker's one-shot exchange unwinds instead of blocking.
+          session.send(new S2ControlMessages.UnownedArpIpsResponse(ImmutableSet.of()));
+        } else {
+          session.send(
+              new S2ControlMessages.UnownedArpIpsResponse(run.unownedArpIps.check(request.ips)));
+        }
+      } else if (message instanceof S2ControlMessages.ArpRepliesRequest) {
+        S2ControlMessages.ArpRepliesRequest request = (S2ControlMessages.ArpRepliesRequest) message;
+        if (run == null || run.runId != request.runId || run.failure != null) {
+          // Benign reply so the worker's one-shot exchange unwinds instead of blocking.
+          session.send(new S2ControlMessages.ArpRepliesResponse(ImmutableMap.of()));
+        } else {
+          session.send(
+              new S2ControlMessages.ArpRepliesResponse(run.arpReplies.check(request.arpReplies)));
+        }
       } else if (message instanceof S2ControlMessages.Done) {
         S2ControlMessages.Done done = (S2ControlMessages.Done) message;
         if (run != null && run.runId == done.runId) {
@@ -359,6 +380,8 @@ public final class S2ControllerService implements AutoCloseable {
     final int runId;
     final S2RoundBarrier rounds;
     final S2SumBarrier sums;
+    final S2UnownedArpIpsBarrier unownedArpIps;
+    final S2ArpRepliesBarrier arpReplies;
     final AtomicInteger done = new AtomicInteger();
     final CountDownLatch doneLatch = new CountDownLatch(1);
     volatile String failure;
@@ -368,6 +391,8 @@ public final class S2ControllerService implements AutoCloseable {
       this.runId = runId;
       this.rounds = new S2RoundBarrier(numWorkers);
       this.sums = new S2SumBarrier(numWorkers);
+      this.unownedArpIps = new S2UnownedArpIpsBarrier(numWorkers);
+      this.arpReplies = new S2ArpRepliesBarrier(numWorkers);
     }
   }
 

@@ -197,12 +197,13 @@ public final class S2WorkerService implements AutoCloseable {
     S2RemoteCoordinator coordinator = new S2RemoteCoordinator(_out, _in, start.runId);
     ShadowMainRibSync shadowSync =
         new ShadowMainRibSync(nodes, assignment, _workerId, start.endpoints, client);
-    // The pool's slices are served to questions that consult the forwarding analysis. A remote
-    // shadow's FIB is a stub, so owned-only mode would give an ARP/forwarding view that differs
-    // from stock Batfish; the worker service therefore defaults to the forwarding-exact full
-    // dataplane (each worker pulls the remote RIBs via the shadow sync). -Ds2.ownedDataplane=true
-    // restores owned-only mode for scale experiments that only inspect RIBs/FIBs.
-    boolean ownedDataplane = Boolean.parseBoolean(System.getProperty("s2.ownedDataplane", "false"));
+    // Owned-only mode is forwarding-exact: one-shot post-convergence exchanges of the unowned ARP
+    // IPs and the owned nodes' exact ARP replies make each worker's forwarding analysis for its
+    // owned nodes match the full dataplane even though remote shadows only carry stub FIBs. It is
+    // therefore the default, so per-worker memory scales with the owned node count.
+    // -Ds2.ownedDataplane=false forces the older full-dataplane-per-worker behavior (each worker
+    // pulls the remote RIBs via the shadow sync).
+    boolean ownedDataplane = Boolean.parseBoolean(System.getProperty("s2.ownedDataplane", "true"));
     S2BdpEngine engine =
         new S2BdpEngine(
             snap.settings(),

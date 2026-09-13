@@ -24,11 +24,14 @@ import org.batfish.common.plugin.DataPlanePlugin.ComputeDataPlaneResult;
 import org.batfish.common.topology.IpOwners;
 import org.batfish.common.topology.TopologyProvider;
 import org.batfish.datamodel.BgpAdvertisement;
+import org.batfish.datamodel.Bgpv4Route;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.DataPlane;
 import org.batfish.datamodel.FinalMainRib;
+import org.batfish.datamodel.IpSpace;
 import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.RoutingProtocol;
+import org.batfish.datamodel.VrfForwardingBehavior;
 import org.batfish.datamodel.isis.IsisTopology;
 import org.batfish.main.Batfish;
 import org.batfish.main.BatfishTestUtils;
@@ -235,6 +238,23 @@ public class S2DistributedControlPlaneTest {
     assertDistributedOwnedMatchesVanilla(AGG_TESTRIG, AGG_CONFIGS, new int[] {1, 3});
   }
 
+  /**
+   * Owned-only forwarding exactness on the in-process engine: each owned node's BGP routes, FIB
+   * keys, and forwarding analysis (VRF forwarding behavior and ARP replies) must match vanilla at 1
+   * and 3 workers.
+   *
+   * <p>Note: this harness's shadows delegate to the owner's real node, so remote FIBs are not stubs
+   * and the stub-FIB gap is invisible here. {@link S2RemoteSidecarTest} runs the same check against
+   * real (non-delegating) remote shadows, which is where the residual remote-ARP-reply dependency
+   * actually appears.
+   */
+  @Test
+  public void testOwnedDataplaneForwardingMatchesVanilla() throws Exception {
+    assertDistributedOwnedForwardingMatchesVanilla(TESTRIG, CONFIGS, new int[] {1, 3});
+    assertDistributedOwnedForwardingMatchesVanilla(
+        OSPF_BGP_TESTRIG, OSPF_BGP_CONFIGS, new int[] {1, 3});
+  }
+
   /** Sanity-check that the redistribution snapshot actually exercises both directions. */
   @Test
   public void testRedistributionProducesRoutes() throws Exception {
@@ -283,8 +303,35 @@ public class S2DistributedControlPlaneTest {
     }
   }
 
+  /**
+   * As {@link #assertDistributedOwnedMatchesVanilla} but also asserts that the owned nodes' BGP
+   * routes, FIB keys, and forwarding analysis (VRF forwarding behavior and ARP replies) match
+   * vanilla. This is the forwarding-exactness check for owned-only mode: its unowned-ARP-IP set is
+   * recovered from the owned FIBs and unioned across workers rather than read off stub remote FIBs.
+   */
+  private void assertDistributedOwnedForwardingMatchesVanilla(
+      String testrig, List<String> testrigConfigs, int[] workerCounts) throws Exception {
+    System.setProperty("s2.ownedDataplane", "true");
+    try {
+      assertDistributedMatchesVanilla(testrig, testrigConfigs, workerCounts, false, true);
+    } finally {
+      System.clearProperty("s2.ownedDataplane");
+    }
+  }
+
   private void assertDistributedMatchesVanilla(
       String testrig, List<String> testrigConfigs, int[] workerCounts, boolean withAnnouncements)
+      throws Exception {
+    assertDistributedMatchesVanilla(
+        testrig, testrigConfigs, workerCounts, withAnnouncements, false);
+  }
+
+  private void assertDistributedMatchesVanilla(
+      String testrig,
+      List<String> testrigConfigs,
+      int[] workerCounts,
+      boolean withAnnouncements,
+      boolean checkForwarding)
       throws Exception {
     TestrigText.Builder testrigText =
         TestrigText.builder().setConfigurationFiles(testrig, testrigConfigs);
@@ -315,16 +362,64 @@ public class S2DistributedControlPlaneTest {
         new IncrementalDataPlaneSettings(batfish.getSettingsConfiguration());
 
     for (int workers : workerCounts) {
-      Table<String, String, FinalMainRib> distributed =
-          runDistributed(configs, adverts, tc, ipOwners, settings, workers);
-      assertRibsEqual(vanilla, distributed, "workers=" + workers);
+      DistributedRun run = runDistributed(configs, adverts, tc, ipOwners, settings, workers);
+      String context = "workers=" + workers;
+      assertRibsEqual(vanilla, mergeRibs(run), context);
+      if (checkForwarding) {
+        assertOwnedBgpAndFibKeysEqual(vanilla, run, context);
+        assertOwnedForwardingEqual(vanilla, run, context);
+      }
+    }
+  }
+
+  private static void assertOwnedBgpAndFibKeysEqual(
+      DataPlane vanilla, DistributedRun run, String context) {
+    Table<String, String, Set<Bgpv4Route>> mergedBgpRoutes = HashBasedTable.create();
+    for (DataPlane dp : run.dataPlanes) {
+      dp.getBgpRoutes()
+          .cellSet()
+          .forEach(
+              cell -> mergedBgpRoutes.put(cell.getRowKey(), cell.getColumnKey(), cell.getValue()));
+    }
+    assertThat(
+        String.format("%s: BGP routes differ", context),
+        mergedBgpRoutes,
+        equalTo(vanilla.getBgpRoutes()));
+    for (DataPlane dp : run.dataPlanes) {
+      assertThat(
+          String.format("%s: FIB keys differ", context),
+          dp.getFibs().keySet(),
+          equalTo(vanilla.getFibs().keySet()));
+    }
+  }
+
+  /**
+   * Each host's forwarding analysis must come from the worker that owns it: other workers only
+   * compute a stub FIB for it, so their view of it is not authoritative (and is allowed to differ).
+   */
+  private static void assertOwnedForwardingEqual(
+      DataPlane vanilla, DistributedRun run, String context) {
+    Map<String, Map<String, VrfForwardingBehavior>> vanillaVrfBehavior =
+        vanilla.getForwardingAnalysis().getVrfForwardingBehavior();
+    Map<String, Map<String, IpSpace>> vanillaArpReplies =
+        vanilla.getForwardingAnalysis().getArpReplies();
+    for (String host : vanillaVrfBehavior.keySet()) {
+      DataPlane owner = run.dataPlanes.get(run.assignment.get(host));
+      assertThat(
+          String.format("%s: VRF forwarding behavior differs for %s", context, host),
+          owner.getForwardingAnalysis().getVrfForwardingBehavior().get(host),
+          equalTo(vanillaVrfBehavior.get(host)));
+      assertThat(
+          String.format("%s: ARP replies differ for %s", context, host),
+          owner.getForwardingAnalysis().getArpReplies().get(host),
+          equalTo(vanillaArpReplies.get(host)));
     }
   }
 
   // The worker pool is shut down in the finally block below; PMD's CloseResource only recognizes
   // close()/try-with-resources, so suppress it here.
   @SuppressWarnings("PMD.CloseResource")
-  private static Table<String, String, FinalMainRib> runDistributed(
+  private static DistributedRun runDistributed(
       SortedMap<String, Configuration> configs,
       Set<BgpAdvertisement> adverts,
       TopologyContext tc,
@@ -371,16 +466,34 @@ public class S2DistributedControlPlaneTest {
         futures.add(
             pool.submit(() -> engine.computeDataPlane(configs, tc, adverts, ipOwners, false)));
       }
-      Table<String, String, FinalMainRib> merged = HashBasedTable.create();
+      List<DataPlane> dataPlanes = new ArrayList<>();
       for (Future<ComputeDataPlaneResult> future : futures) {
-        DataPlane dp = future.get()._dataPlane;
-        dp.getRibs()
-            .cellSet()
-            .forEach(cell -> merged.put(cell.getRowKey(), cell.getColumnKey(), cell.getValue()));
+        dataPlanes.add(future.get()._dataPlane);
       }
-      return merged;
+      return new DistributedRun(assignment, dataPlanes);
     } finally {
       pool.shutdownNow();
+    }
+  }
+
+  private static Table<String, String, FinalMainRib> mergeRibs(DistributedRun run) {
+    Table<String, String, FinalMainRib> merged = HashBasedTable.create();
+    for (DataPlane dp : run.dataPlanes) {
+      dp.getRibs()
+          .cellSet()
+          .forEach(cell -> merged.put(cell.getRowKey(), cell.getColumnKey(), cell.getValue()));
+    }
+    return merged;
+  }
+
+  /** One distributed run's per-worker dataplanes and its node-to-worker assignment. */
+  static final class DistributedRun {
+    final Map<String, Integer> assignment;
+    final List<DataPlane> dataPlanes;
+
+    DistributedRun(Map<String, Integer> assignment, List<DataPlane> dataPlanes) {
+      this.assignment = assignment;
+      this.dataPlanes = dataPlanes;
     }
   }
 

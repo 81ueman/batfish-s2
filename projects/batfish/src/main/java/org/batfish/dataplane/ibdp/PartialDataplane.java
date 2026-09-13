@@ -24,6 +24,8 @@ import org.batfish.datamodel.EvpnRoute;
 import org.batfish.datamodel.Fib;
 import org.batfish.datamodel.FinalMainRib;
 import org.batfish.datamodel.ForwardingAnalysis;
+import org.batfish.datamodel.Ip;
+import org.batfish.datamodel.IpSpace;
 import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.Topology;
 import org.batfish.datamodel.vxlan.Layer2Vni;
@@ -100,6 +102,27 @@ public final class PartialDataplane implements DataPlane {
     private @Nullable Topology _layer3Topology;
     private @Nullable L3Adjacencies _l3Adjacencies;
 
+    /**
+     * Cluster-wide unowned ARP IPs to use for the forwarding analysis instead of deriving them from
+     * the (possibly incomplete) FIBs here. Null (the default) keeps the stock per-node behavior.
+     */
+    private @Nullable Set<Ip> _unownedArpIps;
+
+    /**
+     * Cluster-wide per-node/interface ARP replies to use for the forwarding analysis instead of
+     * deriving them from the (possibly incomplete) FIBs here. Null (the default) keeps the stock
+     * per-node behavior.
+     */
+    private @Nullable Map<String, Map<String, IpSpace>> _arpReplies;
+
+    /**
+     * Already-finalized FIBs to build the forwarding analysis from. When null (the default) the
+     * FIBs are read from {@code _nodes}. An engine that rebuilds a dataplane after convergence
+     * passes the captured FIBs here so the rebuild sees exactly the FIBs the fixpoint produced
+     * (reading {@code VirtualRouter#getFib()} again could observe a later recomputation).
+     */
+    private @Nullable Map<String, Map<String, Fib>> _fibs;
+
     public @Nonnull Builder setIpOwners(@Nonnull IpOwners ipOwners) {
       _ipOwners = ipOwners;
       return this;
@@ -117,6 +140,21 @@ public final class PartialDataplane implements DataPlane {
 
     public Builder setL3Adjacencies(@Nonnull L3Adjacencies l3Adjacencies) {
       _l3Adjacencies = l3Adjacencies;
+      return this;
+    }
+
+    public Builder setUnownedArpIps(@Nullable Set<Ip> unownedArpIps) {
+      _unownedArpIps = unownedArpIps;
+      return this;
+    }
+
+    public Builder setArpReplies(@Nullable Map<String, Map<String, IpSpace>> arpReplies) {
+      _arpReplies = arpReplies;
+      return this;
+    }
+
+    public Builder setFibs(@Nullable Map<String, Map<String, Fib>> fibs) {
+      _fibs = fibs;
       return this;
     }
 
@@ -149,10 +187,16 @@ public final class PartialDataplane implements DataPlane {
     Map<String, Node> nodes = builder._nodes;
     LOGGER.info("Building dataplane");
     Map<String, Configuration> configs = computeConfigurations(nodes);
-    _fibs = computeFibs(nodes);
+    _fibs = builder._fibs != null ? builder._fibs : computeFibs(nodes);
     LOGGER.info("Building forwarding analysis");
     _forwardingAnalysis =
-        computeForwardingAnalysis(_fibs, configs, builder._layer3Topology, builder._ipOwners);
+        computeForwardingAnalysis(
+            _fibs,
+            configs,
+            builder._layer3Topology,
+            builder._ipOwners,
+            builder._unownedArpIps,
+            builder._arpReplies);
     LOGGER.info("Computing VNI settings");
     _layer2VniSettings = DataplaneUtil.computeLayer2VniSettings(nodes);
     _layer3VniSettings = DataplaneUtil.computeLayer3VniSettings(nodes);

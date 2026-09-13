@@ -17,6 +17,8 @@ import java.util.TreeMap;
 import org.batfish.datamodel.AbstractRoute;
 import org.batfish.datamodel.BgpAdvertisement;
 import org.batfish.datamodel.Configuration;
+import org.batfish.datamodel.Ip;
+import org.batfish.datamodel.IpSpace;
 
 /** Control-plane wire messages between S2 workers and the controller (milestone 3). */
 final class S2ControlMessages {
@@ -218,6 +220,58 @@ final class S2ControlMessages {
 
     SumResponse(int sum) {
       this.sum = sum;
+    }
+  }
+
+  /**
+   * Contribute this worker's unowned-ARP-IP set (computed from the FIBs of the nodes it owns) to
+   * the cluster-wide union. Sent once per snapshot, after convergence, only by workers in
+   * owned-only mode.
+   */
+  static final class UnownedArpIpsRequest implements Serializable {
+    private static final long serialVersionUID = 1L;
+    final int runId;
+    final Set<Ip> ips;
+
+    UnownedArpIpsRequest(int runId, Set<Ip> ips) {
+      this.runId = runId;
+      this.ips = ips;
+    }
+  }
+
+  /** The union of every worker's contributed unowned-ARP-IP set. */
+  static final class UnownedArpIpsResponse implements Serializable {
+    private static final long serialVersionUID = 1L;
+    final Set<Ip> ips;
+
+    UnownedArpIpsResponse(Set<Ip> ips) {
+      this.ips = ips;
+    }
+  }
+
+  /**
+   * Contribute this worker's owned nodes' ARP replies to the cluster-wide merge. Sent once per
+   * snapshot, after convergence, right after {@link UnownedArpIpsRequest}, only by workers in
+   * owned-only mode.
+   */
+  static final class ArpRepliesRequest implements Serializable {
+    private static final long serialVersionUID = 1L;
+    final int runId;
+    final Map<String, Map<String, IpSpace>> arpReplies;
+
+    ArpRepliesRequest(int runId, Map<String, Map<String, IpSpace>> arpReplies) {
+      this.runId = runId;
+      this.arpReplies = arpReplies;
+    }
+  }
+
+  /** The merge of every worker's contributed per-node ARP replies. */
+  static final class ArpRepliesResponse implements Serializable {
+    private static final long serialVersionUID = 1L;
+    final Map<String, Map<String, IpSpace>> arpReplies;
+
+    ArpRepliesResponse(Map<String, Map<String, IpSpace>> arpReplies) {
+      this.arpReplies = arpReplies;
     }
   }
 
