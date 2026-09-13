@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: s2-controller
+  namespace: s2
+  labels: {app: s2-controller}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {app: s2-controller}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: controller
+          image: s2:local
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/s2/entrypoint-controller.sh"]
+          env:
+            - name: WORKERS
+              value: "1"
+            - name: NETWORK_NAME
+              value: "s2-triangle"
+          ports:
+            - containerPort: 4090
+          resources:
+            requests: {memory: "2Gi", cpu: "1"}
+            limits: {memory: "8Gi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s2-controller
+  namespace: s2
+spec:
+  selector: {app: s2-controller}
+  ports:
+    - port: 4090
+      targetPort: 4090

@@ -94,7 +94,8 @@ public final class BgpTopology {
 
   /** Directional, reversible BGP edge pointing to two {@link BgpPeerConfigId}. */
   @ParametersAreNonnullByDefault
-  public static final class EdgeId implements Comparable<EdgeId> {
+  public static final class EdgeId implements Comparable<EdgeId>, java.io.Serializable {
+    private static final long serialVersionUID = 1L;
 
     private final @Nonnull BgpPeerConfigId _tail;
     private final @Nonnull BgpPeerConfigId _head;

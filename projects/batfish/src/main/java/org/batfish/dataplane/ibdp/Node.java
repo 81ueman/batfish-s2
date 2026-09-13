@@ -12,7 +12,7 @@ import org.batfish.dataplane.rib.Rib;
 
 /** Dataplane-specific encapsulation of {@link Configuration} */
 @ParametersAreNonnullByDefault
-public final class Node {
+public class Node {
 
   private final Configuration _c;
   private final SortedMap<String, VirtualRouter> _virtualRouters;

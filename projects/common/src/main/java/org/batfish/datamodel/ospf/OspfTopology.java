@@ -13,6 +13,8 @@ import com.google.common.graph.ImmutableValueGraph;
 import com.google.common.graph.MutableValueGraph;
 import com.google.common.graph.ValueGraph;
 import com.google.common.graph.ValueGraphBuilder;
+import java.io.Serial;
+import java.io.Serializable;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
@@ -147,7 +149,9 @@ public final class OspfTopology {
 
   /** Directed OSPF edge representing a link between two {@link OspfNeighborConfigId} */
   @ParametersAreNonnullByDefault
-  public static final class EdgeId implements Comparable<EdgeId> {
+  public static final class EdgeId implements Comparable<EdgeId>, Serializable {
+    @Serial private static final long serialVersionUID = 1L;
+
     private static final String PROP_TAIL = "tail";
     private static final String PROP_HEAD = "head";
 

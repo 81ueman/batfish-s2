@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: s2-worker
+  namespace: s2
+spec:
+  serviceName: s2-worker
+  replicas: 1
+  selector:
+    matchLabels: {app: s2-worker}
+  template:
+    metadata:
+      labels: {app: s2-worker}
+    spec:
+      containers:
+        - name: worker
+          image: s2:local
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/s2/entrypoint-worker.sh"]
+          env:
+            - name: WORKERS
+              value: "1"
+            - name: NETWORK_NAME
+              value: "s2-triangle"
+            - name: CONTROLLER_HOST
+              value: "s2-controller.s2.svc.cluster.local"
+            - name: CONTROLLER_PORT
+              value: "4090"
+            - name: SIDECAR_PORT
+              value: "4091"
+          ports:
+            - containerPort: 4091
+            - containerPort: 5091
+          resources:
+            requests: {memory: "2Gi", cpu: "1"}
+            limits: {memory: "8Gi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s2-worker
+  namespace: s2
+spec:
+  clusterIP: None
+  selector: {app: s2-worker}
+  ports:
+    - name: routes
+      port: 4091
+      targetPort: 4091
+    - name: bdd
+      port: 5091
+      targetPort: 5091

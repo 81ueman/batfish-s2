@@ -76,6 +76,7 @@ import org.batfish.datamodel.LocalRoute;
 import org.batfish.datamodel.MainRibVrfLeakConfig;
 import org.batfish.datamodel.NetworkConfigurations;
 import org.batfish.datamodel.Prefix;
+import org.batfish.datamodel.PrefixSpace;
 import org.batfish.datamodel.ResolutionRestriction;
 import org.batfish.datamodel.RipInternalRoute;
 import org.batfish.datamodel.RipProcess;
@@ -98,6 +99,7 @@ import org.batfish.datamodel.isis.IsisLevelSettings;
 import org.batfish.datamodel.isis.IsisNode;
 import org.batfish.datamodel.isis.IsisProcess;
 import org.batfish.datamodel.isis.IsisTopology;
+import org.batfish.datamodel.ospf.OspfTopology;
 import org.batfish.datamodel.route.nh.NextHop;
 import org.batfish.datamodel.route.nh.NextHopDiscard;
 import org.batfish.datamodel.route.nh.NextHopInterface;
@@ -331,18 +333,25 @@ public final class VirtualRouter {
       _mainRib.mergeRoute(annotateRoute(sr));
     }
 
-    _ospfProcesses =
-        _vrf.getOspfProcesses().entrySet().stream()
-            .collect(
-                ImmutableMap.toImmutableMap(
-                    Entry::getKey,
-                    e ->
-                        new OspfRoutingProcess(
-                            e.getValue(), _name, _c, topologyContext.getOspfTopology())));
+    initShadowOspfProcesses(topologyContext.getOspfTopology());
     _ospfProcesses.values().forEach(p -> p.initialize(_node));
 
     initEigrp();
     initBaseRipRoutes();
+  }
+
+  /**
+   * Create (but do not initialize) this VR's OSPF processes. A remote (shadow) VR is never
+   * iterated, but its owner's real OSPF processes look their neighbors up by process name and push
+   * messages into them, so the shadow needs the objects (with a remote {@code EnqueueProvider}
+   * installed).
+   */
+  void initShadowOspfProcesses(OspfTopology topology) {
+    _ospfProcesses =
+        _vrf.getOspfProcesses().entrySet().stream()
+            .collect(
+                ImmutableMap.toImmutableMap(
+                    Entry::getKey, e -> new OspfRoutingProcess(e.getValue(), _name, _c, topology)));
   }
 
   /**
@@ -804,6 +813,28 @@ public final class VirtualRouter {
   }
 
   /** Compute the FIB from the main RIB */
+  /**
+   * Initialize only the configuration-derived RIBs (connected, kernel, local, unconditional static)
+   * and build this router's FIB from them.
+   *
+   * <p>S2 uses this to give a remote (shadow) router a cheap "stub" FIB. The forwarding analysis
+   * needs a neighboring node's ARP state to build cross-node edges, but not its full routing table,
+   * and a connected/local/static-only FIB is enough for the link-scoped ARP lookups. No dynamic
+   * protocol (BGP/OSPF/EIGRP/RIP) is initialized.
+   */
+  void initStubFib() {
+    initConnectedRib();
+    initKernelRoutes();
+    initLocalRib();
+    initStaticRibs();
+    importRib(_mainRib, _connectedRib);
+    importRib(_mainRib, _localRib);
+    for (StaticRoute sr : _unconditionalStatics) {
+      _mainRib.mergeRoute(annotateRoute(sr));
+    }
+    computeFib();
+  }
+
   public void computeFib() {
     _fib = null; // free the old one.
     String fibExportPolicyName = _vrf.getFibExportPolicy();
@@ -1710,6 +1741,38 @@ public final class VirtualRouter {
   @Nullable
   BgpRoutingProcess getBgpRoutingProcess() {
     return _bgpRoutingProcess;
+  }
+
+  /** Restrict this VR's BGP IPv4 computation to {@code space} (S2 prefix sharding). */
+  void setAppointedPrefixSpace(@Nullable PrefixSpace space) {
+    if (_bgpRoutingProcess != null) {
+      _bgpRoutingProcess.setAppointedPrefixSpace(space);
+    }
+  }
+
+  /**
+   * Seed the round's main-RIB delta with the routes in {@code space}, so a prefix-sharded round
+   * re-offers its shard's originated routes to the routing processes (S2 prefix sharding). Without
+   * this, a route that only appeared in the first round's delta is never originated again.
+   */
+  void initForEgpPrefixRound(@Nullable PrefixSpace space) {
+    RibDelta.Builder<AnnotatedRoute<AbstractRoute>> builder = RibDelta.builder();
+    _mainRib.getRoutes().stream()
+        .filter(r -> space == null || space.containsPrefix(r.getRoute().getNetwork()))
+        .forEach(builder::add);
+    _mainRibDeltaPrevRound = builder.build();
+  }
+
+  /** Remove and return this VR's BGP IPv4 routes (S2 prefix sharding externalization). */
+  Set<Bgpv4Route> drainBgpRoutes() {
+    return _bgpRoutingProcess == null ? ImmutableSet.of() : _bgpRoutingProcess.drainV4Routes();
+  }
+
+  /** Merge previously {@link #drainBgpRoutes() drained} BGP routes back into this VR. */
+  void restoreBgpRoutes(Collection<Bgpv4Route> routes) {
+    if (_bgpRoutingProcess != null) {
+      _bgpRoutingProcess.restoreV4Routes(routes);
+    }
   }
 
   /** Return all OSPF processes for this VRF */

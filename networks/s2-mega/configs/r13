@@ -1,0 +1,1036 @@
+hostname r13
+
+interface Loopback0
+ ip address 10.13.0.1 255.255.255.255
+
+interface Loopback1
+ ip address 10.13.1.1 255.255.255.255
+
+interface Loopback2
+ ip address 10.13.2.1 255.255.255.255
+
+interface Loopback3
+ ip address 10.13.3.1 255.255.255.255
+
+interface Loopback4
+ ip address 10.13.4.1 255.255.255.255
+
+interface Loopback5
+ ip address 10.13.5.1 255.255.255.255
+
+interface Loopback6
+ ip address 10.13.6.1 255.255.255.255
+
+interface Loopback7
+ ip address 10.13.7.1 255.255.255.255
+
+interface Loopback8
+ ip address 10.13.8.1 255.255.255.255
+
+interface Loopback9
+ ip address 10.13.9.1 255.255.255.255
+
+interface Loopback10
+ ip address 10.13.10.1 255.255.255.255
+
+interface Loopback11
+ ip address 10.13.11.1 255.255.255.255
+
+interface Loopback12
+ ip address 10.13.12.1 255.255.255.255
+
+interface Loopback13
+ ip address 10.13.13.1 255.255.255.255
+
+interface Loopback14
+ ip address 10.13.14.1 255.255.255.255
+
+interface Loopback15
+ ip address 10.13.15.1 255.255.255.255
+
+interface Loopback16
+ ip address 10.13.16.1 255.255.255.255
+
+interface Loopback17
+ ip address 10.13.17.1 255.255.255.255
+
+interface Loopback18
+ ip address 10.13.18.1 255.255.255.255
+
+interface Loopback19
+ ip address 10.13.19.1 255.255.255.255
+
+interface Loopback20
+ ip address 10.13.20.1 255.255.255.255
+
+interface Loopback21
+ ip address 10.13.21.1 255.255.255.255
+
+interface Loopback22
+ ip address 10.13.22.1 255.255.255.255
+
+interface Loopback23
+ ip address 10.13.23.1 255.255.255.255
+
+interface Loopback24
+ ip address 10.13.24.1 255.255.255.255
+
+interface Loopback25
+ ip address 10.13.25.1 255.255.255.255
+
+interface Loopback26
+ ip address 10.13.26.1 255.255.255.255
+
+interface Loopback27
+ ip address 10.13.27.1 255.255.255.255
+
+interface Loopback28
+ ip address 10.13.28.1 255.255.255.255
+
+interface Loopback29
+ ip address 10.13.29.1 255.255.255.255
+
+interface Loopback30
+ ip address 10.13.30.1 255.255.255.255
+
+interface Loopback31
+ ip address 10.13.31.1 255.255.255.255
+
+interface Loopback32
+ ip address 10.13.32.1 255.255.255.255
+
+interface Loopback33
+ ip address 10.13.33.1 255.255.255.255
+
+interface Loopback34
+ ip address 10.13.34.1 255.255.255.255
+
+interface Loopback35
+ ip address 10.13.35.1 255.255.255.255
+
+interface Loopback36
+ ip address 10.13.36.1 255.255.255.255
+
+interface Loopback37
+ ip address 10.13.37.1 255.255.255.255
+
+interface Loopback38
+ ip address 10.13.38.1 255.255.255.255
+
+interface Loopback39
+ ip address 10.13.39.1 255.255.255.255
+
+interface Loopback40
+ ip address 10.13.40.1 255.255.255.255
+
+interface Loopback41
+ ip address 10.13.41.1 255.255.255.255
+
+interface Loopback42
+ ip address 10.13.42.1 255.255.255.255
+
+interface Loopback43
+ ip address 10.13.43.1 255.255.255.255
+
+interface Loopback44
+ ip address 10.13.44.1 255.255.255.255
+
+interface Loopback45
+ ip address 10.13.45.1 255.255.255.255
+
+interface Loopback46
+ ip address 10.13.46.1 255.255.255.255
+
+interface Loopback47
+ ip address 10.13.47.1 255.255.255.255
+
+interface Loopback48
+ ip address 10.13.48.1 255.255.255.255
+
+interface Loopback49
+ ip address 10.13.49.1 255.255.255.255
+
+interface Loopback50
+ ip address 10.13.50.1 255.255.255.255
+
+interface Loopback51
+ ip address 10.13.51.1 255.255.255.255
+
+interface Loopback52
+ ip address 10.13.52.1 255.255.255.255
+
+interface Loopback53
+ ip address 10.13.53.1 255.255.255.255
+
+interface Loopback54
+ ip address 10.13.54.1 255.255.255.255
+
+interface Loopback55
+ ip address 10.13.55.1 255.255.255.255
+
+interface Loopback56
+ ip address 10.13.56.1 255.255.255.255
+
+interface Loopback57
+ ip address 10.13.57.1 255.255.255.255
+
+interface Loopback58
+ ip address 10.13.58.1 255.255.255.255
+
+interface Loopback59
+ ip address 10.13.59.1 255.255.255.255
+
+interface Loopback60
+ ip address 10.13.60.1 255.255.255.255
+
+interface Loopback61
+ ip address 10.13.61.1 255.255.255.255
+
+interface Loopback62
+ ip address 10.13.62.1 255.255.255.255
+
+interface Loopback63
+ ip address 10.13.63.1 255.255.255.255
+
+interface Loopback64
+ ip address 10.13.64.1 255.255.255.255
+
+interface Loopback65
+ ip address 10.13.65.1 255.255.255.255
+
+interface Loopback66
+ ip address 10.13.66.1 255.255.255.255
+
+interface Loopback67
+ ip address 10.13.67.1 255.255.255.255
+
+interface Loopback68
+ ip address 10.13.68.1 255.255.255.255
+
+interface Loopback69
+ ip address 10.13.69.1 255.255.255.255
+
+interface Loopback70
+ ip address 10.13.70.1 255.255.255.255
+
+interface Loopback71
+ ip address 10.13.71.1 255.255.255.255
+
+interface Loopback72
+ ip address 10.13.72.1 255.255.255.255
+
+interface Loopback73
+ ip address 10.13.73.1 255.255.255.255
+
+interface Loopback74
+ ip address 10.13.74.1 255.255.255.255
+
+interface Loopback75
+ ip address 10.13.75.1 255.255.255.255
+
+interface Loopback76
+ ip address 10.13.76.1 255.255.255.255
+
+interface Loopback77
+ ip address 10.13.77.1 255.255.255.255
+
+interface Loopback78
+ ip address 10.13.78.1 255.255.255.255
+
+interface Loopback79
+ ip address 10.13.79.1 255.255.255.255
+
+interface Loopback80
+ ip address 10.13.80.1 255.255.255.255
+
+interface Loopback81
+ ip address 10.13.81.1 255.255.255.255
+
+interface Loopback82
+ ip address 10.13.82.1 255.255.255.255
+
+interface Loopback83
+ ip address 10.13.83.1 255.255.255.255
+
+interface Loopback84
+ ip address 10.13.84.1 255.255.255.255
+
+interface Loopback85
+ ip address 10.13.85.1 255.255.255.255
+
+interface Loopback86
+ ip address 10.13.86.1 255.255.255.255
+
+interface Loopback87
+ ip address 10.13.87.1 255.255.255.255
+
+interface Loopback88
+ ip address 10.13.88.1 255.255.255.255
+
+interface Loopback89
+ ip address 10.13.89.1 255.255.255.255
+
+interface Loopback90
+ ip address 10.13.90.1 255.255.255.255
+
+interface Loopback91
+ ip address 10.13.91.1 255.255.255.255
+
+interface Loopback92
+ ip address 10.13.92.1 255.255.255.255
+
+interface Loopback93
+ ip address 10.13.93.1 255.255.255.255
+
+interface Loopback94
+ ip address 10.13.94.1 255.255.255.255
+
+interface Loopback95
+ ip address 10.13.95.1 255.255.255.255
+
+interface Loopback96
+ ip address 10.13.96.1 255.255.255.255
+
+interface Loopback97
+ ip address 10.13.97.1 255.255.255.255
+
+interface Loopback98
+ ip address 10.13.98.1 255.255.255.255
+
+interface Loopback99
+ ip address 10.13.99.1 255.255.255.255
+
+interface Loopback100
+ ip address 10.13.100.1 255.255.255.255
+
+interface Loopback101
+ ip address 10.13.101.1 255.255.255.255
+
+interface Loopback102
+ ip address 10.13.102.1 255.255.255.255
+
+interface Loopback103
+ ip address 10.13.103.1 255.255.255.255
+
+interface Loopback104
+ ip address 10.13.104.1 255.255.255.255
+
+interface Loopback105
+ ip address 10.13.105.1 255.255.255.255
+
+interface Loopback106
+ ip address 10.13.106.1 255.255.255.255
+
+interface Loopback107
+ ip address 10.13.107.1 255.255.255.255
+
+interface Loopback108
+ ip address 10.13.108.1 255.255.255.255
+
+interface Loopback109
+ ip address 10.13.109.1 255.255.255.255
+
+interface Loopback110
+ ip address 10.13.110.1 255.255.255.255
+
+interface Loopback111
+ ip address 10.13.111.1 255.255.255.255
+
+interface Loopback112
+ ip address 10.13.112.1 255.255.255.255
+
+interface Loopback113
+ ip address 10.13.113.1 255.255.255.255
+
+interface Loopback114
+ ip address 10.13.114.1 255.255.255.255
+
+interface Loopback115
+ ip address 10.13.115.1 255.255.255.255
+
+interface Loopback116
+ ip address 10.13.116.1 255.255.255.255
+
+interface Loopback117
+ ip address 10.13.117.1 255.255.255.255
+
+interface Loopback118
+ ip address 10.13.118.1 255.255.255.255
+
+interface Loopback119
+ ip address 10.13.119.1 255.255.255.255
+
+interface Loopback120
+ ip address 10.13.120.1 255.255.255.255
+
+interface Loopback121
+ ip address 10.13.121.1 255.255.255.255
+
+interface Loopback122
+ ip address 10.13.122.1 255.255.255.255
+
+interface Loopback123
+ ip address 10.13.123.1 255.255.255.255
+
+interface Loopback124
+ ip address 10.13.124.1 255.255.255.255
+
+interface Loopback125
+ ip address 10.13.125.1 255.255.255.255
+
+interface Loopback126
+ ip address 10.13.126.1 255.255.255.255
+
+interface Loopback127
+ ip address 10.13.127.1 255.255.255.255
+
+interface Loopback128
+ ip address 10.13.128.1 255.255.255.255
+
+interface Loopback129
+ ip address 10.13.129.1 255.255.255.255
+
+interface Loopback130
+ ip address 10.13.130.1 255.255.255.255
+
+interface Loopback131
+ ip address 10.13.131.1 255.255.255.255
+
+interface Loopback132
+ ip address 10.13.132.1 255.255.255.255
+
+interface Loopback133
+ ip address 10.13.133.1 255.255.255.255
+
+interface Loopback134
+ ip address 10.13.134.1 255.255.255.255
+
+interface Loopback135
+ ip address 10.13.135.1 255.255.255.255
+
+interface Loopback136
+ ip address 10.13.136.1 255.255.255.255
+
+interface Loopback137
+ ip address 10.13.137.1 255.255.255.255
+
+interface Loopback138
+ ip address 10.13.138.1 255.255.255.255
+
+interface Loopback139
+ ip address 10.13.139.1 255.255.255.255
+
+interface Loopback140
+ ip address 10.13.140.1 255.255.255.255
+
+interface Loopback141
+ ip address 10.13.141.1 255.255.255.255
+
+interface Loopback142
+ ip address 10.13.142.1 255.255.255.255
+
+interface Loopback143
+ ip address 10.13.143.1 255.255.255.255
+
+interface Loopback144
+ ip address 10.13.144.1 255.255.255.255
+
+interface Loopback145
+ ip address 10.13.145.1 255.255.255.255
+
+interface Loopback146
+ ip address 10.13.146.1 255.255.255.255
+
+interface Loopback147
+ ip address 10.13.147.1 255.255.255.255
+
+interface Loopback148
+ ip address 10.13.148.1 255.255.255.255
+
+interface Loopback149
+ ip address 10.13.149.1 255.255.255.255
+
+interface Loopback150
+ ip address 10.13.150.1 255.255.255.255
+
+interface Loopback151
+ ip address 10.13.151.1 255.255.255.255
+
+interface Loopback152
+ ip address 10.13.152.1 255.255.255.255
+
+interface Loopback153
+ ip address 10.13.153.1 255.255.255.255
+
+interface Loopback154
+ ip address 10.13.154.1 255.255.255.255
+
+interface Loopback155
+ ip address 10.13.155.1 255.255.255.255
+
+interface Loopback156
+ ip address 10.13.156.1 255.255.255.255
+
+interface Loopback157
+ ip address 10.13.157.1 255.255.255.255
+
+interface Loopback158
+ ip address 10.13.158.1 255.255.255.255
+
+interface Loopback159
+ ip address 10.13.159.1 255.255.255.255
+
+interface Loopback160
+ ip address 10.13.160.1 255.255.255.255
+
+interface Loopback161
+ ip address 10.13.161.1 255.255.255.255
+
+interface Loopback162
+ ip address 10.13.162.1 255.255.255.255
+
+interface Loopback163
+ ip address 10.13.163.1 255.255.255.255
+
+interface Loopback164
+ ip address 10.13.164.1 255.255.255.255
+
+interface Loopback165
+ ip address 10.13.165.1 255.255.255.255
+
+interface Loopback166
+ ip address 10.13.166.1 255.255.255.255
+
+interface Loopback167
+ ip address 10.13.167.1 255.255.255.255
+
+interface Loopback168
+ ip address 10.13.168.1 255.255.255.255
+
+interface Loopback169
+ ip address 10.13.169.1 255.255.255.255
+
+interface Loopback170
+ ip address 10.13.170.1 255.255.255.255
+
+interface Loopback171
+ ip address 10.13.171.1 255.255.255.255
+
+interface Loopback172
+ ip address 10.13.172.1 255.255.255.255
+
+interface Loopback173
+ ip address 10.13.173.1 255.255.255.255
+
+interface Loopback174
+ ip address 10.13.174.1 255.255.255.255
+
+interface Loopback175
+ ip address 10.13.175.1 255.255.255.255
+
+interface Loopback176
+ ip address 10.13.176.1 255.255.255.255
+
+interface Loopback177
+ ip address 10.13.177.1 255.255.255.255
+
+interface Loopback178
+ ip address 10.13.178.1 255.255.255.255
+
+interface Loopback179
+ ip address 10.13.179.1 255.255.255.255
+
+interface Loopback180
+ ip address 10.13.180.1 255.255.255.255
+
+interface Loopback181
+ ip address 10.13.181.1 255.255.255.255
+
+interface Loopback182
+ ip address 10.13.182.1 255.255.255.255
+
+interface Loopback183
+ ip address 10.13.183.1 255.255.255.255
+
+interface Loopback184
+ ip address 10.13.184.1 255.255.255.255
+
+interface Loopback185
+ ip address 10.13.185.1 255.255.255.255
+
+interface Loopback186
+ ip address 10.13.186.1 255.255.255.255
+
+interface Loopback187
+ ip address 10.13.187.1 255.255.255.255
+
+interface Loopback188
+ ip address 10.13.188.1 255.255.255.255
+
+interface Loopback189
+ ip address 10.13.189.1 255.255.255.255
+
+interface Loopback190
+ ip address 10.13.190.1 255.255.255.255
+
+interface Loopback191
+ ip address 10.13.191.1 255.255.255.255
+
+interface Loopback192
+ ip address 10.13.192.1 255.255.255.255
+
+interface Loopback193
+ ip address 10.13.193.1 255.255.255.255
+
+interface Loopback194
+ ip address 10.13.194.1 255.255.255.255
+
+interface Loopback195
+ ip address 10.13.195.1 255.255.255.255
+
+interface Loopback196
+ ip address 10.13.196.1 255.255.255.255
+
+interface Loopback197
+ ip address 10.13.197.1 255.255.255.255
+
+interface Loopback198
+ ip address 10.13.198.1 255.255.255.255
+
+interface Loopback199
+ ip address 10.13.199.1 255.255.255.255
+
+interface Loopback200
+ ip address 10.13.200.1 255.255.255.255
+
+interface Loopback201
+ ip address 10.13.201.1 255.255.255.255
+
+interface Loopback202
+ ip address 10.13.202.1 255.255.255.255
+
+interface Loopback203
+ ip address 10.13.203.1 255.255.255.255
+
+interface Loopback204
+ ip address 10.13.204.1 255.255.255.255
+
+interface Loopback205
+ ip address 10.13.205.1 255.255.255.255
+
+interface Loopback206
+ ip address 10.13.206.1 255.255.255.255
+
+interface Loopback207
+ ip address 10.13.207.1 255.255.255.255
+
+interface Loopback208
+ ip address 10.13.208.1 255.255.255.255
+
+interface Loopback209
+ ip address 10.13.209.1 255.255.255.255
+
+interface Loopback210
+ ip address 10.13.210.1 255.255.255.255
+
+interface Loopback211
+ ip address 10.13.211.1 255.255.255.255
+
+interface Loopback212
+ ip address 10.13.212.1 255.255.255.255
+
+interface Loopback213
+ ip address 10.13.213.1 255.255.255.255
+
+interface Loopback214
+ ip address 10.13.214.1 255.255.255.255
+
+interface Loopback215
+ ip address 10.13.215.1 255.255.255.255
+
+interface Loopback216
+ ip address 10.13.216.1 255.255.255.255
+
+interface Loopback217
+ ip address 10.13.217.1 255.255.255.255
+
+interface Loopback218
+ ip address 10.13.218.1 255.255.255.255
+
+interface Loopback219
+ ip address 10.13.219.1 255.255.255.255
+
+interface Loopback220
+ ip address 10.13.220.1 255.255.255.255
+
+interface Loopback221
+ ip address 10.13.221.1 255.255.255.255
+
+interface Loopback222
+ ip address 10.13.222.1 255.255.255.255
+
+interface Loopback223
+ ip address 10.13.223.1 255.255.255.255
+
+interface Loopback224
+ ip address 10.13.224.1 255.255.255.255
+
+interface Loopback225
+ ip address 10.13.225.1 255.255.255.255
+
+interface Loopback226
+ ip address 10.13.226.1 255.255.255.255
+
+interface Loopback227
+ ip address 10.13.227.1 255.255.255.255
+
+interface Loopback228
+ ip address 10.13.228.1 255.255.255.255
+
+interface Loopback229
+ ip address 10.13.229.1 255.255.255.255
+
+interface Loopback230
+ ip address 10.13.230.1 255.255.255.255
+
+interface Loopback231
+ ip address 10.13.231.1 255.255.255.255
+
+interface Loopback232
+ ip address 10.13.232.1 255.255.255.255
+
+interface Loopback233
+ ip address 10.13.233.1 255.255.255.255
+
+interface Loopback234
+ ip address 10.13.234.1 255.255.255.255
+
+interface Loopback235
+ ip address 10.13.235.1 255.255.255.255
+
+interface Loopback236
+ ip address 10.13.236.1 255.255.255.255
+
+interface Loopback237
+ ip address 10.13.237.1 255.255.255.255
+
+interface Loopback238
+ ip address 10.13.238.1 255.255.255.255
+
+interface Loopback239
+ ip address 10.13.239.1 255.255.255.255
+
+interface Loopback240
+ ip address 10.13.240.1 255.255.255.255
+
+interface Loopback241
+ ip address 10.13.241.1 255.255.255.255
+
+interface Loopback242
+ ip address 10.13.242.1 255.255.255.255
+
+interface Loopback243
+ ip address 10.13.243.1 255.255.255.255
+
+interface Loopback244
+ ip address 10.13.244.1 255.255.255.255
+
+interface Loopback245
+ ip address 10.13.245.1 255.255.255.255
+
+interface Loopback246
+ ip address 10.13.246.1 255.255.255.255
+
+interface Loopback247
+ ip address 10.13.247.1 255.255.255.255
+
+interface Loopback248
+ ip address 10.13.248.1 255.255.255.255
+
+interface Loopback249
+ ip address 10.13.249.1 255.255.255.255
+
+interface Loopback250
+ ip address 10.13.250.1 255.255.255.255
+
+interface Loopback251
+ ip address 10.13.251.1 255.255.255.255
+
+interface Loopback252
+ ip address 10.13.252.1 255.255.255.255
+
+interface Loopback253
+ ip address 10.13.253.1 255.255.255.255
+
+interface Loopback254
+ ip address 10.13.254.1 255.255.255.255
+
+interface Loopback255
+ ip address 10.13.255.1 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 172.12.13.2 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 172.13.14.1 255.255.255.252
+
+router bgp 65013
+ bgp router-id 13.13.13.13
+ network 10.13.0.1 mask 255.255.255.255
+ network 10.13.1.1 mask 255.255.255.255
+ network 10.13.2.1 mask 255.255.255.255
+ network 10.13.3.1 mask 255.255.255.255
+ network 10.13.4.1 mask 255.255.255.255
+ network 10.13.5.1 mask 255.255.255.255
+ network 10.13.6.1 mask 255.255.255.255
+ network 10.13.7.1 mask 255.255.255.255
+ network 10.13.8.1 mask 255.255.255.255
+ network 10.13.9.1 mask 255.255.255.255
+ network 10.13.10.1 mask 255.255.255.255
+ network 10.13.11.1 mask 255.255.255.255
+ network 10.13.12.1 mask 255.255.255.255
+ network 10.13.13.1 mask 255.255.255.255
+ network 10.13.14.1 mask 255.255.255.255
+ network 10.13.15.1 mask 255.255.255.255
+ network 10.13.16.1 mask 255.255.255.255
+ network 10.13.17.1 mask 255.255.255.255
+ network 10.13.18.1 mask 255.255.255.255
+ network 10.13.19.1 mask 255.255.255.255
+ network 10.13.20.1 mask 255.255.255.255
+ network 10.13.21.1 mask 255.255.255.255
+ network 10.13.22.1 mask 255.255.255.255
+ network 10.13.23.1 mask 255.255.255.255
+ network 10.13.24.1 mask 255.255.255.255
+ network 10.13.25.1 mask 255.255.255.255
+ network 10.13.26.1 mask 255.255.255.255
+ network 10.13.27.1 mask 255.255.255.255
+ network 10.13.28.1 mask 255.255.255.255
+ network 10.13.29.1 mask 255.255.255.255
+ network 10.13.30.1 mask 255.255.255.255
+ network 10.13.31.1 mask 255.255.255.255
+ network 10.13.32.1 mask 255.255.255.255
+ network 10.13.33.1 mask 255.255.255.255
+ network 10.13.34.1 mask 255.255.255.255
+ network 10.13.35.1 mask 255.255.255.255
+ network 10.13.36.1 mask 255.255.255.255
+ network 10.13.37.1 mask 255.255.255.255
+ network 10.13.38.1 mask 255.255.255.255
+ network 10.13.39.1 mask 255.255.255.255
+ network 10.13.40.1 mask 255.255.255.255
+ network 10.13.41.1 mask 255.255.255.255
+ network 10.13.42.1 mask 255.255.255.255
+ network 10.13.43.1 mask 255.255.255.255
+ network 10.13.44.1 mask 255.255.255.255
+ network 10.13.45.1 mask 255.255.255.255
+ network 10.13.46.1 mask 255.255.255.255
+ network 10.13.47.1 mask 255.255.255.255
+ network 10.13.48.1 mask 255.255.255.255
+ network 10.13.49.1 mask 255.255.255.255
+ network 10.13.50.1 mask 255.255.255.255
+ network 10.13.51.1 mask 255.255.255.255
+ network 10.13.52.1 mask 255.255.255.255
+ network 10.13.53.1 mask 255.255.255.255
+ network 10.13.54.1 mask 255.255.255.255
+ network 10.13.55.1 mask 255.255.255.255
+ network 10.13.56.1 mask 255.255.255.255
+ network 10.13.57.1 mask 255.255.255.255
+ network 10.13.58.1 mask 255.255.255.255
+ network 10.13.59.1 mask 255.255.255.255
+ network 10.13.60.1 mask 255.255.255.255
+ network 10.13.61.1 mask 255.255.255.255
+ network 10.13.62.1 mask 255.255.255.255
+ network 10.13.63.1 mask 255.255.255.255
+ network 10.13.64.1 mask 255.255.255.255
+ network 10.13.65.1 mask 255.255.255.255
+ network 10.13.66.1 mask 255.255.255.255
+ network 10.13.67.1 mask 255.255.255.255
+ network 10.13.68.1 mask 255.255.255.255
+ network 10.13.69.1 mask 255.255.255.255
+ network 10.13.70.1 mask 255.255.255.255
+ network 10.13.71.1 mask 255.255.255.255
+ network 10.13.72.1 mask 255.255.255.255
+ network 10.13.73.1 mask 255.255.255.255
+ network 10.13.74.1 mask 255.255.255.255
+ network 10.13.75.1 mask 255.255.255.255
+ network 10.13.76.1 mask 255.255.255.255
+ network 10.13.77.1 mask 255.255.255.255
+ network 10.13.78.1 mask 255.255.255.255
+ network 10.13.79.1 mask 255.255.255.255
+ network 10.13.80.1 mask 255.255.255.255
+ network 10.13.81.1 mask 255.255.255.255
+ network 10.13.82.1 mask 255.255.255.255
+ network 10.13.83.1 mask 255.255.255.255
+ network 10.13.84.1 mask 255.255.255.255
+ network 10.13.85.1 mask 255.255.255.255
+ network 10.13.86.1 mask 255.255.255.255
+ network 10.13.87.1 mask 255.255.255.255
+ network 10.13.88.1 mask 255.255.255.255
+ network 10.13.89.1 mask 255.255.255.255
+ network 10.13.90.1 mask 255.255.255.255
+ network 10.13.91.1 mask 255.255.255.255
+ network 10.13.92.1 mask 255.255.255.255
+ network 10.13.93.1 mask 255.255.255.255
+ network 10.13.94.1 mask 255.255.255.255
+ network 10.13.95.1 mask 255.255.255.255
+ network 10.13.96.1 mask 255.255.255.255
+ network 10.13.97.1 mask 255.255.255.255
+ network 10.13.98.1 mask 255.255.255.255
+ network 10.13.99.1 mask 255.255.255.255
+ network 10.13.100.1 mask 255.255.255.255
+ network 10.13.101.1 mask 255.255.255.255
+ network 10.13.102.1 mask 255.255.255.255
+ network 10.13.103.1 mask 255.255.255.255
+ network 10.13.104.1 mask 255.255.255.255
+ network 10.13.105.1 mask 255.255.255.255
+ network 10.13.106.1 mask 255.255.255.255
+ network 10.13.107.1 mask 255.255.255.255
+ network 10.13.108.1 mask 255.255.255.255
+ network 10.13.109.1 mask 255.255.255.255
+ network 10.13.110.1 mask 255.255.255.255
+ network 10.13.111.1 mask 255.255.255.255
+ network 10.13.112.1 mask 255.255.255.255
+ network 10.13.113.1 mask 255.255.255.255
+ network 10.13.114.1 mask 255.255.255.255
+ network 10.13.115.1 mask 255.255.255.255
+ network 10.13.116.1 mask 255.255.255.255
+ network 10.13.117.1 mask 255.255.255.255
+ network 10.13.118.1 mask 255.255.255.255
+ network 10.13.119.1 mask 255.255.255.255
+ network 10.13.120.1 mask 255.255.255.255
+ network 10.13.121.1 mask 255.255.255.255
+ network 10.13.122.1 mask 255.255.255.255
+ network 10.13.123.1 mask 255.255.255.255
+ network 10.13.124.1 mask 255.255.255.255
+ network 10.13.125.1 mask 255.255.255.255
+ network 10.13.126.1 mask 255.255.255.255
+ network 10.13.127.1 mask 255.255.255.255
+ network 10.13.128.1 mask 255.255.255.255
+ network 10.13.129.1 mask 255.255.255.255
+ network 10.13.130.1 mask 255.255.255.255
+ network 10.13.131.1 mask 255.255.255.255
+ network 10.13.132.1 mask 255.255.255.255
+ network 10.13.133.1 mask 255.255.255.255
+ network 10.13.134.1 mask 255.255.255.255
+ network 10.13.135.1 mask 255.255.255.255
+ network 10.13.136.1 mask 255.255.255.255
+ network 10.13.137.1 mask 255.255.255.255
+ network 10.13.138.1 mask 255.255.255.255
+ network 10.13.139.1 mask 255.255.255.255
+ network 10.13.140.1 mask 255.255.255.255
+ network 10.13.141.1 mask 255.255.255.255
+ network 10.13.142.1 mask 255.255.255.255
+ network 10.13.143.1 mask 255.255.255.255
+ network 10.13.144.1 mask 255.255.255.255
+ network 10.13.145.1 mask 255.255.255.255
+ network 10.13.146.1 mask 255.255.255.255
+ network 10.13.147.1 mask 255.255.255.255
+ network 10.13.148.1 mask 255.255.255.255
+ network 10.13.149.1 mask 255.255.255.255
+ network 10.13.150.1 mask 255.255.255.255
+ network 10.13.151.1 mask 255.255.255.255
+ network 10.13.152.1 mask 255.255.255.255
+ network 10.13.153.1 mask 255.255.255.255
+ network 10.13.154.1 mask 255.255.255.255
+ network 10.13.155.1 mask 255.255.255.255
+ network 10.13.156.1 mask 255.255.255.255
+ network 10.13.157.1 mask 255.255.255.255
+ network 10.13.158.1 mask 255.255.255.255
+ network 10.13.159.1 mask 255.255.255.255
+ network 10.13.160.1 mask 255.255.255.255
+ network 10.13.161.1 mask 255.255.255.255
+ network 10.13.162.1 mask 255.255.255.255
+ network 10.13.163.1 mask 255.255.255.255
+ network 10.13.164.1 mask 255.255.255.255
+ network 10.13.165.1 mask 255.255.255.255
+ network 10.13.166.1 mask 255.255.255.255
+ network 10.13.167.1 mask 255.255.255.255
+ network 10.13.168.1 mask 255.255.255.255
+ network 10.13.169.1 mask 255.255.255.255
+ network 10.13.170.1 mask 255.255.255.255
+ network 10.13.171.1 mask 255.255.255.255
+ network 10.13.172.1 mask 255.255.255.255
+ network 10.13.173.1 mask 255.255.255.255
+ network 10.13.174.1 mask 255.255.255.255
+ network 10.13.175.1 mask 255.255.255.255
+ network 10.13.176.1 mask 255.255.255.255
+ network 10.13.177.1 mask 255.255.255.255
+ network 10.13.178.1 mask 255.255.255.255
+ network 10.13.179.1 mask 255.255.255.255
+ network 10.13.180.1 mask 255.255.255.255
+ network 10.13.181.1 mask 255.255.255.255
+ network 10.13.182.1 mask 255.255.255.255
+ network 10.13.183.1 mask 255.255.255.255
+ network 10.13.184.1 mask 255.255.255.255
+ network 10.13.185.1 mask 255.255.255.255
+ network 10.13.186.1 mask 255.255.255.255
+ network 10.13.187.1 mask 255.255.255.255
+ network 10.13.188.1 mask 255.255.255.255
+ network 10.13.189.1 mask 255.255.255.255
+ network 10.13.190.1 mask 255.255.255.255
+ network 10.13.191.1 mask 255.255.255.255
+ network 10.13.192.1 mask 255.255.255.255
+ network 10.13.193.1 mask 255.255.255.255
+ network 10.13.194.1 mask 255.255.255.255
+ network 10.13.195.1 mask 255.255.255.255
+ network 10.13.196.1 mask 255.255.255.255
+ network 10.13.197.1 mask 255.255.255.255
+ network 10.13.198.1 mask 255.255.255.255
+ network 10.13.199.1 mask 255.255.255.255
+ network 10.13.200.1 mask 255.255.255.255
+ network 10.13.201.1 mask 255.255.255.255
+ network 10.13.202.1 mask 255.255.255.255
+ network 10.13.203.1 mask 255.255.255.255
+ network 10.13.204.1 mask 255.255.255.255
+ network 10.13.205.1 mask 255.255.255.255
+ network 10.13.206.1 mask 255.255.255.255
+ network 10.13.207.1 mask 255.255.255.255
+ network 10.13.208.1 mask 255.255.255.255
+ network 10.13.209.1 mask 255.255.255.255
+ network 10.13.210.1 mask 255.255.255.255
+ network 10.13.211.1 mask 255.255.255.255
+ network 10.13.212.1 mask 255.255.255.255
+ network 10.13.213.1 mask 255.255.255.255
+ network 10.13.214.1 mask 255.255.255.255
+ network 10.13.215.1 mask 255.255.255.255
+ network 10.13.216.1 mask 255.255.255.255
+ network 10.13.217.1 mask 255.255.255.255
+ network 10.13.218.1 mask 255.255.255.255
+ network 10.13.219.1 mask 255.255.255.255
+ network 10.13.220.1 mask 255.255.255.255
+ network 10.13.221.1 mask 255.255.255.255
+ network 10.13.222.1 mask 255.255.255.255
+ network 10.13.223.1 mask 255.255.255.255
+ network 10.13.224.1 mask 255.255.255.255
+ network 10.13.225.1 mask 255.255.255.255
+ network 10.13.226.1 mask 255.255.255.255
+ network 10.13.227.1 mask 255.255.255.255
+ network 10.13.228.1 mask 255.255.255.255
+ network 10.13.229.1 mask 255.255.255.255
+ network 10.13.230.1 mask 255.255.255.255
+ network 10.13.231.1 mask 255.255.255.255
+ network 10.13.232.1 mask 255.255.255.255
+ network 10.13.233.1 mask 255.255.255.255
+ network 10.13.234.1 mask 255.255.255.255
+ network 10.13.235.1 mask 255.255.255.255
+ network 10.13.236.1 mask 255.255.255.255
+ network 10.13.237.1 mask 255.255.255.255
+ network 10.13.238.1 mask 255.255.255.255
+ network 10.13.239.1 mask 255.255.255.255
+ network 10.13.240.1 mask 255.255.255.255
+ network 10.13.241.1 mask 255.255.255.255
+ network 10.13.242.1 mask 255.255.255.255
+ network 10.13.243.1 mask 255.255.255.255
+ network 10.13.244.1 mask 255.255.255.255
+ network 10.13.245.1 mask 255.255.255.255
+ network 10.13.246.1 mask 255.255.255.255
+ network 10.13.247.1 mask 255.255.255.255
+ network 10.13.248.1 mask 255.255.255.255
+ network 10.13.249.1 mask 255.255.255.255
+ network 10.13.250.1 mask 255.255.255.255
+ network 10.13.251.1 mask 255.255.255.255
+ network 10.13.252.1 mask 255.255.255.255
+ network 10.13.253.1 mask 255.255.255.255
+ network 10.13.254.1 mask 255.255.255.255
+ network 10.13.255.1 mask 255.255.255.255
+ neighbor 172.12.13.1 remote-as 65012
+ neighbor 172.13.14.2 remote-as 65014

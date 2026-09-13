@@ -24,8 +24,15 @@ import com.google.common.collect.ImmutableTable;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Table;
 import com.google.common.collect.Table.Cell;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -64,6 +71,7 @@ import org.batfish.datamodel.InterfaceType;
 import org.batfish.datamodel.Ip;
 import org.batfish.datamodel.IsisRoute;
 import org.batfish.datamodel.NetworkConfigurations;
+import org.batfish.datamodel.PrefixSpace;
 import org.batfish.datamodel.SwitchportMode;
 import org.batfish.datamodel.Topology;
 import org.batfish.datamodel.Vrf;
@@ -94,9 +102,14 @@ import org.batfish.dataplane.rib.RibDelta;
 import org.batfish.version.BatfishVersion;
 
 /** Computes the entire dataplane by executing a fixed-point computation. */
-final class IncrementalBdpEngine {
+public class IncrementalBdpEngine {
 
   private static final Logger LOGGER = LogManager.getLogger(IncrementalBdpEngine.class);
+
+  /** Whether prefix-sharded rounds externalize (and free) each shard's BGP routes. */
+  private static boolean externalize() {
+    return Boolean.getBoolean("s2.prefixShardExternalize");
+  }
 
   /**
    * Maximum amount of topology iterations to do before deciding that the dataplane computation
@@ -116,7 +129,7 @@ final class IncrementalBdpEngine {
    * ForwardingAnalysis, and other internals are recomputed based on the updated state in the {@code
    * nodes} and {@code vrs}.
    */
-  private PartialDataplane nextDataplane(
+  protected PartialDataplane nextDataplane(
       TopologyContext currentTopologyContext,
       SortedMap<String, Node> nodes,
       List<VirtualRouter> vrs,
@@ -133,6 +146,16 @@ final class IncrementalBdpEngine {
   }
 
   /**
+   * The nodes included in the *final* dataplane result. Stock returns every node. S2's distributed
+   * engine may return only its owned nodes so a worker does not retain remote final RIBs. The
+   * intermediate partial dataplane still covers all nodes (remote ones may hold stub FIBs needed
+   * for remote ARP state).
+   */
+  protected Map<String, Node> dataPlaneNodes(Map<String, Node> nodes) {
+    return nodes;
+  }
+
+  /**
    * Performs the iterative step in dataplane computations as topology changes.
    *
    * <p>The {@code currentTopologyContext} contains the connectivity learned so far in the network,
@@ -144,7 +167,7 @@ final class IncrementalBdpEngine {
    * can be established given the current L3 topology and dataplane state. The resulting {@code
    * TopologyContext} for the next iteration of dataplane is returned.
    */
-  private static TopologyContext nextTopologyContext(
+  protected TopologyContext nextTopologyContext(
       TopologyContext currentTopologyContext,
       PartialDataplane currentDataplane,
       TopologyContext initialTopologyContext,
@@ -196,7 +219,7 @@ final class IncrementalBdpEngine {
             configurations,
             ipVrfOwners,
             false,
-            true,
+            checkBgpSessionReachability(),
             trEngCurrentL3Topology,
             currentDataplane.getFibs(),
             currentTopologyContext.getL3Adjacencies());
@@ -427,6 +450,32 @@ final class IncrementalBdpEngine {
             lost.size() > 3 ? lost.subList(0, 3) : lost));
   }
 
+  /**
+   * Factory for the {@link Node} model backing a configuration. Overridable so the S2 distributed
+   * engine can substitute {@code DistributedNode}s without duplicating engine logic.
+   */
+  Node newNode(Configuration configuration) {
+    return new Node(configuration);
+  }
+
+  /**
+   * Virtual routers that this engine should iterate (route computation). Defaults to all routers on
+   * the node. The S2 distributed engine overrides this so shadow nodes are visible to dataplane
+   * construction (FIBs/forwarding analysis) but are not simulated locally.
+   */
+  Collection<VirtualRouter> iterationVirtualRouters(Node node) {
+    return node.getVirtualRouters();
+  }
+
+  /**
+   * Whether BGP session establishment verifies dataplane reachability. The S2 engine disables this
+   * while shadow FIBs are not yet distributed; sessions are then established from configuration +
+   * L3 adjacency (sufficient for directly-connected peering).
+   */
+  protected boolean checkBgpSessionReachability() {
+    return true;
+  }
+
   ComputeDataPlaneResult computeDataPlane(
       Map<String, Configuration> configurations,
       TopologyContext initialTopologyContext,
@@ -448,14 +497,15 @@ final class IncrementalBdpEngine {
 
     // Generate our nodes, keyed by name, sorted for determinism
     SortedMap<String, Node> nodes =
-        toImmutableSortedMap(configurations.values(), Configuration::getHostname, Node::new);
+        toImmutableSortedMap(configurations.values(), Configuration::getHostname, this::newNode);
     // A collection of all the virtual routers in random order enables parallelization across all
     // VRs, and likely spreads nodes with similar hostnames across different cores. In contrast,
     // nodes.values().parallelStream().flatMap(get vrs stream) is only node-parallel and clusters
     // nodes by hostname. See https://github.com/batfish/batfish/pull/7054 description.
     List<VirtualRouter> vrs =
-        toListInRandomOrder(nodes.values().stream().flatMap(n -> n.getVirtualRouters().stream()));
+        toListInRandomOrder(nodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
     NetworkConfigurations networkConfigurations = NetworkConfigurations.of(configurations);
+    reportPhase("after building nodes");
 
     /*
      * Run the data plane computation here:
@@ -467,11 +517,13 @@ final class IncrementalBdpEngine {
     IncrementalBdpAnswerElement answerElement = new IncrementalBdpAnswerElement();
     // TODO: eventually, IGP needs to be part of fixed-point below, because tunnels.
     computeIgpDataPlane(nodes, vrs, initialTopologyContext, networkConfigurations, answerElement);
+    reportPhase("after IGP");
 
     LOGGER.info("Initialize virtual routers before topology fixed point");
     vrs.parallelStream()
         .forEach(
             vr -> vr.initForEgpComputationBeforeTopologyLoop(externalAdverts, initialIpVrfOwners));
+    reportPhase("after initForEgpBeforeTopologyLoop");
 
     /*
      * Perform a fixed-point computation, in which every round the topology is updated based
@@ -487,6 +539,7 @@ final class IncrementalBdpEngine {
             .build();
     PartialDataplane currentDataplane =
         nextDataplane(priorTopologyContext, nodes, vrs, initialIpOwners);
+    reportPhase("after initial nextDataplane");
 
     TopologyContext currentTopologyContext =
         nextTopologyContext(
@@ -532,10 +585,12 @@ final class IncrementalBdpEngine {
         LOGGER.error("Network has no stable solution");
         throw new BdpOscillationException("Network has no stable solution");
       }
+      reportPhase("after EGP iteration " + topologyIterations);
 
       updateLayer3Vnis(vrs);
       currentDataplane = null; // free the old one
       currentDataplane = nextDataplane(currentTopologyContext, nodes, vrs, currentIpOwners);
+      reportPhase("after nextDataplane " + topologyIterations);
       TopologyContext nextTopologyContext =
           nextTopologyContext(
               currentTopologyContext,
@@ -594,6 +649,9 @@ final class IncrementalBdpEngine {
         converged = false;
         LOGGER.info("VXLAN autostate changed interface status in this iteration");
       }
+      // A distributed engine must agree on convergence: if any worker still sees a topology change,
+      // every worker has to run another topology iteration, or they desynchronize.
+      converged = hasReachedTopologyFixedPoint(converged);
       currentTopologyContext = nextTopologyContext;
       currentTrackReachabilityResults = nextTrackReachabilityResults;
       currentTrackRouteResults = nextTrackRouteResults;
@@ -614,7 +672,7 @@ final class IncrementalBdpEngine {
     answerElement.setVersion(BatfishVersion.getVersionStatic());
     IncrementalDataPlane finalDataplane =
         IncrementalDataPlane.builder()
-            .setNodes(nodes)
+            .setNodes(dataPlaneNodes(nodes))
             .setPartialDataplane(currentDataplane)
             .setRetainAnnotatedRibs(retainAnnotatedRibs)
             .build();
@@ -843,7 +901,7 @@ final class IncrementalBdpEngine {
    * @param iterationLabel iteration label (for stats tracking)
    * @param allNodes all nodes in the network (for correct neighbor referencing)
    */
-  private static void computeDependentRoutesIteration(
+  private void computeDependentRoutesIteration(
       List<VirtualRouter> vrs,
       String iterationLabel,
       Map<String, Node> allNodes,
@@ -851,6 +909,10 @@ final class IncrementalBdpEngine {
       DataPlaneTrackMethodEvaluatorProvider provider,
       int iteration) {
     LOGGER.info("{}: Compute dependent routes", iterationLabel);
+
+    // No worker may start pulling this step's advertisements until every worker has finished the
+    // previous step's writes (endOfEgpInnerRound).
+    synchronizeWorkers();
 
     // Static nextHopIp routes
     LOGGER.info("{}: Recompute conditional static routes", iterationLabel);
@@ -864,20 +926,23 @@ final class IncrementalBdpEngine {
     // EIGRP
     LOGGER.info("{}: Propagate EIGRP routes", iterationLabel);
     vrs.parallelStream().forEach(vr -> vr.eigrpIteration(allNodes, networkConfigurations));
+    synchronizeWorkers();
     vrs.parallelStream().forEach(VirtualRouter::mergeEigrpRoutesToMainRib);
 
     // Re-initialize IS-IS exports.
     LOGGER.info("{}: Recompute IS-IS routes", iterationLabel);
     vrs.parallelStream()
         .forEach(vr -> vr.initIsisExports(iteration, allNodes, networkConfigurations));
+    synchronizeWorkers();
 
     // IS-IS route propagation
-    AtomicBoolean isisChanged = new AtomicBoolean(true);
+    boolean isisChanged = true;
     int isisSubIterations = 0;
-    while (isisChanged.get()) {
+    while (isisChanged) {
       isisSubIterations++;
       LOGGER.info("{}: Recompute IS-IS routes: subIteration {}", iterationLabel, isisSubIterations);
-      isisChanged.set(false);
+      synchronizeWorkers();
+      AtomicBoolean localIsisChanged = new AtomicBoolean(false);
       vrs.parallelStream()
           .forEach(
               vr -> {
@@ -886,21 +951,87 @@ final class IncrementalBdpEngine {
                 if (p != null
                     && vr.unstageIsisRoutes(
                         allNodes, networkConfigurations, p.getKey(), p.getValue())) {
-                  isisChanged.set(true);
+                  localIsisChanged.set(true);
                 }
               });
+      isisChanged = hasNotReachedIgpFixedPoint(localIsisChanged.get());
     }
 
     LOGGER.info("{}: Propagate OSPF external", iterationLabel);
+    synchronizeWorkers();
     vrs.parallelStream().forEach(vr -> vr.ospfIteration(allNodes, networkConfigurations));
+    synchronizeWorkers();
     vrs.parallelStream().forEach(VirtualRouter::mergeOspfRoutesToMainRib);
 
     computeIterationOfBgpRoutes(iterationLabel, allNodes, vrs, networkConfigurations);
 
     leakAcrossVrfs(vrs, iterationLabel);
 
+    // Every node has finished pulling its neighbors' advertisements for this schedule step. A
+    // distributed worker must not overwrite its neighbor-visible BGP deltas (endOfEgpInnerRound)
+    // while a peer is still reading them, so synchronize all workers before this step's write.
+    synchronizeWorkers();
+
     // Tell each VR that a BGP route computation inner round (schedule) has ended.
     vrs.parallelStream().forEach(VirtualRouter::endOfEgpInnerRound);
+  }
+
+  /**
+   * Synchronization point between computation phases. The stock engine relies on each {@code
+   * parallelStream().forEach(...)} phase completing before the next begins, so that no node writes
+   * state another node reads. A distributed engine overriding this must make it a global barrier
+   * across workers. The default implementation is a no-op.
+   */
+  protected void synchronizeWorkers() {}
+
+  /**
+   * Exchange a locally computed iteration hashcode for a cluster-wide one. The stock engine uses
+   * the local hashcode for oscillation detection; a distributed engine must combine all workers'
+   * hashes so that schedule changes stay synchronized. The default implementation returns the local
+   * value.
+   */
+  protected int exchangeIterationHashCode(int localHashCode) {
+    return localHashCode;
+  }
+
+  /**
+   * Decide whether the topology fixed point has been reached. The stock engine uses the local
+   * result; a distributed engine must combine all workers' results (fixed point only if all agree)
+   * so that they run the same number of topology iterations.
+   */
+  protected boolean hasReachedTopologyFixedPoint(boolean localConverged) {
+    return localConverged;
+  }
+
+  /**
+   * The schedule to start the inner route-computation loop with. The stock engine uses the
+   * configured schedule; a distributed engine should pick one whose step count does not depend on
+   * per-worker state, or its phase barriers will not line up across workers.
+   */
+  protected Schedule initialSchedule() {
+    return _settings.getScheduleName();
+  }
+
+  /**
+   * Prefix shards for the EGP computation (S2 prefix sharding). Empty means a single unsharded
+   * pass. When non-empty, the EGP fixpoint runs once per shard with BGP restricted to that shard
+   * and each shard's BGP routes are externalized before the next shard, so only one shard is live
+   * at a time.
+   */
+  protected List<PrefixSpace> egpPrefixShards() {
+    return ImmutableList.of();
+  }
+
+  /** Hook for phase-level reporting (e.g. peak memory) during dataplane computation. No-op. */
+  protected void reportPhase(String phase) {}
+
+  /**
+   * Decide the IGP (OSPF/IS-IS/RIP) convergence condition cluster-wide. The stock engine keeps
+   * iterating while the local dirty flag is set; a distributed engine must OR the flags of every
+   * worker, or workers finish the IGP fixpoint after different numbers of iterations.
+   */
+  protected boolean hasNotReachedIgpFixedPoint(boolean localDirty) {
+    return localDirty;
   }
 
   private static void updateLayer3Vnis(List<VirtualRouter> vrs) {
@@ -967,10 +1098,15 @@ final class IncrementalBdpEngine {
      */
     LOGGER.info("Initialize for IGP computation");
     vrs.parallelStream().forEach(vr -> vr.initForIgpComputation(topologyContext));
+    // initForIgpComputation queues outgoing messages to neighbors; let every worker finish before
+    // any worker starts consuming them.
+    synchronizeWorkers();
+    reportPhase("after initForIgpComputation");
 
     // Apply rib-groups sequentially to avoid concurrent writes to same destination RIB
     LOGGER.info("Apply rib-groups for IGP");
     vrs.stream().forEach(VirtualRouter::applyRibGroupsForIgp);
+    reportPhase("after applyRibGroupsForIgp");
 
     // OSPF internal routes
     numOspfInternalIterations =
@@ -1032,9 +1168,76 @@ final class IncrementalBdpEngine {
      * has been previously encountered, we switch our schedule to a more restrictive one.
      */
 
+    // S2 prefix sharding: run the EGP fixpoint once per prefix shard (or a single unsharded pass
+    // when
+    // disabled), externalizing each shard's BGP routes in between so only one shard is live at a
+    // time. The union over shards equals the unsharded result.
+    List<PrefixSpace> prefixShards = egpPrefixShards();
+    boolean sharded = prefixShards.size() > 1;
+    List<List<byte[]>> cachedByVr = new ArrayList<>();
+    if (sharded) {
+      for (int i = 0; i < vrs.size(); i++) {
+        cachedByVr.add(new ArrayList<>());
+      }
+    }
+    int numRounds = sharded ? prefixShards.size() : 1;
+    for (int round = 0; round < numRounds; round++) {
+      PrefixSpace shard = sharded ? prefixShards.get(round) : null;
+      if (sharded) {
+        LOGGER.info("Prefix round {} of {}: {}", round + 1, numRounds, shard);
+        appointPrefixSpace(vrs, shard);
+        PrefixSpace roundShard = shard;
+        vrs.parallelStream().forEach(vr -> vr.initForEgpPrefixRound(roundShard));
+      }
+      if (runEgpFixpoint(nodes, vrs, ae, topologyContext, networkConfigurations, provider)) {
+        return true; // Found an oscillation
+      }
+      if (sharded) {
+        System.err.printf(
+            "S2 prefix sharding: round %d/%d live BGP routes %d%n",
+            round + 1, numRounds, vrs.stream().mapToInt(vr -> vr.getBgpRoutes().size()).sum());
+      }
+      if (sharded && externalize()) {
+        // Externalize this shard's BGP routes and drop them from the RIBs.
+        for (int i = 0; i < vrs.size(); i++) {
+          cachedByVr.get(i).add(serializeBgpRoutes(vrs.get(i).drainBgpRoutes()));
+        }
+        appointPrefixSpace(vrs, null);
+        System.gc();
+      }
+    }
+    if (sharded && externalize()) {
+      appointPrefixSpace(vrs, null);
+      for (int i = 0; i < vrs.size(); i++) {
+        for (byte[] payload : cachedByVr.get(i)) {
+          vrs.get(i).restoreBgpRoutes(deserializeBgpRoutes(payload));
+        }
+      }
+    }
+    if (sharded) {
+      System.err.printf(
+          "S2 prefix sharding: %d rounds, total BGP routes %d%n",
+          numRounds, vrs.stream().mapToInt(vr -> vr.getBgpRoutes().size()).sum());
+    }
+
+    ae.setDependentRoutesIterations(_numIterations);
+    return false; // No oscillations
+  }
+
+  /**
+   * Run the EGP fixpoint to convergence for the currently appointed prefix space. Returns true if
+   * the network oscillates.
+   */
+  private boolean runEgpFixpoint(
+      SortedMap<String, Node> nodes,
+      List<VirtualRouter> vrs,
+      IncrementalBdpAnswerElement ae,
+      TopologyContext topologyContext,
+      NetworkConfigurations networkConfigurations,
+      DataPlaneTrackMethodEvaluatorProvider provider) {
     Map<Integer, SortedSet<Integer>> iterationsByHashCode = new HashMap<>();
 
-    Schedule currentSchedule = _settings.getScheduleName();
+    Schedule currentSchedule = initialSchedule();
     // The node schedule depends on the nodes, the topology, and the schedule type. Within a round
     // only the type can change, on oscillation, so compute the schedule once per type.
     List<Map<String, Node>> scheduleSteps = null;
@@ -1077,12 +1280,18 @@ final class IncrementalBdpEngine {
       for (Map<String, Node> iterationNodes : scheduleSteps) {
         List<VirtualRouter> iterationVrs =
             toListInRandomOrder(
-                iterationNodes.values().stream().flatMap(n -> n.getVirtualRouters().stream()));
+                iterationNodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
         String iterationlabel = String.format("Iteration %d Schedule %d", _numIterations, nodeSet);
         computeDependentRoutesIteration(
             iterationVrs, iterationlabel, nodes, networkConfigurations, provider, _numIterations);
         ++nodeSet;
       }
+
+      // All nodes have finished reading their neighbors' advertisements for this iteration. Let
+      // every worker reach this point before anyone runs endOfEgpRound, which clears the neighbor-
+      // visible main-RIB snapshots. Without this, a distributed worker could clear its snapshots
+      // while a peer is still pulling them.
+      synchronizeWorkers();
 
       // Tell each VR that a route computation round has ended.
       // This must be the last thing called on a VR in a routing round.
@@ -1096,8 +1305,10 @@ final class IncrementalBdpEngine {
        */
       computeIterationStatistics(vrs, ae, _numIterations);
 
-      // This hashcode uniquely identifies the iteration (i.e., network state)
-      int iterationHashCode = computeIterationHashCode(vrs);
+      // This hashcode uniquely identifies the iteration (i.e., network state). A distributed engine
+      // must make it global so that every worker detects oscillation at the same iteration and
+      // therefore switches schedule together.
+      int iterationHashCode = exchangeIterationHashCode(computeIterationHashCode(vrs));
       SortedSet<Integer> iterationsWithThisHashCode =
           iterationsByHashCode.computeIfAbsent(iterationHashCode, h -> new TreeSet<>());
 
@@ -1117,12 +1328,36 @@ final class IncrementalBdpEngine {
       }
     } while (hasNotReachedRoutingFixedPoint(vrs));
 
-    ae.setDependentRoutesIterations(_numIterations);
     return false; // No oscillations
   }
 
+  /** Appoint (or clear, with null) the prefix space for every VR's BGP computation. */
+  private static void appointPrefixSpace(List<VirtualRouter> vrs, PrefixSpace space) {
+    vrs.parallelStream().forEach(vr -> vr.setAppointedPrefixSpace(space));
+  }
+
+  private static byte[] serializeBgpRoutes(Set<Bgpv4Route> routes) {
+    try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+      oos.writeObject(new HashSet<>(routes));
+      oos.flush();
+      return baos.toByteArray();
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to externalize BGP routes", e);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Set<Bgpv4Route> deserializeBgpRoutes(byte[] payload) {
+    try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(payload))) {
+      return (Set<Bgpv4Route>) ois.readObject();
+    } catch (IOException | ClassNotFoundException e) {
+      throw new RuntimeException("Failed to restore BGP routes", e);
+    }
+  }
+
   /** Check if we have reached a routing fixed point */
-  private boolean hasNotReachedRoutingFixedPoint(List<VirtualRouter> vrs) {
+  protected boolean hasNotReachedRoutingFixedPoint(List<VirtualRouter> vrs) {
     LOGGER.info("Iteration {}: Check if fixed point reached", _numIterations);
     return vrs.parallelStream().anyMatch(VirtualRouter::isDirty);
   }
@@ -1188,11 +1423,13 @@ final class IncrementalBdpEngine {
     while (dirty) {
       ospfInternalIterations++;
       LOGGER.info("OSPF internal: Iteration {}", ospfInternalIterations);
-      // Compute node schedule
+      // Use a single-step schedule so every worker takes the same steps. NODE_COLORED colors the
+      // worker's own (possibly shadowed) topology and can yield a different number of steps per
+      // worker, which would desynchronize the phase barriers.
       IbdpSchedule schedule =
           IbdpSchedule.getSchedule(
               _settings,
-              _settings.getScheduleName(),
+              Schedule.ALL,
               allNodes,
               TopologyContext.builder().setOspfTopology(ospfTopology).build());
 
@@ -1200,16 +1437,19 @@ final class IncrementalBdpEngine {
         Map<String, Node> scheduleNodes = schedule.next();
         List<VirtualRouter> scheduleVrs =
             toListInRandomOrder(
-                scheduleNodes.values().stream().flatMap(n -> n.getVirtualRouters().stream()));
+                scheduleNodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
+        synchronizeWorkers();
         scheduleVrs.parallelStream()
             .forEach(virtualRouter -> virtualRouter.ospfIteration(allNodes, nc));
+        synchronizeWorkers();
         scheduleVrs.parallelStream().forEach(VirtualRouter::mergeOspfRoutesToMainRib);
       }
-      dirty =
+      boolean localDirty =
           allNodes.values().parallelStream()
-              .flatMap(n -> n.getVirtualRouters().stream())
+              .flatMap(n -> iterationVirtualRouters(n).stream())
               .flatMap(vr -> vr.getOspfProcesses().values().stream())
               .anyMatch(OspfRoutingProcess::isDirty);
+      dirty = hasNotReachedIgpFixedPoint(localDirty);
       if (ospfInternalIterations > MAX_OSPF_INTERNAL_ITERATIONS) {
         throw new BdpOscillationException(
             "OSPF did not converge after " + MAX_OSPF_INTERNAL_ITERATIONS + " iterations");
@@ -1224,29 +1464,32 @@ final class IncrementalBdpEngine {
    * @param nodes nodes for which to initialize the routes, keyed by name
    * @param topology network topology
    */
-  private static void initRipInternalRoutes(
+  private void initRipInternalRoutes(
       SortedMap<String, Node> nodes, List<VirtualRouter> vrs, Topology topology) {
     /*
      * Consider this method to be a simulation within a simulation. Since RIP routes are not
      * affected by other protocols, we propagate all RIP routes amongst the nodes prior to
      * processing other routing protocols (e.g., OSPF & BGP)
      */
-    AtomicBoolean ripInternalChanged = new AtomicBoolean(true);
+    boolean ripInternalChanged = true;
     int ripInternalIterations = 0;
-    while (ripInternalChanged.get()) {
+    while (ripInternalChanged) {
       ripInternalIterations++;
-      ripInternalChanged.set(false);
       LOGGER.info("RIP internal: Iteration {}", ripInternalIterations);
+      synchronizeWorkers();
+      AtomicBoolean localChanged = new AtomicBoolean(false);
       vrs.parallelStream()
           .forEach(
               vr -> {
                 if (vr.propagateRipInternalRoutes(nodes, topology)) {
-                  ripInternalChanged.set(true);
+                  localChanged.set(true);
                 }
               });
+      synchronizeWorkers();
       LOGGER.info("Unstage RIP internal: Iteration {}", ripInternalIterations);
       vrs.parallelStream().forEach(VirtualRouter::unstageRipInternalRoutes);
 
+      synchronizeWorkers();
       LOGGER.info("Import RIP internal: Iteration {}", ripInternalIterations);
       vrs.parallelStream()
           .forEach(
@@ -1254,6 +1497,7 @@ final class IncrementalBdpEngine {
                 importRib(vr._ripRib, vr._ripInternalRib);
                 importRib(vr.getMainRib(), vr._ripRib, vr.getName());
               });
+      ripInternalChanged = hasNotReachedIgpFixedPoint(localChanged.get());
     }
   }
 }

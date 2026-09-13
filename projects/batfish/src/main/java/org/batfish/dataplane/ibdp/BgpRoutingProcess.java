@@ -35,6 +35,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -85,6 +86,7 @@ import org.batfish.datamodel.NetworkConfigurations;
 import org.batfish.datamodel.OriginMechanism;
 import org.batfish.datamodel.OriginType;
 import org.batfish.datamodel.Prefix;
+import org.batfish.datamodel.PrefixSpace;
 import org.batfish.datamodel.PrefixTrieMultiMap;
 import org.batfish.datamodel.ReceivedFromIp;
 import org.batfish.datamodel.ReceivedFromSelf;
@@ -125,7 +127,7 @@ import org.batfish.dataplane.rib.RouteAdvertisement.Reason;
  * for exchange of BGP routing messages.
  */
 @ParametersAreNonnullByDefault
-final class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?, ?>> {
+public class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?, ?>> {
   /** Configuration for this process */
   private final @Nonnull BgpProcess _process;
 
@@ -184,6 +186,18 @@ final class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?,
 
   /** Metadata about propagated prefixes to/from neighbors */
   private @Nonnull PrefixTracer _prefixTracer;
+
+  /**
+   * If non-null, deferred to instead of computing outgoing routes locally. Used by S2 shadow
+   * processes to fetch advertisements from the owning worker.
+   */
+  private @Nullable OutgoingRoutesProvider _outgoingRoutesProvider;
+
+  /**
+   * If non-null, restricts BGP IPv4 route computation to this prefix space (S2 prefix sharding).
+   * Set per prefix round; null means no restriction.
+   */
+  private @Nullable PrefixSpace _appointedPrefixSpace;
 
   /** Route dependency tracker for BGP IPv4 aggregate routes */
   @Nonnull
@@ -503,6 +517,56 @@ final class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?,
     _bgpv4PrevBestPath = ImmutableSet.of();
     _ebgpv4Prev = ImmutableSet.of();
     _ebgpv4PrevBestPath = ImmutableSet.of();
+  }
+
+  /**
+   * Install a strategy for producing this process's outgoing advertisements (S2 shadow support).
+   */
+  public void setOutgoingRoutesProvider(@Nullable OutgoingRoutesProvider provider) {
+    _outgoingRoutesProvider = provider;
+  }
+
+  /**
+   * Restrict BGP IPv4 route computation to {@code appointedPrefixSpace}; null means no restriction.
+   */
+  public void setAppointedPrefixSpace(@Nullable PrefixSpace appointedPrefixSpace) {
+    _appointedPrefixSpace = appointedPrefixSpace;
+  }
+
+  /** Whether {@code prefix} is in the currently appointed prefix space (or none is appointed). */
+  public boolean appointed(Prefix prefix) {
+    return _appointedPrefixSpace == null || _appointedPrefixSpace.containsPrefix(prefix);
+  }
+
+  /**
+   * Remove and return every IPv4 route from this process's RIBs (S2 prefix sharding). The caller is
+   * expected to externalize the result and later call {@link #restoreV4Routes}.
+   */
+  public Set<Bgpv4Route> drainV4Routes() {
+    // Only the combined BGP RIB is externalized (mirrors the reference's deepClear of _bgpv4Rib);
+    // the eBGP/iBGP RIBs keep their paths.
+    Set<Bgpv4Route> drained = new LinkedHashSet<>(_bgpv4Rib.getRoutes());
+    for (Bgpv4Route route : drained) {
+      _bgpv4Rib.removeRouteGetDelta(route);
+    }
+    _bgpv4DeltaBuilder = RibDelta.builder();
+    _ebgpv4DeltaBuilder = RibDelta.builder();
+    _bgpv4DeltaBestPathBuilder = RibDelta.builder();
+    _ebgpv4DeltaBestPathBuilder = RibDelta.builder();
+    _bgpv4DeltaPrev = RibDelta.empty();
+    _ebgpv4DeltaPrev = RibDelta.empty();
+    _bgpv4DeltaPrevBestPath = RibDelta.empty();
+    _ebgpv4DeltaPrevBestPath = RibDelta.empty();
+    _bgpv4Prev = ImmutableSet.of();
+    _ebgpv4Prev = ImmutableSet.of();
+    _bgpv4PrevBestPath = ImmutableSet.of();
+    _ebgpv4PrevBestPath = ImmutableSet.of();
+    return drained;
+  }
+
+  /** Merge previously {@link #drainV4Routes() drained} IPv4 routes back into the BGP RIB. */
+  public void restoreV4Routes(Collection<Bgpv4Route> routes) {
+    routes.forEach(this::processMergeInBgpRib);
   }
 
   @Override
@@ -1024,6 +1088,8 @@ final class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?,
     Iterator<RouteAdvertisement<Bgpv4Route>> exportedRoutes =
         remoteProcess
             .getOutgoingRoutesForEdge(edgeId, nodes, bgpTopology, nc, isNewSession)
+            // S2 prefix sharding: only consider the currently appointed prefixes.
+            .filter(adv -> appointed(adv.getRoute().getNetwork()))
             // Different incoming routes may be transformed to equivalent learned routes (due to
             // transformBgpRouteOnImport or the import policy). If this occurs with one withdrawn
             // route and another added route, the add should be applied second.
@@ -1156,12 +1222,16 @@ final class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?,
    *     The {@link EdgeId#head() head} is the remote {@link BgpPeerConfigId} and the {@link
    *     EdgeId#tail() tail} is our {@link BgpPeerConfigId}.
    */
-  private Stream<RouteAdvertisement<Bgpv4Route>> getOutgoingRoutesForEdge(
+  protected Stream<RouteAdvertisement<Bgpv4Route>> getOutgoingRoutesForEdge(
       EdgeId edge,
       Map<String, Node> allNodes,
       BgpTopology bgpTopology,
       NetworkConfigurations networkConfigurations,
       boolean isNewSession) {
+    if (_outgoingRoutesProvider != null) {
+      return _outgoingRoutesProvider.getOutgoingRoutesForEdge(
+          this, edge, allNodes, bgpTopology, networkConfigurations, isNewSession);
+    }
     BgpPeerConfigId remoteConfigId = edge.head();
     BgpPeerConfigId ourConfigId = edge.tail();
     // Confirm edge directionality.
@@ -2126,6 +2196,9 @@ final class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?,
    */
   private RibDelta<Bgpv4Route> processMergeOrRemoveInEbgpOrIbgpRib(
       Bgpv4Route route, boolean ebgp, boolean merge) {
+    if (merge && !appointed(route.getNetwork())) {
+      return RibDelta.empty();
+    }
     if (ebgp) {
       return processMergeOrRemove(
           _ebgpv4Rib, route, _ebgpv4DeltaBuilder, _ebgpv4DeltaBestPathBuilder, merge);
@@ -2158,6 +2231,9 @@ final class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?,
    * @param merge Whether to merge the given route (if false, removes it)
    */
   private RibDelta<Bgpv4Route> processMergeOrRemoveInBgpRib(Bgpv4Route route, boolean merge) {
+    if (merge && !appointed(route.getNetwork())) {
+      return RibDelta.empty();
+    }
     return processMergeOrRemove(
         _bgpv4Rib, route, _bgpv4DeltaBuilder, _bgpv4DeltaBestPathBuilder, merge);
   }

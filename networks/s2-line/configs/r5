@@ -1,0 +1,16 @@
+hostname r5
+
+interface Loopback0
+ ip address 5.5.5.5 255.255.255.255
+
+interface GigabitEthernet0/0
+ ip address 10.0.45.2 255.255.255.252
+
+interface GigabitEthernet0/1
+ ip address 10.0.56.1 255.255.255.252
+
+router bgp 65005
+ bgp router-id 5.5.5.5
+ network 5.5.5.5 mask 255.255.255.255
+ neighbor 10.0.45.1 remote-as 65004
+ neighbor 10.0.56.2 remote-as 65006

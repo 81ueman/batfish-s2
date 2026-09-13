@@ -11,7 +11,8 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 /** Uniquely identifies a {@link BgpPeerConfig} in a network. */
-public final class BgpPeerConfigId implements Comparable<BgpPeerConfigId> {
+public final class BgpPeerConfigId implements Comparable<BgpPeerConfigId>, java.io.Serializable {
+  private static final long serialVersionUID = 1L;
 
   private static final String PROP_HOSTNAME = "hostname";
   private static final String PROP_VRF_NAME = "vrf";

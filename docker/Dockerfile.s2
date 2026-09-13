@@ -1,0 +1,22 @@
+# S2 (distributed Batfish) controller/worker image.
+#
+# Build the runner jar first, then the image:
+#   bazel build //projects/s2:s2_main_deploy.jar
+#   docker build -f docker/Dockerfile.s2 -t s2:local .
+#
+# The triangle snapshot is baked in as <s2.root>/inputs, so no volumes are
+# needed for the demo.
+FROM eclipse-temurin:25-jre
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /s2
+
+COPY docker/s2_main_deploy.jar /s2/s2_main.jar
+COPY scripts/entrypoint-controller.sh /s2/entrypoint-controller.sh
+COPY scripts/entrypoint-worker.sh /s2/entrypoint-worker.sh
+COPY networks/ /s2/inputs/
+
+EXPOSE 4090 4091

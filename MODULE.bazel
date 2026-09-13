@@ -177,6 +177,22 @@ maven.amend_artifact(
     ],
 )
 
+# gRPC dependencies for the S2 distributed sidecars.
+# Kept in a separate Maven repository so the main Batfish lockfile is untouched.
+maven.install(
+    name = "grpc_maven",
+    artifacts = [
+        "io.grpc:grpc-api:1.84.0",
+        "io.grpc:grpc-core:1.84.0",
+        "io.grpc:grpc-stub:1.84.0",
+        "io.grpc:grpc-netty-shaded:1.84.0",
+    ],
+    repositories = [
+        "https://repo1.maven.org/maven2",
+    ],
+    strict_visibility = True,
+)
+
 # JOL Maven dependencies (GPL licensed, dev-only tool)
 maven.install(
     name = "jol_maven",
@@ -200,7 +216,7 @@ maven.install(
     ],
     strict_visibility = True,
 )
-use_repo(maven, "jmh_maven", "jol_maven", "maven")
+use_repo(maven, "grpc_maven", "jmh_maven", "jol_maven", "maven")
 
 # Python pip dependencies
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
