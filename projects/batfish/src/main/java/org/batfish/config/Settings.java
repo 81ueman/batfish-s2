@@ -28,6 +28,8 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
   public static final String ARG_S2_WORKERS = "s2workers";
 
+  public static final String ARG_S2_STORE_DATA_PLANE = "s2storedataplane";
+
   private static final String ARG_DEBUG_FLAGS = "debugflags";
 
   private static final String ARG_PARSE_REUSE = "parsereuse";
@@ -355,9 +357,21 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     return _config.getString(ARG_DATAPLANE_ENGINE_NAME);
   }
 
-  /** Number of S2 dataplane workers (only used when {@link #getDataPlaneEngineName()} is "s2"). */
+  /**
+   * Number of S2 dataplane workers (only used when {@link #getDataPlaneEngineName()} is "s2"). The
+   * default 0 means auto (pool size, else {@code availableProcessors} capped by the node count).
+   */
   public int getS2Workers() {
     return _config.getInt(ARG_S2_WORKERS);
+  }
+
+  /**
+   * Whether to persist the computed data plane to disk. The stock engine always does; the S2 engine
+   * can disable it when the data plane is lazy/remote (materializing every host to disk would
+   * defeat the point). The in-memory cache is populated either way.
+   */
+  public boolean getS2StoreDataPlane() {
+    return _config.getBoolean(ARG_S2_STORE_DATA_PLANE);
   }
 
   private void initConfigDefaults() {
@@ -414,7 +428,8 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     setDefaultProperty(BfConsts.COMMAND_PARSE_VENDOR_INDEPENDENT, false);
     setDefaultProperty(BfConsts.COMMAND_PARSE_VENDOR_SPECIFIC, false);
     setDefaultProperty(ARG_DATAPLANE_ENGINE_NAME, "ibdp");
-    setDefaultProperty(ARG_S2_WORKERS, 1);
+    setDefaultProperty(ARG_S2_WORKERS, 0);
+    setDefaultProperty(ARG_S2_STORE_DATA_PLANE, true);
   }
 
   private void initOptions() {
@@ -595,8 +610,10 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
     addOption(
         ARG_S2_WORKERS,
-        "number of S2 dataplane workers (used when the dataplane engine is s2).",
+        "number of S2 dataplane workers (0 = auto; used when the dataplane engine is s2).",
         "s2 workers");
+
+    addBooleanOption(ARG_S2_STORE_DATA_PLANE, "whether to persist the computed data plane to disk");
 
     // deprecated and ignored
     for (String deprecatedStringArg :
@@ -716,6 +733,7 @@ public final class Settings extends BaseSettings implements GrammarSettings {
     getBooleanOptionValue(BfConsts.ARG_VERBOSE_PARSE);
     getStringOptionValue(ARG_DATAPLANE_ENGINE_NAME);
     getIntOptionValue(ARG_S2_WORKERS);
+    getBooleanOptionValue(ARG_S2_STORE_DATA_PLANE);
   }
 
   public void setCanExecute(boolean canExecute) {
@@ -825,6 +843,10 @@ public final class Settings extends BaseSettings implements GrammarSettings {
 
   public void setS2Workers(int workers) {
     _config.setProperty(ARG_S2_WORKERS, workers);
+  }
+
+  public void setS2StoreDataPlane(boolean store) {
+    _config.setProperty(ARG_S2_STORE_DATA_PLANE, store);
   }
 
   public void setQuestionName(QuestionId questionName) {

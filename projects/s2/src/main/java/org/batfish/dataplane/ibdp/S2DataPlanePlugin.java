@@ -17,10 +17,12 @@ import org.batfish.common.NetworkSnapshot;
 import org.batfish.common.plugin.DataPlanePlugin;
 import org.batfish.common.plugin.Plugin;
 import org.batfish.common.topology.TopologyProvider;
+import org.batfish.config.Settings;
 import org.batfish.datamodel.BgpAdvertisement;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.DataPlane;
 import org.batfish.datamodel.Prefix;
+import org.batfish.datamodel.Vrf;
 import org.batfish.datamodel.answers.IncrementalBdpAnswerElement;
 import org.batfish.datamodel.isis.IsisTopology;
 
@@ -69,7 +71,7 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
             .setTunnelTopology(topologyProvider.getInitialTunnelTopology(snapshot))
             .build();
 
-    int numWorkers = Math.min(numWorkers(), Math.max(1, configurations.size()));
+    int numWorkers = resolveNumWorkers(configurations);
     Map<String, Integer> assignment =
         NetworkPartitioner.partition(configurations.keySet(), numWorkers, 0L);
     Map<String, DistributedNode> realByHost = new HashMap<>();
@@ -146,17 +148,39 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
     }
   }
 
-  /** The requested number of workers (the {@link Settings#ARG_S2_WORKERS} setting, default 1). */
-  private int numWorkers() {
-    try {
-      return Math.max(
-          1,
-          _batfish
-              .getSettingsConfiguration()
-              .getInt(org.batfish.config.Settings.ARG_S2_WORKERS, 1));
-    } catch (RuntimeException e) {
-      return 1;
+  /**
+   * Resolve the number of workers. An explicit {@code s2workers} value is honored; {@code 0} (the
+   * default) means auto: the pool size when a remote pool is configured (future), else {@code
+   * availableProcessors} capped by the node count. Multi-worker distribution supports only eBGP and
+   * OSPF, so a snapshot that uses EIGRP/IS-IS/RIP falls back to a single worker (which is
+   * equivalent to the stock engine).
+   */
+  private int resolveNumWorkers(Map<String, Configuration> configurations) {
+    int nodes = Math.max(1, configurations.size());
+    int requested = _batfish.getSettingsConfiguration().getInt(Settings.ARG_S2_WORKERS, 0);
+    int numWorkers =
+        requested > 0 ? requested : Math.min(Runtime.getRuntime().availableProcessors(), nodes);
+    numWorkers = Math.max(1, Math.min(numWorkers, nodes));
+    if (numWorkers > 1 && !distributedProtocolsSupported(configurations)) {
+      _logger.warn(
+          "S2: snapshot uses EIGRP/IS-IS/RIP, which are not distributed; falling back to 1 worker");
+      numWorkers = 1;
     }
+    return numWorkers;
+  }
+
+  /** Whether every VRF's routing can be distributed (only eBGP and OSPF are supported). */
+  private static boolean distributedProtocolsSupported(Map<String, Configuration> configurations) {
+    for (Configuration c : configurations.values()) {
+      for (Vrf vrf : c.getVrfs().values()) {
+        if (!vrf.getEigrpProcesses().isEmpty()
+            || vrf.getIsisProcess() != null
+            || vrf.getRipProcess() != null) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   @Override

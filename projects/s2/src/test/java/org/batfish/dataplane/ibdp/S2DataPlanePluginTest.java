@@ -40,6 +40,12 @@ public final class S2DataPlanePluginTest {
     assertS2MatchesVanilla(3);
   }
 
+  /** {@code s2workers=0} means auto; the result must still match vanilla. */
+  @Test
+  public void testS2EngineMatchesVanillaAutoWorkers() throws IOException {
+    assertS2MatchesVanilla(0);
+  }
+
   private void assertS2MatchesVanilla(int workers) throws IOException {
     TestrigText testrigText = TestrigText.builder().setConfigurationFiles(TESTRIG, CONFIGS).build();
 
