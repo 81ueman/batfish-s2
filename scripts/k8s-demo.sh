@@ -5,9 +5,12 @@
 #   (e.g. s2-ospf, s2-ospf-bgp, s2-redist, s2-line).
 set -euo pipefail
 
-W="${1:?usage: k8s-demo.sh <1|3> [network]}"
+W="${1:?usage: k8s-demo.sh <N> [network]  (N has k8s/overlays/<N>pod)}"
 NETWORK="${2:-s2-triangle}"
-case "$W" in 1|3) ;; *) echo "workers must be 1 or 3" >&2; exit 2;; esac
+if [[ ! -d "k8s/overlays/${W}pod" ]]; then
+  echo "no k8s/overlays/${W}pod; available: $(ls k8s/overlays | sed 's/pod$//' | tr '\n' ' ')" >&2
+  exit 2
+fi
 
 cd "$(git rev-parse --show-toplevel)"
 mkdir -p results
