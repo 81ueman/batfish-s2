@@ -34,20 +34,29 @@ so distribution needs no RIB surgery:
 * Convergence is decided **globally** (`S2Cluster` + barrier), matching S2's
   controller-level fixpoint.
 
-### Minimal core hooks (3 files)
+### Core hooks
+
+The distribution needs a small set of hooks in shared Batfish (all default to stock behavior):
 
 | File | Change |
 | --- | --- |
 | `Node` | drop `final` |
-| `IncrementalBdpEngine` | `public`; `newNode`, `iterationVirtualRouters`, `protected nextDataplane`, `protected hasNotReachedRoutingFixedPoint`, and the synchronization hooks `synchronizeWorkers`, `exchangeIterationHashCode`, `hasReachedTopologyFixedPoint`, `hasNotReachedIgpFixedPoint`, `initialSchedule` |
-| `BgpRoutingProcess` | `public`; `getOutgoingRoutesForEdge` protected |
+| `IncrementalBdpEngine` | `public`; `newNode`, `iterationVirtualRouters`, `protected nextDataplane`, `hasNotReachedRoutingFixedPoint`, the synchronization hooks `synchronizeWorkers`, `exchangeIterationHashCode`, `hasReachedTopologyFixedPoint`, `hasNotReachedIgpFixedPoint`, `initialSchedule`; `dataPlaneNodes` (final-dataplane scope) and the EGP schedule hooks `runEgpFixpoint` / `reconcileEgpSchedule` / `ospfInternalSchedule` |
+| `BgpRoutingProcess` | `public`; `getOutgoingRoutesForEdge` protected; `appointed`/`restageExternalAdvertisements` (prefix sharding) |
+| `VirtualRouter` | `initStubFib` (config-only remote FIB), `initForEgpPrefixRound` / `drainBgpRoutes` / `restoreBgpRoutes` (prefix sharding) |
+| `BDDReachabilityAnalysisFactory` | nullable `localNodes` (owned-only factory scoping) |
+| `PrefixSpace` | gated positive-only memo (`-Ds2.prefixSpacePositiveCacheOnly`) |
+| `OspfRoutingProcess` | gated `EnqueueProvider` (distributed OSPF messages) |
 
 ### New module `//projects/s2`
 
 * `DistributedNode` — real/shadow node
-* `NetworkPartitioner` — balanced hostname→worker assignment
 * `S2BdpEngine` — engine over `DistributedNode`s, real-only iteration, global convergence
 * `S2Cluster` — shared global convergence check
+* `partition/` — pluggable `NodePartitioner` schemes + `CommunicationGraph` / `NodeWeights`
+* `PrefixSharder` / `PrefixDependencyGraph` / `PrefixShardCountSelector` — control-plane prefix sharding
+* `RemoteNodeDescriptor` — lightweight remote (shadow) config
+* `S2ReachabilityWorker` / `S2BddSidecar` / `InterWorkerTransition` / `TransitionTransfer` — distributed symbolic DPV
 
 ## Milestones
 
@@ -64,10 +73,9 @@ so distribution needs no RIB surgery:
   a traceroute-based reachability digest is computed on the distributed
   dataplane. Both ribs and reachability match vanilla for 1 and 3 workers/Pods.
 
-M4 limitation: the reachability digest is computed per worker over the assembled
-dataplane (FIBs are distributed, forwarding is not). The paper's fully distributed
-symbolic DPV (BDD port predicates forwarded across workers via InterWorkerTransition)
-is still future work.
+M4's "FIBs are distributed, forwarding is not" gave way to the distributed symbolic DPV in M5
+below. The per-worker reachability digest is now optional: in owned/descriptor mode the controller
+implies forwarding equality from the exact RIB match (see `M5-SCALE.md` and `OPS.md`).
 
 ## M5 — distributed symbolic DPV
 
@@ -112,6 +120,35 @@ vanilla. Verified locally and on OrbStack Kubernetes for 1 and 3 Pods
 This closes the scalability gap: the symbolic edge table per worker now shrinks with
 the number of workers, not just the fixpoint.
 
+> **Naming note.** "M5" here is the README milestone (distributed symbolic DPV, done). `REMAINING.md`
+> also uses "M5" for a *memory* task (dataplane prefix sharding / on-disk RIB+FIB), which was
+> **dropped** — see `REMAINING.md` A5.
+
+## Post-M5 work (scale / memory)
+
+Added after the distributed DPV (defaults noted; see `M5-SCALE.md`, `OPS.md`, `REMAINING.md`):
+
+* **Controller-shipped configs** (default on): the controller parses once and ships the parsed
+  configs, so workers do not re-parse the snapshot (`-Ds2.noShipConfigs=true` reproduces the old
+  per-worker parse; this was the parse-dominated floor).
+* **Owned-only dataplane** (default on): workers build full RIBs/FIBs only for owned nodes; shadows
+  get a config-only stub FIB (`VirtualRouter.initStubFib`). Falls back to full configs for
+  tracks / VXLAN / tunnel / IPsec. Disable with `-Ds2.ownedDataplane=false`.
+* **Descriptor shadows** (default on): remote nodes are materialized from a lightweight
+  `RemoteNodeDescriptor` (drops remote ACL / policy / route-map bodies). Disable with
+  `-Ds2.descriptorShadows=false`.
+* **Node partitioner** (default **`WEIGHTED_LPT_FM`**): pluggable `RANDOM` / `NAME_ORDERED` /
+  `WEIGHTED_LPT_FM` / `GREEDY_REGION` / `METIS` / `AUTO`, computed once on the controller and shipped
+  to workers (`-Ds2.partition=<scheme>`). Measured per-scheme peaks in `PARTITIONING-PLAN.md` 6.13.
+* **Control-plane prefix sharding + DPDG**: `S2_PREFIX_SHARDS=N` or `=auto` (deterministic shard
+  count from the prefix dependency graph), plus the aggregate / static / external-announcement prefix
+  closure (see `PARTITIONING-PLAN.md`).
+* **Controller / verifier split (A7)**: the controller is a lightweight coordinator; a separate
+  `verify` role (a new JVM locally, the `s2-verifier` Job on Kubernetes) runs the vanilla dataplane
+  and reference BDD analysis. This cut the `s2-mega` controller peak from ~1326 to ~529 MiB.
+* **k8s multi-Pod scale-out**: `k8s/overlays/{1,3,6,8,16}pod` and `scripts/k8s-demo.sh <N>`;
+  `s2-fat4` at 6 / 8 / 16 and `s2-mega` at 8 / 16 all `MATCH`.
+
 ## Running the demos
 
 Local multi-process (one JVM per worker, plus a separate verify JVM):
@@ -123,13 +160,14 @@ scripts/local-demo.sh 3
 scripts/local-demo.sh 3 s2-line   # optional second arg selects the network
 ```
 
-OrbStack Kubernetes (controller Job + 1 or 3 worker Pods + verifier Job):
+OrbStack Kubernetes (controller Job + N worker Pods + verifier Job):
 
 ```sh
 scripts/build-s2.sh --image        # builds s2:local
-scripts/k8s-demo.sh 1
+scripts/k8s-demo.sh 1              # 1 / 3 / 6 / 8 / 16 worker Pods
 scripts/k8s-demo.sh 3
 scripts/compare-answers.sh
+scripts/k8s-demo.sh 6 s2-fat4      # multi-Pod scale-out on a DCN
 ```
 
 The controller is a **lightweight coordinator**: it parses the snapshot, resolves
@@ -170,14 +208,20 @@ networks/s2-agg/      # eBGP with a BGP aggregate (prefix-sharding closure test)
 networks/s2-static/   # static route redistributed into BGP (redistribution-closure test)
 networks/s2-external/ # external BGP announcement into BGP (external-closure test)
 networks/s2-acl/      # 6-node eBGP line with 3000-line ACLs (descriptor/ACL-heavy testbed)
-networks/s2-fat2/     # generated 5-switch FatTree k=2 (tie-stable)
-networks/s2-fat4/     # generated 20-switch FatTree k=4 (DCN; throughput/memory, tie-unstable)
+networks/s2-fat2/     # generated 5-switch FatTree k=2 (DCN)
+networks/s2-fat4/     # generated 20-switch FatTree k=4 (DCN)
+networks/s2-fat6/     # generated 45-switch FatTree k=6 (DCN, larger)
+networks/s2-hub/      # hub + 8 spokes (WAN star / route-reflector-like)
 networks/s2-genline/  # generated 4-switch eBGP line (generator smoke test)
-scripts/gen-topology.py    # generate FatTree/line testbeds
+scripts/gen-topology.py    # generate FatTree/line/hub testbeds
 scripts/bench.sh           # network x workers matrix -> metrics table
+scripts/bench-table.sh     # cached size-ladder x mode -> markdown table
 scripts/partition-metrics.py  # imbalance / weighted cut for a network
-scripts/ci-matrix.sh       # opt-in demo matrix (default/full)
+scripts/calibrate-weights.py  # node-weight features / fit / cost-aware imbalance
 scripts/shard-sweep.sh     # prefix-shard-count sweep (peak vs N)
+scripts/ci.sh              # CI entry point (unit / --upstream / --matrix)
+scripts/ci-matrix.sh       # opt-in demo matrix
+k8s/overlays/{1,3,6,8,16}pod  # worker replica counts (scripts/k8s-demo.sh <N>)
 docs/s2-port/OPS.md        # k8s resources, default -Xmx, METIS
 networks/s2-big-bgp/  # 6-node eBGP line with 192 prefixes (prefix-sharding measurement)
 networks/s2-big2/     # 10-node eBGP line with 640 prefixes (larger prefix-sharding measurement)
@@ -189,9 +233,11 @@ docker/, k8s/, scripts/, docs/s2-port/
 
 ## Remaining work
 
-See [`REMAINING.md`](REMAINING.md) for the open items (config descriptor, control-plane transient,
-factory scoping, owned-mode hardening, packaging) and [`M5-SCALE.md`](M5-SCALE.md) for the
-memory/scale measurements behind them.
+See [`REMAINING.md`](REMAINING.md) for the now-small open-item list (the bulk of the memory work is
+done: config shipping, owned-only dataplane, descriptor shadows, node partitioner, prefix sharding,
+controller/verifier split; the dataplane on-disk-RIB task "M5" was dropped),
+[`PARTITIONING-PLAN.md`](PARTITIONING-PLAN.md) for the partitioner / prefix-sharding evaluation, and
+[`M5-SCALE.md`](M5-SCALE.md) for the memory/scale measurements.
 
 ## License
 
