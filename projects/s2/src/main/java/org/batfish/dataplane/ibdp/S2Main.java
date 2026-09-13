@@ -124,6 +124,34 @@ public final class S2Main {
     return Boolean.getBoolean("s2.ownedDataplane");
   }
 
+  /**
+   * Whether reduced shadow configs are safe for this snapshot. The descriptor drops remote ACL /
+   * policy bodies, so it is only sound while nothing needs a remote node's full policy or
+   * forwarding state on a non-owning worker:
+   *
+   * <ul>
+   *   <li>tracks: a {@code TrackReachability} traceroutes through possibly-remote nodes;
+   *   <li>IPsec / tunnel / VXLAN reachability: dataplane traceroutes prune the initial topology;
+   *   <li>(the global traceroute digest is skipped in descriptor mode — see {@code runWorker}).
+   * </ul>
+   */
+  private static boolean descriptorShadowsSafe(S2Snapshot snap) {
+    for (Configuration c : snap.configs.values()) {
+      if (S2BdpEngine.hasTrackReachability(c)) {
+        return false;
+      }
+      for (Vrf vrf : c.getVrfs().values()) {
+        if (!vrf.getLayer2Vnis().isEmpty() || !vrf.getLayer3Vnis().isEmpty()) {
+          return false;
+        }
+      }
+    }
+    TopologyContext tc = snap.topologyContext;
+    return tc.getIpsecTopology().getGraph().edges().isEmpty()
+        && tc.getTunnelTopology().getGraph().edges().isEmpty()
+        && tc.getVxlanTopology().getGraph().edges().isEmpty();
+  }
+
   /** Serialize the controller's parsed configurations so workers can skip parsing. */
   private static byte[] serializeConfigs(Map<String, Configuration> configs) throws IOException {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -187,16 +215,58 @@ public final class S2Main {
     DataPlane vanilla = snap.batfish.loadDataPlane(snap.snapshot);
     Map<String, Map<String, Set<String>>> vanillaRibs = canonical(ribsOf(vanilla, null, null));
 
-    // Serialize the parsed configs once so each worker can skip parsing the snapshot.
-    byte[] serializedConfigs =
-        Boolean.getBoolean("s2.noShipConfigs") ? null : serializeConfigs(snap.configs);
+    // Descriptor-shadow mode (-Ds2.descriptorShadows=true): ship each worker only its owned configs
+    // plus a shared reduced descriptor for every remote node, instead of the full snapshot. Stays
+    // off by default; also requires config shipping and a snapshot the shadow path can answer
+    // without remote policy/forwarding bodies (see descriptorShadowsSafe).
+    boolean shipConfigs = !Boolean.getBoolean("s2.noShipConfigs");
+    boolean descriptorShadows =
+        shipConfigs
+            && Boolean.getBoolean("s2.descriptorShadows")
+            && numWorkers > 1
+            && descriptorShadowsSafe(snap);
+    byte[] serializedConfigs = null;
+    Map<Integer, byte[]> ownedConfigsByWorker = null;
+    byte[] serializedDescriptors = null;
+    if (descriptorShadows) {
+      Map<String, Integer> assignment =
+          NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, 0L);
+      Map<Integer, SortedMap<String, Configuration>> ownedByWorker = new HashMap<>();
+      Map<String, RemoteNodeDescriptor> descriptors = new TreeMap<>();
+      for (Map.Entry<String, Configuration> e : snap.configs.entrySet()) {
+        int owner = assignment.get(e.getKey());
+        ownedByWorker.computeIfAbsent(owner, w -> new TreeMap<>()).put(e.getKey(), e.getValue());
+        descriptors.put(e.getKey(), RemoteNodeDescriptor.of(e.getValue()));
+      }
+      // More workers than nodes is legal; make sure every worker has a (possibly empty) payload.
+      for (int w = 0; w < numWorkers; w++) {
+        ownedByWorker.computeIfAbsent(w, x -> new TreeMap<>());
+      }
+      ownedConfigsByWorker = new HashMap<>();
+      for (Map.Entry<Integer, SortedMap<String, Configuration>> e : ownedByWorker.entrySet()) {
+        ownedConfigsByWorker.put(e.getKey(), serializeConfigs(e.getValue()));
+      }
+      serializedDescriptors = RemoteNodeDescriptor.serialize(descriptors);
+      System.out.printf(
+          "S2 controller: descriptor shadows on (%d full configs + %d descriptors)%n",
+          numWorkers, descriptors.size());
+    } else {
+      // Serialize the parsed configs once so each worker can skip parsing the snapshot.
+      serializedConfigs = shipConfigs ? serializeConfigs(snap.configs) : null;
+    }
     // Workers build from shipped configs, so they cannot load external announcements themselves.
     byte[] serializedExternalAdverts =
         serializeExternalAdverts(
             snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
     try (S2ControllerServer server =
         new S2ControllerServer(
-            port, numWorkers, endpoints, serializedConfigs, serializedExternalAdverts)) {
+            port,
+            numWorkers,
+            endpoints,
+            serializedConfigs,
+            serializedExternalAdverts,
+            ownedConfigsByWorker,
+            serializedDescriptors)) {
       server.start();
       System.out.printf(
           "S2 controller listening on %d, waiting for %d workers%n", port, numWorkers);
@@ -217,9 +287,13 @@ public final class S2Main {
           reachMatch &= workerResult.reachability.equals(vanillaReach);
         }
       } else {
-        // Owned-dataplane mode: workers use stub remote FIBs and cannot run the global traceroute
-        // digest. Forwarding is a deterministic function of the RIBs + configs and the RIB check
-        // below is exact, so a RIB match implies a forwarding match.
+        // No worker digest to compare (owned-dataplane mode uses stub remote FIBs; descriptor mode
+        // uses remote configs without their ACL bodies). C3: the implication "exact RIB match =>
+        // forwarding match" is sound because each worker returns its owned nodes' complete final
+        // main RIBs and every host's RIB is checked exactly against vanilla (match). A FIB is a
+        // deterministic function of the main RIB plus the node's configuration; the workers build
+        // owned FIBs from the full owned configs, and a remote node's ACL/policy bodies never
+        // change its FIB. The union therefore has the same forwarding behaviour as vanilla.
         reachMatch = match;
       }
 
@@ -337,9 +411,25 @@ public final class S2Main {
       S2ControlMessages.Start start = (S2ControlMessages.Start) in.readObject();
 
       // S2 ships the controller's parsed configurations so workers do not re-parse the snapshot.
+      // In descriptor mode the worker gets full configs only for the nodes it owns and a reduced
+      // descriptor for every remote node; it materializes a shadow config for the latter.
+      SortedMap<String, Configuration> configs = null;
+      if (start.descriptorShadows) {
+        Map<String, RemoteNodeDescriptor> descriptors =
+            RemoteNodeDescriptor.deserialize(start.descriptors);
+        SortedMap<String, Configuration> effective = new TreeMap<>();
+        descriptors.forEach(
+            (host, descriptor) -> effective.put(host, descriptor.shadowConfiguration()));
+        effective.putAll(deserializeConfigs(start.ownedConfigs));
+        configs = effective;
+      } else if (start.configs != null) {
+        configs = deserializeConfigs(start.configs);
+      }
+      // The serialized payloads are no longer needed; drop them so they are not retained all run.
+      start.clearConfigPayloads();
       S2Snapshot snap =
-          start.configs != null
-              ? S2Snapshot.fromConfigs(deserializeConfigs(start.configs))
+          configs != null
+              ? S2Snapshot.fromConfigs(configs)
               : S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
       assertDistributedProtocolsSupported(snap, numWorkers);
       Map<String, Integer> assignment =
@@ -402,7 +492,12 @@ public final class S2Main {
             new ShadowMainRibSync(nodes, assignment, workerId, start.endpoints, client);
         S2BdpEngine engine =
             new S2BdpEngine(
-                snap.settings(), nodes, coordinator, shadowSync, externalAdvertPrefixes);
+                snap.settings(),
+                nodes,
+                coordinator,
+                shadowSync,
+                externalAdvertPrefixes,
+                start.descriptorShadows);
         DataPlane dp =
             engine.computeDataPlane(
                     snap.configs,
@@ -475,10 +570,16 @@ public final class S2Main {
             new S2ControlMessages.Result(
                 workerId,
                 ribsOf(dp, assignment, workerId),
-                // Owned mode uses stub remote FIBs, so the global traceroute digest cannot be
-                // computed here; the controller implies forwarding equality from the exact RIB
-                // match.
-                ownedDataplaneMode() ? Map.of() : reachabilityDigest(dp, snap),
+                // Owned mode uses stub remote FIBs and descriptor mode uses remote configs without
+                // their ACL bodies, so neither can run the global traceroute digest here. The
+                // controller then implies forwarding equality from the exact RIB match: worker
+                // RIBs exactly equal vanilla, and a FIB (hence forwarding) is a deterministic
+                // function of the RIB and the full config. Owned configs are full; remote policy
+                // bodies never affect a remote FIB, and remote ACLs only matter to the digest we
+                // are skipping.
+                ownedDataplaneMode() || start.descriptorShadows
+                    ? Map.of()
+                    : reachabilityDigest(dp, snap),
                 symbolicSerialized,
                 peakHeapBytes));
         out.flush();

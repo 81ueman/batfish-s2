@@ -68,12 +68,21 @@ public class S2BdpEngine extends IncrementalBdpEngine {
    */
   private boolean _ownedDataplane = _ownedDataplaneRequested;
 
+  /**
+   * Whether this run materializes reduced shadow configs from remote descriptors ({@code
+   * -Ds2.descriptorShadows=true}). Remote shadow configs then carry no ACL / policy bodies, so
+   * consumers that need a remote node's full forwarding state (the dataplane-level BGP session
+   * reachability check) are disabled; {@code S2Main} gates the mode on the snapshot being free of
+   * tracks and IPsec / tunnel / VXLAN reachability.
+   */
+  private final boolean _descriptorShadows;
+
   public S2BdpEngine(
       IncrementalDataPlaneSettings settings,
       Map<String, DistributedNode> nodes,
       S2Coordinator coordinator,
       @Nullable Runnable shadowSync) {
-    this(settings, nodes, coordinator, shadowSync, ImmutableSet.of());
+    this(settings, nodes, coordinator, shadowSync, ImmutableSet.of(), false);
   }
 
   public S2BdpEngine(
@@ -82,11 +91,22 @@ public class S2BdpEngine extends IncrementalBdpEngine {
       S2Coordinator coordinator,
       @Nullable Runnable shadowSync,
       Set<Prefix> externalAdvertPrefixes) {
+    this(settings, nodes, coordinator, shadowSync, externalAdvertPrefixes, false);
+  }
+
+  public S2BdpEngine(
+      IncrementalDataPlaneSettings settings,
+      Map<String, DistributedNode> nodes,
+      S2Coordinator coordinator,
+      @Nullable Runnable shadowSync,
+      Set<Prefix> externalAdvertPrefixes,
+      boolean descriptorShadows) {
     super(settings);
     _nodes = nodes;
     _coordinator = coordinator;
     _shadowSync = shadowSync;
     _externalAdvertPrefixes = externalAdvertPrefixes;
+    _descriptorShadows = descriptorShadows;
   }
 
   @Override
@@ -377,10 +397,13 @@ public class S2BdpEngine extends IncrementalBdpEngine {
    * directly-connected peering). This is only valid while owned mode is actually in effect: if
    * {@link #prepareDataPlane} disabled it, the check runs as in stock Batfish. Stock behavior keeps
    * the check.
+   *
+   * <p>Descriptor mode likewise skips it: a remote shadow config carries no ACL bodies, so a
+   * reachability check that traverses a remote node could disagree with the full configuration.
    */
   @Override
   protected boolean checkBgpSessionReachability() {
-    return !_ownedDataplane;
+    return !_ownedDataplane && !_descriptorShadows;
   }
 
   /** Whether any tracking group on {@code c} is (or contains) a {@link TrackReachability}. */

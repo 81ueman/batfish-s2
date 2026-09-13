@@ -23,24 +23,57 @@ final class S2ControlMessages {
   static final class Start implements Serializable {
     private static final long serialVersionUID = 1L;
     final List<S2WorkerEndpoint> endpoints;
+    final boolean descriptorShadows;
 
     /**
      * Java-serialized {@code SortedMap<String, Configuration>} of all snapshot configs, produced by
      * the controller so workers do not re-parse. May be null (fall back to parsing on the worker).
      */
-    final byte[] configs;
+    byte[] configs;
 
     /**
      * Java-serialized {@code Set<BgpAdvertisement>} of the snapshot's external BGP announcements,
      * or null. Workers cannot load these themselves (they build from shipped configs), so the
      * controller ships them; they are injected into the BGP RIBs and are shard-appointed.
      */
-    final byte[] externalAdverts;
+    byte[] externalAdverts;
 
-    Start(List<S2WorkerEndpoint> endpoints, byte[] configs, byte[] externalAdverts) {
+    /**
+     * Descriptor-shadow mode ({@code -Ds2.descriptorShadows=true}): Java-serialized {@code
+     * SortedMap<String, Configuration>} of just the configs this worker owns. Null in the stock
+     * path, where {@link #configs} carries the full snapshot instead.
+     */
+    byte[] ownedConfigs;
+
+    /**
+     * Descriptor-shadow mode: Java-serialized {@code Map<String, RemoteNodeDescriptor>} for the
+     * nodes this worker does not own, replacing their full configurations with reduced shadow
+     * configs. Null in the stock path.
+     */
+    byte[] descriptors;
+
+    Start(
+        List<S2WorkerEndpoint> endpoints,
+        byte[] configs,
+        byte[] externalAdverts,
+        byte[] ownedConfigs,
+        byte[] descriptors) {
       this.endpoints = endpoints;
       this.configs = configs;
       this.externalAdverts = externalAdverts;
+      this.ownedConfigs = ownedConfigs;
+      this.descriptors = descriptors;
+      this.descriptorShadows = descriptors != null;
+    }
+
+    /**
+     * Drop the (now deserialized) config payloads so the worker does not keep the serialized copies
+     * alive for the rest of the run. {@link #externalAdverts} is kept until it has been consumed.
+     */
+    void clearConfigPayloads() {
+      configs = null;
+      ownedConfigs = null;
+      descriptors = null;
     }
   }
 
