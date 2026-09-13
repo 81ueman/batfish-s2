@@ -118,6 +118,25 @@ public class PrefixSpaceTest {
   }
 
   @Test
+  public void containsPrefixPositiveOnlyCacheTest() {
+    Prefix present = Prefix.parse("10.0.0.0/8");
+    Prefix absent = Prefix.parse("11.0.0.0/8");
+    _ps.addPrefix(present);
+    PrefixSpace.setCachePositiveOnly(true);
+    try {
+      assertThat(_ps.containsPrefix(present), equalTo(true));
+      assertThat("positive result is memoized", _ps.cacheSize(), equalTo(1));
+      assertThat(_ps.containsPrefix(absent), equalTo(false));
+      assertThat("negative results are not memoized", _ps.cacheSize(), equalTo(1));
+      // Results are unchanged by the cache policy.
+      assertThat(_ps.containsPrefix(present), equalTo(true));
+      assertThat(_ps.containsPrefix(absent), equalTo(false));
+    } finally {
+      PrefixSpace.setCachePositiveOnly(false);
+    }
+  }
+
+  @Test
   public void containsPrefixRangeTest() {
     PrefixRange range = PrefixRange.fromString("10.10.10.0/20:16-24");
     _ps.addPrefixRange(range);
