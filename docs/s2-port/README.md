@@ -161,3 +161,17 @@ networks/s2-mega/     # 16-node eBGP line with 4096 prefixes
 networks/s2-giga/     # 16-node eBGP line with 32768 prefixes (largest snapshot)
 docker/, k8s/, scripts/, docs/s2-port/
 ```
+
+## Remaining work
+
+See [`REMAINING.md`](REMAINING.md) for the open items (config descriptor, control-plane transient,
+factory scoping, owned-mode hardening, packaging) and [`M5-SCALE.md`](M5-SCALE.md) for the
+memory/scale measurements behind them.
+
+## License
+
+This work — the `//projects/s2` module, the S2 runner and scripts, and the S2 documentation under
+`docs/s2-port/` — is released under the **Apache License, Version 2.0**, the same license as
+Batfish itself; see the repository root [`LICENSE`](../../LICENSE). The new S2 source files carry an
+`SPDX-License-Identifier: Apache-2.0` header.
+
