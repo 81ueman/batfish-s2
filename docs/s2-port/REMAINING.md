@@ -18,7 +18,7 @@ Knobs added for scale work:
 | `-Ds2.ownedDataplane=true` | worker keeps full RIBs/FIBs only for owned nodes (remote get stub FIBs) | off |
 | `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies) | off |
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
-| `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM (default) / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (fallback if `gpmetis` absent) | RANDOM |
+| `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM (default) / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) | RANDOM |
 | `-Ds2.prefixSpacePositiveCacheOnly=true` | memoize only positive `PrefixSpace.containsPrefix` results (cuts the EGP transient; pure memoization) | off |
 | `S2_PREFIX_SHARDS=N` | control-plane (BGP RIB) prefix sharding, N rounds | 1 (off) |
 | `S2_PREFIX_SHARDS=auto` | auto shard count from the DPDG component weights (alias `-Ds2.prefixShardCount=auto`) | — |
@@ -58,7 +58,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 | id | task | depends |
 | --- | --- | --- |
-| **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS); controller computes and distributes the assignment | **Done**: new `.../ibdp/partition/` package + `NodePartitioner`, union graph/`NodeWeights`, `-Ds2.partition` (default RANDOM unchanged), assignment shipped in `Start.assignment`; metrics/eval in `PARTITIONING-PLAN.md` §6.6. P0 (weights) |
+| **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS); controller computes and distributes the assignment | **Done**: new `.../ibdp/partition/` package + `NodePartitioner`, union graph/`NodeWeights`, `-Ds2.partition` (default RANDOM unchanged), assignment shipped in `Start.assignment`; metrics/eval in `PARTITIONING-PLAN.md` §6.6 (pre-`gpmetis`) and §6.7 (real METIS). P0 (weights) |
 | **P3** | PrefixDependencyGraph (closure + DPDG + weighted WCC-LPT) | **Done**: `PrefixDependencyGraph.java` + `PrefixSharder` rewrite (weighted WCC-LPT, degenerate fallback); `PrefixSharderTest` extended |
 | **P-X** | shard-count selection | **Done**: `S2_PREFIX_SHARDS=auto` (`PrefixShardCountSelector`) picks N deterministically from the DPDG component weights under a per-shard budget (`-Ds2.prefixShardBudgetMiB`, default 192, cap 16); `scripts/shard-sweep.sh` + `M5-SCALE.md` record peak-vs-N |
 
@@ -84,7 +84,10 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
   `scripts/ci.sh` (unit tests by default, `--matrix` opt-in) + manual-only
   `.github/workflows/s2-ci.yml`; **O4** benchmark automation — **Done**:
   `scripts/bench-table.sh` (cached size-ladder x mode markdown table);
-  **O5** METIS in the eval environment; **O6** partitioner weight calibration (← P0): **v1 shipped**
+  **O5** METIS in the eval environment — **Done**: `gpmetis` (METIS 5.1.0) is installed and the real
+  sweep is recorded in `PARTITIONING-PLAN.md` §6.7 (`MetisPartitioner` keeps the pure-Java fallback,
+  fixes the graph field order, and pins `-ptype=rb -ufactor=1`);
+  **O6** partitioner weight calibration (← P0): **v1 shipped**
   (`NodeWeights`, documented additive feature sum; also added `--weights` to
   `scripts/partition-metrics.py`); fitting the coefficients to single-worker phase peaks is still
   pending; **O7** docs sync.
@@ -106,9 +109,11 @@ M2 ⇄ P3                      (both target T_w)
 Done (merged): C-PFX, P3, P-X, P2, M1, M2, M3, M4, C3, P0 (except weight calibration O6).
 
 1. **O6** weight calibration (v1 weights exist; calibrate against single-worker phase peaks)
-2. **O1** defaults (decide whether to make owned / descriptor / positive-cache default) / **O5** METIS install for real partitioner eval / **O3**/**O4** CI+bench automation
+2. **O1** defaults (decide whether to make owned / descriptor / positive-cache default) / **O3**/**O4** CI+bench automation
 3. **M5** (deferred)
 4. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
+
+(O5 METIS install is done — see the sweep in `PARTITIONING-PLAN.md` §6.7.)
 
 ## A. Memory / scale (ranked by expected payoff)
 

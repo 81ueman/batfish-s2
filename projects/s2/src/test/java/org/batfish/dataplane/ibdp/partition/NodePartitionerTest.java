@@ -5,11 +5,17 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.junit.Assume.assumeTrue;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -166,6 +172,72 @@ public class NodePartitionerTest {
       } else {
         System.setProperty(MetisPartitioner.METIS_PATH_PROPERTY, previous);
       }
+    }
+  }
+
+  /**
+   * The gpmetis graph file must use the METIS adjacency order {@code vwgt nbr ewgt} (a vertex
+   * weight followed, per neighbor, by the 1-based neighbor then the edge weight). Writing {@code
+   * vwgt ewgt nbr} instead makes METIS parse the unit edge weights as neighbor ids (self-loops), so
+   * it drops the real edges and the weighted balance silently degrades. This locks the format down.
+   */
+  @Test
+  public void testMetisGraphFormat() throws IOException {
+    Map<String, Integer> weights = ImmutableMap.of("a", 20, "b", 20, "c", 20);
+    CommunicationGraph g = graph(weights, new Object[][] {{"a", "b", 1}, {"b", "c", 2}});
+    Path file = Files.createTempFile("s2-metis-format", ".graph");
+    try {
+      MetisPartitioner.writeGraph(g, new ArrayList<>(g.nodes()), file);
+      assertThat(
+          Files.readAllLines(file, StandardCharsets.UTF_8),
+          equalTo(ImmutableList.of("3 2 11 1", "20 2 1", "20 1 1 3 2", "20 2 2")));
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
+  /**
+   * End-to-end check that the real {@code gpmetis} balances weighted vertices: a 6-vertex line with
+   * uniform weight 20 and 3 workers must split 2/2/2 (load 40 each). Skipped when {@code gpmetis}
+   * is not installed, so the suite still passes in environments without METIS.
+   */
+  @Test
+  public void testMetisBalancesUniformWeightLine() {
+    assumeTrue("gpmetis not installed", gpmetisAvailable());
+    Map<String, Integer> weights = new HashMap<>();
+    Object[][] edges = new Object[5][];
+    for (int i = 1; i <= 6; i++) {
+      weights.put("v" + i, 20);
+      if (i < 6) {
+        edges[i - 1] = new Object[] {"v" + i, "v" + (i + 1), 1};
+      }
+    }
+    CommunicationGraph g = graph(weights, edges);
+    Map<String, Integer> assignment = new MetisPartitioner().partition(g, 3, 0L);
+    assertThat(assignment.keySet(), equalTo(weights.keySet()));
+    long[] loads = CommunicationGraph.loads(g, assignment, 3);
+    for (long load : loads) {
+      assertThat(load, equalTo(40L));
+    }
+    assertThat(CommunicationGraph.cutWeight(g, assignment), equalTo(2L));
+  }
+
+  /** Whether the default {@code gpmetis} executable can be started. */
+  private static boolean gpmetisAvailable() {
+    String metis = System.getProperty(MetisPartitioner.METIS_PATH_PROPERTY, "gpmetis");
+    try {
+      Process process =
+          new ProcessBuilder(metis)
+              .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+              .redirectError(ProcessBuilder.Redirect.DISCARD)
+              .start();
+      process.waitFor();
+      return true;
+    } catch (IOException e) {
+      return false;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
     }
   }
 

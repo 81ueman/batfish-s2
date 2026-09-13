@@ -23,7 +23,11 @@ import java.util.concurrent.TimeUnit;
  * <p>The graph is written with vertex weights (from {@link NodeWeights}) and edge weights
  * (estimated exchange volume), in the standard METIS adjacency format: header {@code n m fmt ncon}
  * with {@code fmt=11} (edge + vertex weights) and {@code ncon=1}; each vertex line is {@code vwgt
- * ewgt nbr ...} with 1-based neighbors, and an undirected edge is listed from both endpoints.
+ * nbr ewgt ...} with 1-based neighbors, and an undirected edge is listed from both endpoints.
+ *
+ * <p>A fixed {@code -ptype=rb -ufactor=1} is passed so METIS balances the (weighted) vertex load
+ * tightly: the default {@code gpmetis} recursive-bisection balance is already {@code 1.001}, but
+ * pinning both options keeps the invocation explicit and stable across METIS builds.
  *
  * <p>Determinism: METIS is invoked with a fixed {@code -seed}; input vertices and neighbor lists
  * are sorted by hostname. The process path can be overridden with {@code
@@ -77,7 +81,12 @@ public final class MetisPartitioner implements NodePartitioner {
       String metis = System.getProperty(METIS_PATH_PROPERTY, "gpmetis");
       ProcessBuilder builder =
           new ProcessBuilder(
-              metis, "-seed=" + seed, input.toString(), Integer.toString(numWorkers));
+              metis,
+              "-seed=" + seed,
+              "-ptype=rb",
+              "-ufactor=1",
+              input.toString(),
+              Integer.toString(numWorkers));
       builder.redirectErrorStream(true);
       Process process = builder.start();
       boolean finished;
@@ -114,7 +123,8 @@ public final class MetisPartitioner implements NodePartitioner {
     }
   }
 
-  private static void writeGraph(CommunicationGraph graph, List<String> nodes, Path input)
+  @com.google.common.annotations.VisibleForTesting
+  static void writeGraph(CommunicationGraph graph, List<String> nodes, Path input)
       throws IOException {
     Map<String, Integer> index = new HashMap<>();
     for (int i = 0; i < nodes.size(); i++) {
@@ -138,10 +148,11 @@ public final class MetisPartitioner implements NodePartitioner {
         List<String> neighbors = new ArrayList<>(graph.neighbors(node).keySet());
         neighbors.sort(Comparator.naturalOrder());
         for (String neighbor : neighbors) {
+          // METIS adjacency entry order is <neighbor> <edge-weight> (the vertex weight came first).
           line.append(' ')
-              .append(Math.max(1, graph.edgeWeight(node, neighbor)))
+              .append(index.get(neighbor))
               .append(' ')
-              .append(index.get(neighbor));
+              .append(Math.max(1, graph.edgeWeight(node, neighbor)));
         }
         writer.write(line.toString());
         writer.write('\n');
