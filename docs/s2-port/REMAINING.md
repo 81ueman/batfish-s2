@@ -40,7 +40,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 | id | task | notes |
 | --- | --- | --- |
-| **P0** | measurement + testbed infrastructure | topology/config generators (FatTree/Clos; aggregate / redistribution / external-ads snapshots), metric dumps, current baseline, weight calibration. Prerequisite for evaluating all partitioning work. |
+| **P0** | measurement + testbed infrastructure | **Generator added**: `scripts/gen-topology.py` (`fattree --k`, `line --nodes`, `--originate`). **Finding**: FatTree eBGP with k>=4 is tie-unstable (multiple equal-cost BGP fixed points -> `ribs=DIFF` even at 1 worker; reachability/symbolic/answer MATCH), consistent with the known residual C1, so MATCH-verified partition evaluation must use tie-stable topologies (`line`, `fattree --k 2`) or a deterministic variant. `networks/s2-fat4` (20 switches) is a k=4 DCN testbed for throughput/memory. Still pending: metric dumps, baseline table, weight calibration. |
 | **C-PFX** | prefix closure fix | **Done.** Aggregates: universe inclusion + co-sharding with the prefixes they cover (`networks/s2-agg`, `testPrefixShardingWithAggregateMatchesVanilla`). Redistribution: static and kernel route networks added (`networks/s2-static`, `testPrefixShardingWithRedistributedStaticMatchesVanilla`). External announcements: runner loads `external_bgp_announcements.json`, the controller ships them (`Start.externalAdverts`), the universe includes their networks, and they are re-staged each shard round (`BgpRoutingProcess.restageExternalAdvertisements`) (`networks/s2-external`, `testPrefixShardingWithExternalAnnouncementMatchesVanilla`, `shards=1..4`). Prerequisite for (B)/DPDG. |
 
 ### Partitioning (see `PARTITIONING-PLAN.md`)
