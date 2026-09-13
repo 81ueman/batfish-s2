@@ -1,3 +1,15 @@
+# Distributed Batfish (S2-inspired)
+
+> **This is a fork of [batfish/batfish](https://github.com/batfish/batfish) implementing an
+> S2-inspired distributed Batfish**: the control-plane fixed point and the symbolic data-plane
+> verification run across multiple workers instead of a single process, following *S2: A
+> Distributed Configuration Verifier for Hyper-Scale Networks* (SIGCOMM'25).
+>
+> - Port docs, how to run (local + Kubernetes), milestones, measurements: [`docs/s2-port/`](docs/s2-port/README.md)
+> - Open work: [`docs/s2-port/REMAINING.md`](docs/s2-port/REMAINING.md)
+> - Reference implementation (design reference only): [XJTU-NetVerify/s2](https://github.com/XJTU-NetVerify/s2)
+>
+> Everything below is upstream Batfish's original README.
 
 **Got questions, feedback, or feature requests? Join our community on [Slack!](https://join.slack.com/t/batfish-org/shared_invite/enQtMzA0Nzg2OTAzNzQ1LTcyYzY3M2Q0NWUyYTRhYjdlM2IzYzRhZGU1NWFlNGU2MzlhNDY3OTJmMDIyMjQzYmRlNjhkMTRjNWIwNTUwNTQ)**
 
