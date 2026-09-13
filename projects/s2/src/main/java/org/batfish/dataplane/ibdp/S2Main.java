@@ -118,9 +118,29 @@ public final class S2Main {
       case "partition":
         runPartition(args);
         break;
+      case "vanilla":
+        runVanilla(args);
+        break;
       default:
         throw new IllegalArgumentException("unknown role " + args[0]);
     }
+  }
+
+  /**
+   * Baseline role: compute the data plane with the stock (upstream) {@code ibdp} engine in a single
+   * JVM and print its peak heap, so the distributed per-worker peaks can be compared against true
+   * vanilla Batfish rather than against S2 at {@code W=1}.
+   */
+  private static void runVanilla(String[] args) throws IOException {
+    String network = args[1];
+    S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
+    long start = System.nanoTime();
+    snap.batfish.computeDataPlane(snap.snapshot);
+    DataPlane dp = snap.batfish.loadDataPlane(snap.snapshot);
+    double elapsed = (System.nanoTime() - start) / 1e9;
+    System.out.printf(
+        "vanilla %s (ibdp): peak heap %.1f MiB, hosts=%d, time=%.1fs%n",
+        network, peakHeapBytes() / 1048576.0, dp.getRibs().rowKeySet().size(), elapsed);
   }
 
   private static Path inputDir() {
