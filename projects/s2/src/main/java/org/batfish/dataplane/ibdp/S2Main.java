@@ -267,6 +267,9 @@ public final class S2Main {
     int sidecarPort = Integer.parseInt(args[6]);
 
     S2Snapshot snap = S2Snapshot.load(inputDir().resolve(network).resolve("configs"));
+    System.err.printf(
+        "S2 worker %d peak heap after snapshot load: %.1f MiB%n",
+        workerId, peakHeapBytes() / 1048576.0);
     assertDistributedProtocolsSupported(snap, numWorkers);
     Map<String, Integer> assignment =
         NetworkPartitioner.partition(snap.configs.keySet(), numWorkers, 0L);

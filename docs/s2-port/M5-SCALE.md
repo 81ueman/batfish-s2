@@ -212,17 +212,34 @@ Phase-level peak heap (`S2BdpEngine.reportPhase`) on `s2-mega`, worker 0:
 | after EGP iteration 1 | 1033.0 MiB | 668.4 MiB |
 | after nextDataplane 1 | 1360.4 MiB | 668.4 MiB |
 
-Baseline worst worker 2090.8 MiB, B 873.4 MiB. So:
+Baseline worst worker 2090.8 MiB, B 873.4 MiB. So B removes most of the EGP +
+dataplane-construction part (worker 0: 1360 → 668 MiB). Adding a heap cap on top:
 
-* B removes most of the EGP + dataplane-construction part (worker 0: 1360 → 668 MiB).
-* What remains is a ~500-560 MiB **floor** reached during init/IGP: parsed configs,
-  connected/local routes, per-node RIBs and the distributed node/session structures. That
-  floor is the next bottleneck; it is independent of prefixes per shard and would need a
-  different fix (e.g. trimming parsed/retained per-node state, or not materializing all
-  connected/local routes up front), not more sharding.
-* Transient allocation matters: forcing a GC after the control plane on `s2-big2` left
-  only ~40 MiB live, i.e. the peak is largely garbage. A heap cap (`-Xmx512m`) lowers the
-  transient headroom and stacks with B (see the next section).
+| configuration (`s2-mega`, 3 workers) | max peak heap / worker | result |
+| --- | --- | --- |
+| baseline | 2090.8 MiB | MATCH |
+| B (8 shards + externalize) | 873.4 MiB | MATCH |
+| B + `-Xmx1g` | 595.4 MiB | MATCH |
+
+That is a **~72% worst-worker peak reduction** at 4096 prefixes, still matching vanilla.
+
+**What the remaining floor is.** Phase attribution (added `reportPhase`) shows the peak is
+already reached at the very first phase, right after the snapshot is parsed:
+
+| phase (`s2-big2`, worker 0) | peak heap |
+| --- | --- |
+| after snapshot load | 289.2 MiB |
+| after building nodes | 289.2 MiB |
+| … after EGP / nextDataplane | 318.5 / 390.5 MiB |
+
+So the floor is **the per-worker parse of the full snapshot** (every worker holds all
+configs, real and shadow). It is *transient*: forcing a GC after the control plane leaves
+only ~40 MiB live, and B + `-Xmx1g` completes far below the uncapped peak. Consequences:
+
+* The floor is not reduced by sharding; the effective lever is GC headroom (heap cap).
+* A true architectural reduction would need to cut transient allocations in the parser /
+  FIB builder (upstream Batfish) or avoid parsing the full snapshot on every worker — a
+  much larger change than prefix sharding.
 
 A query/header-space variant (sharding the reachability query by destination prefix) was
 also prototyped and measured: it shrank the symbolic result ~20% but saturated and did not

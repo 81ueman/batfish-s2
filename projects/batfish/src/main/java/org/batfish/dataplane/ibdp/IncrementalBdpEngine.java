@@ -495,6 +495,7 @@ public class IncrementalBdpEngine {
     List<VirtualRouter> vrs =
         toListInRandomOrder(nodes.values().stream().flatMap(n -> iterationVirtualRouters(n).stream()));
     NetworkConfigurations networkConfigurations = NetworkConfigurations.of(configurations);
+    reportPhase("after building nodes");
 
     /*
      * Run the data plane computation here:
@@ -512,6 +513,7 @@ public class IncrementalBdpEngine {
     vrs.parallelStream()
         .forEach(
             vr -> vr.initForEgpComputationBeforeTopologyLoop(externalAdverts, initialIpVrfOwners));
+    reportPhase("after initForEgpBeforeTopologyLoop");
 
     /*
      * Perform a fixed-point computation, in which every round the topology is updated based
@@ -527,6 +529,7 @@ public class IncrementalBdpEngine {
             .build();
     PartialDataplane currentDataplane =
         nextDataplane(priorTopologyContext, nodes, vrs, initialIpOwners);
+    reportPhase("after initial nextDataplane");
 
     TopologyContext currentTopologyContext =
         nextTopologyContext(
@@ -1088,10 +1091,12 @@ public class IncrementalBdpEngine {
     // initForIgpComputation queues outgoing messages to neighbors; let every worker finish before
     // any worker starts consuming them.
     synchronizeWorkers();
+    reportPhase("after initForIgpComputation");
 
     // Apply rib-groups sequentially to avoid concurrent writes to same destination RIB
     LOGGER.info("Apply rib-groups for IGP");
     vrs.stream().forEach(VirtualRouter::applyRibGroupsForIgp);
+    reportPhase("after applyRibGroupsForIgp");
 
     // OSPF internal routes
     numOspfInternalIterations =
