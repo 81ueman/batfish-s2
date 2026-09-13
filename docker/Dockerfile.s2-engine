@@ -17,6 +17,10 @@ WORKDIR /s2
 
 COPY docker/allinone_main_deploy.jar /s2/allinone.jar
 COPY scripts/entrypoint-engine.sh /s2/entrypoint-engine.sh
+# A snapshot and a batch command file, so a one-off Job can drive a question end-to-end against the
+# pool (scripts/s2-engine-query.txt) without an external client.
+COPY networks/ /s2/inputs/
+COPY scripts/s2-engine-query.txt /s2/query.txt
 
 # allinone coordinator / worker ports.
 EXPOSE 9996 9997

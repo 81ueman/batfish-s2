@@ -1,0 +1,3 @@
+init-network n1
+init-snapshot /s2/inputs/s2-triangle s2-triangle
+generate-dataplane
