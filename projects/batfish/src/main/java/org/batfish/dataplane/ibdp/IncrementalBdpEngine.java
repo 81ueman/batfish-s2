@@ -156,6 +156,37 @@ public class IncrementalBdpEngine {
   }
 
   /**
+   * Called once, before any node is built, to let a subclass react to the snapshot about to be
+   * computed. The default implementation does nothing, so stock behavior is unchanged.
+   *
+   * <p>The S2 engine uses this to turn off its owned-only dataplane when the snapshot contains
+   * features that need complete remote FIBs (tracks, VXLAN/IPsec/tunnel reachability pruning),
+   * rather than silently computing against stub remote FIBs.
+   */
+  protected void prepareDataPlane(
+      Map<String, Configuration> configurations, TopologyContext initialTopologyContext) {}
+
+  /**
+   * Whether the partial dataplane used to compute the next topology has complete FIBs for every
+   * node, so traceroute-based pruning of the IPsec/VXLAN/tunnel topologies is valid. The default is
+   * {@code true}. The S2 owned-only dataplane returns {@code false} because remote nodes only have
+   * stub FIBs.
+   */
+  protected boolean canUseTracerouteForDataplaneTopologyPruning() {
+    return true;
+  }
+
+  /**
+   * Whether the FIB for {@code hostname} in the partial dataplane is complete enough to evaluate a
+   * {@link TrackReachability}. The default is {@code true}. The S2 owned-only dataplane returns
+   * {@code false} for a remote (shadow) node, whose FIB is a config-derived stub; evaluating a
+   * track against it would give a silently wrong answer.
+   */
+  protected boolean hasCompleteFibForTrackReachability(String hostname) {
+    return true;
+  }
+
+  /**
    * Performs the iterative step in dataplane computations as topology changes.
    *
    * <p>The {@code currentTopologyContext} contains the connectivity learned so far in the network,
@@ -177,34 +208,83 @@ public class IncrementalBdpEngine {
     LOGGER.info("Updating dynamic topologies");
 
     Map<String, Configuration> configurations = networkConfigurations.getMap();
-    TracerouteEngine trEngCurrentL3Topology =
-        new TracerouteEngineImpl(
-            currentDataplane, currentTopologyContext.getLayer3Topology(), configurations);
+    // Traceroute-based pruning needs complete FIBs for every node. The S2 owned-only dataplane has
+    // only stub FIBs for remote nodes, so a traceroute over it can give a wrong answer. In that
+    // case we skip the prune (each prune is a no-op when its topology is empty anyway) and keep the
+    // unpruned candidate edges, which is a conservative superset. A snapshot that actually needs
+    // the
+    // prune (non-empty topology / VNI settings) is detected up front by {@link #prepareDataPlane}.
+    boolean canPruneWithTraceroute = canUseTracerouteForDataplaneTopologyPruning();
+    TracerouteEngine trEngCurrentL3Topology = null;
 
     // IPsec
     LOGGER.info("Updating IPsec topology");
     // Note: this uses the initial context since it is pruning down the potential edges initially
     // established.
-    IpsecTopology newIpsecTopology =
-        retainReachableIpsecEdges(
-            initialTopologyContext.getIpsecTopology(), configurations, trEngCurrentL3Topology);
+    IpsecTopology initialIpsecTopology = initialTopologyContext.getIpsecTopology();
+    IpsecTopology newIpsecTopology;
+    if (initialIpsecTopology.getGraph().edges().isEmpty()) {
+      // Nothing to prune; skip building the traceroute engine.
+      newIpsecTopology = initialIpsecTopology;
+    } else if (!canPruneWithTraceroute) {
+      LOGGER.warn(
+          "Skipping IPsec topology pruning: the dataplane has incomplete (stub) FIBs, so a"
+              + " traceroute-based prune would be unsound. Keeping the unpruned initial IPsec"
+              + " topology.");
+      newIpsecTopology = initialIpsecTopology;
+    } else {
+      trEngCurrentL3Topology =
+          getOrCreateTracerouteEngine(
+              trEngCurrentL3Topology, currentDataplane, currentTopologyContext, configurations);
+      newIpsecTopology =
+          retainReachableIpsecEdges(initialIpsecTopology, configurations, trEngCurrentL3Topology);
+    }
 
     // VXLAN
     LOGGER.info("Updating VXLAN topology");
-    VxlanTopology newVxlanTopology =
-        prunedVxlanTopology(
-            computeNextVxlanTopologyModuloReachability(
-                currentDataplane.getLayer2Vnis(), currentDataplane.getLayer3Vnis()),
-            configurations,
-            trEngCurrentL3Topology);
+    VxlanTopology vxlanTopologyModuloReachability =
+        computeNextVxlanTopologyModuloReachability(
+            currentDataplane.getLayer2Vnis(), currentDataplane.getLayer3Vnis());
+    VxlanTopology newVxlanTopology;
+    if (vxlanTopologyModuloReachability.getGraph().edges().isEmpty()) {
+      // Nothing to prune; skip building the traceroute engine.
+      newVxlanTopology = vxlanTopologyModuloReachability;
+    } else if (!canPruneWithTraceroute) {
+      LOGGER.warn(
+          "Skipping VXLAN topology pruning: the dataplane has incomplete (stub) FIBs, so a"
+              + " traceroute-based prune would be unsound. Keeping the unpruned VXLAN topology.");
+      newVxlanTopology = vxlanTopologyModuloReachability;
+    } else {
+      trEngCurrentL3Topology =
+          getOrCreateTracerouteEngine(
+              trEngCurrentL3Topology, currentDataplane, currentTopologyContext, configurations);
+      newVxlanTopology =
+          prunedVxlanTopology(
+              vxlanTopologyModuloReachability, configurations, trEngCurrentL3Topology);
+    }
 
     // Tunnel topology
     LOGGER.info("Updating Tunnel topology");
-    TunnelTopology newTunnelTopology =
-        pruneUnreachableTunnelEdges(
-            initialTopologyContext.getTunnelTopology(), // like IPsec, pruning initial tunnels
-            networkConfigurations,
-            trEngCurrentL3Topology);
+    // like IPsec, pruning initial tunnels
+    TunnelTopology initialTunnelTopology = initialTopologyContext.getTunnelTopology();
+    TunnelTopology newTunnelTopology;
+    if (initialTunnelTopology.getGraph().edges().isEmpty()) {
+      // Nothing to prune; skip building the traceroute engine.
+      newTunnelTopology = initialTunnelTopology;
+    } else if (!canPruneWithTraceroute) {
+      LOGGER.warn(
+          "Skipping tunnel topology pruning: the dataplane has incomplete (stub) FIBs, so a"
+              + " traceroute-based prune would be unsound. Keeping the unpruned initial tunnel"
+              + " topology.");
+      newTunnelTopology = initialTunnelTopology;
+    } else {
+      trEngCurrentL3Topology =
+          getOrCreateTracerouteEngine(
+              trEngCurrentL3Topology, currentDataplane, currentTopologyContext, configurations);
+      newTunnelTopology =
+          pruneUnreachableTunnelEdges(
+              initialTunnelTopology, networkConfigurations, trEngCurrentL3Topology);
+    }
 
     // EIGRP topology
     LOGGER.info("Updating EIGRP topology");
@@ -214,12 +294,19 @@ public class IncrementalBdpEngine {
 
     // Initialize BGP topology
     LOGGER.info("Updating BGP topology");
+    boolean checkBgpSessionReachability = checkBgpSessionReachability();
+    if (checkBgpSessionReachability && trEngCurrentL3Topology == null) {
+      // The session reachability check also needs the engine; build it if no prune did.
+      trEngCurrentL3Topology =
+          getOrCreateTracerouteEngine(
+              trEngCurrentL3Topology, currentDataplane, currentTopologyContext, configurations);
+    }
     BgpTopology newBgpTopology =
         initBgpTopology(
             configurations,
             ipVrfOwners,
             false,
-            checkBgpSessionReachability(),
+            checkBgpSessionReachability,
             trEngCurrentL3Topology,
             currentDataplane.getFibs(),
             currentTopologyContext.getL3Adjacencies());
@@ -287,6 +374,22 @@ public class IncrementalBdpEngine {
         .setTunnelTopology(newTunnelTopology)
         .setEigrpTopology(newEigrpTopology)
         .build();
+  }
+
+  /**
+   * Lazily build the traceroute engine used to prune the dynamic topologies, reusing it across the
+   * IPsec/VXLAN/tunnel prunes within a single {@link #nextTopologyContext} call.
+   */
+  private static TracerouteEngine getOrCreateTracerouteEngine(
+      @Nullable TracerouteEngine existing,
+      PartialDataplane currentDataplane,
+      TopologyContext currentTopologyContext,
+      Map<String, Configuration> configurations) {
+    if (existing != null) {
+      return existing;
+    }
+    return new TracerouteEngineImpl(
+        currentDataplane, currentTopologyContext.getLayer3Topology(), configurations);
   }
 
   /**
@@ -492,6 +595,10 @@ public class IncrementalBdpEngine {
       IpOwners initialIpOwners,
       boolean retainAnnotatedRibs) {
     LOGGER.info("Computing Data Plane using iBDP");
+
+    // Let a subclass adjust how the dataplane will be computed before any node is built (e.g. the
+    // S2 engine disables its owned-only dataplane when the snapshot needs state it cannot provide).
+    prepareDataPlane(configurations, initialTopologyContext);
 
     Map<Ip, Map<String, Set<String>>> initialIpVrfOwners = initialIpOwners.getIpVrfOwners();
 
@@ -848,7 +955,7 @@ public class IncrementalBdpEngine {
         trackReachabilityResults, trackRouteResults);
   }
 
-  private static @Nonnull Table<String, TrackReachability, Boolean> nextTrackReachabilityResults(
+  private @Nonnull Table<String, TrackReachability, Boolean> nextTrackReachabilityResults(
       PartialDataplane dp,
       TopologyContext topologyContext,
       Map<String, Configuration> configurations,
@@ -861,6 +968,26 @@ public class IncrementalBdpEngine {
         (hostname, trackReachabilities) -> {
           Configuration config = configurations.get(hostname);
           Map<String, Fib> fibs = dp.getFibs().get(hostname);
+          if (fibs == null) {
+            // Should not happen for a full dataplane; a host with a track must have a FIB. Rather
+            // than silently skipping the track (which would later NPE) or evaluating against
+            // nothing, fail loudly.
+            throw new IllegalStateException(
+                String.format(
+                    "Cannot evaluate TrackReachability for %s: no FIB present in the dataplane",
+                    hostname));
+          }
+          if (!hasCompleteFibForTrackReachability(hostname)) {
+            // Evaluating a track against a stub FIB would produce a silently wrong answer (e.g. it
+            // would claim a destination is unreachable, deactivating tracked static routes). Fail
+            // loudly instead of guessing; prepareDataPlane is responsible for not getting here.
+            throw new IllegalStateException(
+                String.format(
+                    "Cannot evaluate TrackReachability for %s: its FIB in this dataplane is"
+                        + " incomplete (a stub). Owned-only FIBs must be disabled when a remote"
+                        + " host has a TrackReachability.",
+                    hostname));
+          }
           trackReachabilities.forEach(
               trackReachability ->
                   trackReachabilityResults.put(

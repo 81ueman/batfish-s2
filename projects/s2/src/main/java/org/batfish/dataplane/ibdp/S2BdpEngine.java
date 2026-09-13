@@ -9,11 +9,23 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
+import java.util.stream.Stream;
 import javax.annotation.Nullable;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.batfish.common.topology.IpOwners;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.PrefixSpace;
+import org.batfish.datamodel.Vrf;
+import org.batfish.datamodel.tracking.GenericTrackMethodVisitor;
+import org.batfish.datamodel.tracking.NegatedTrackMethod;
+import org.batfish.datamodel.tracking.TrackAll;
+import org.batfish.datamodel.tracking.TrackInterface;
+import org.batfish.datamodel.tracking.TrackMethodReference;
+import org.batfish.datamodel.tracking.TrackReachability;
+import org.batfish.datamodel.tracking.TrackRoute;
+import org.batfish.datamodel.tracking.TrackTrue;
 import org.batfish.dataplane.ibdp.schedule.IbdpSchedule.Schedule;
 
 /**
@@ -21,6 +33,8 @@ import org.batfish.dataplane.ibdp.schedule.IbdpSchedule.Schedule;
  * instead of plain {@link Node}s, and simulates only the nodes this worker owns.
  */
 public class S2BdpEngine extends IncrementalBdpEngine {
+
+  private static final Logger LOGGER = LogManager.getLogger(S2BdpEngine.class);
 
   /**
    * Serializes dataplane construction across engines running in the same JVM. Shadow nodes delegate
@@ -41,8 +55,18 @@ public class S2BdpEngine extends IncrementalBdpEngine {
    * only for the nodes it owns. Remote (shadow) nodes get a cheap config-only "stub" FIB so the
    * forwarding analysis can still compute the cross-node ARP state, but no full remote routing
    * table is ever built. Default off preserves stock behavior.
+   *
+   * <p>This is the *requested* mode. It is turned off for a run (see {@link #prepareDataPlane})
+   * when the snapshot contains features that need complete remote FIBs (tracks, VXLAN/IPsec/tunnel
+   * reachability pruning), because owned-only FIBs would give silently wrong answers there.
    */
-  private final boolean _ownedDataplane = Boolean.getBoolean("s2.ownedDataplane");
+  private final boolean _ownedDataplaneRequested = Boolean.getBoolean("s2.ownedDataplane");
+
+  /**
+   * The effective owned mode for the current run. Equals {@link #_ownedDataplaneRequested} unless
+   * {@link #prepareDataPlane} disabled it as an unsafe fallback.
+   */
+  private boolean _ownedDataplane = _ownedDataplaneRequested;
 
   public S2BdpEngine(
       IncrementalDataPlaneSettings settings,
@@ -232,6 +256,103 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   }
 
   /**
+   * Decide the effective owned mode for this run, before any node/dataplane is built.
+   *
+   * <p>Owned-only FIBs are unsafe whenever a computation needs a *remote* node's full forwarding
+   * state in this worker. Two such consumers exist today:
+   *
+   * <ul>
+   *   <li>{@code TrackReachability}: a track on a remote (shadow) host would be evaluated against
+   *       that host's stub FIB, giving a silently wrong result and deactivating tracked routes.
+   *   <li>IPsec / VXLAN / tunnel reachability pruning: the prune traceroutes between (possibly
+   *       remote) endpoints; a stub FIB makes the prune unsound. VXLAN in particular can become
+   *       non-empty at runtime purely from VNI settings, so detect configured VNIs up front.
+   * </ul>
+   *
+   * <p>The decision is snapshot-wide, not per-worker: if any worker fell back while another stayed
+   * owned, they would also disagree about the dataplane-level BGP session reachability check. So
+   * when any of these is present we conservatively fall back to a full dataplane on every worker
+   * and log why, rather than produce a silently wrong answer.
+   */
+  @Override
+  protected void prepareDataPlane(
+      Map<String, Configuration> configurations, TopologyContext initialTopologyContext) {
+    if (!_ownedDataplaneRequested) {
+      return;
+    }
+    String reason = ownedDataplaneUnsafeReason(configurations, initialTopologyContext);
+    if (reason != null) {
+      LOGGER.warn(
+          "Disabling owned-only dataplane for this run (falling back to full RIBs/FIBs): {}",
+          reason);
+      _ownedDataplane = false;
+    }
+  }
+
+  /**
+   * Returns the reason owned-only FIBs are unsafe for this snapshot, or {@code null} if they are
+   * fine. Only called when owned mode was requested.
+   */
+  private @Nullable String ownedDataplaneUnsafeReason(
+      Map<String, Configuration> configurations, TopologyContext initialTopologyContext) {
+    // 1. TrackReachability anywhere in the snapshot. A track on a remote (shadow) node would be
+    //    evaluated against that node's stub FIB. We disable owned mode cluster-wide (not just on
+    //    the worker that happens to shadow the tracked node) so every worker makes the same
+    //    decision: in particular, the dataplane-level BGP session reachability check must not
+    //    differ across workers.
+    for (Configuration c : configurations.values()) {
+      if (hasTrackReachability(c)) {
+        return String.format("node %s has a TrackReachability", c.getHostname());
+      }
+    }
+    // 2. VXLAN: VNI settings can yield VXLAN topology edges at runtime even if the initial VXLAN
+    //    topology is empty, so any configured layer2/layer3 VNI counts.
+    for (Configuration c : configurations.values()) {
+      for (Vrf vrf : c.getVrfs().values()) {
+        if (!vrf.getLayer2Vnis().isEmpty() || !vrf.getLayer3Vnis().isEmpty()) {
+          return String.format("node %s defines VXLAN VNIs", c.getHostname());
+        }
+      }
+    }
+    // 3. IPsec and tunnel topologies are pruned from the initial (candidate) edges.
+    if (!initialTopologyContext.getIpsecTopology().getGraph().edges().isEmpty()) {
+      return "the snapshot has an IPsec topology";
+    }
+    if (!initialTopologyContext.getTunnelTopology().getGraph().edges().isEmpty()) {
+      return "the snapshot has a tunnel topology";
+    }
+    if (!initialTopologyContext.getVxlanTopology().getGraph().edges().isEmpty()) {
+      return "the snapshot has a VXLAN topology";
+    }
+    return null;
+  }
+
+  /**
+   * In owned mode the partial dataplane has only stub FIBs for remote nodes, so traceroute-based
+   * topology pruning is unsound; {@link #prepareDataPlane} ensures this is only reached when the
+   * corresponding topologies are provably empty.
+   */
+  @Override
+  protected boolean canUseTracerouteForDataplaneTopologyPruning() {
+    return !_ownedDataplane;
+  }
+
+  /**
+   * Owned mode's remote FIBs are stubs, so tracks must never be evaluated against them. This is a
+   * defensive per-host check: {@link #prepareDataPlane} disables owned mode for the whole snapshot
+   * as soon as any track exists, so in practice this only guards against a future caller that
+   * re-enables owned mode while tracks are present.
+   */
+  @Override
+  protected boolean hasCompleteFibForTrackReachability(String hostname) {
+    if (!_ownedDataplane) {
+      return true;
+    }
+    DistributedNode node = _nodes.get(hostname);
+    return node == null || !node.isShadow();
+  }
+
+  /**
    * In owned mode the final dataplane result contains only this worker's nodes, so remote final
    * RIBs are never retained. The partial dataplane still covers all nodes (with stub FIBs).
    */
@@ -253,10 +374,64 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   /**
    * Owned mode has no full remote FIBs, so dataplane-level BGP session reachability checks are
    * skipped (sessions are established from configuration + L3 adjacency, sufficient for
-   * directly-connected peering). Stock behavior keeps the check.
+   * directly-connected peering). This is only valid while owned mode is actually in effect: if
+   * {@link #prepareDataPlane} disabled it, the check runs as in stock Batfish. Stock behavior keeps
+   * the check.
    */
   @Override
   protected boolean checkBgpSessionReachability() {
     return !_ownedDataplane;
   }
+
+  /** Whether any tracking group on {@code c} is (or contains) a {@link TrackReachability}. */
+  static boolean hasTrackReachability(Configuration c) {
+    return c.getTrackingGroups().values().stream()
+        .flatMap(TRACK_REACHABILITY_COLLECTOR::visit)
+        .findAny()
+        .isPresent();
+  }
+
+  /** Extracts the {@link TrackReachability}s reachable from a track method. */
+  private static final GenericTrackMethodVisitor<Stream<TrackReachability>>
+      TRACK_REACHABILITY_COLLECTOR =
+          new GenericTrackMethodVisitor<Stream<TrackReachability>>() {
+            @Override
+            public Stream<TrackReachability> visitNegatedTrackMethod(
+                NegatedTrackMethod negatedTrackMethod) {
+              return visit(negatedTrackMethod.getTrackMethod());
+            }
+
+            @Override
+            public Stream<TrackReachability> visitTrackAll(TrackAll trackAll) {
+              return trackAll.getConjuncts().stream().flatMap(this::visit);
+            }
+
+            @Override
+            public Stream<TrackReachability> visitTrackInterface(TrackInterface trackInterface) {
+              return Stream.of();
+            }
+
+            @Override
+            public Stream<TrackReachability> visitTrackMethodReference(
+                TrackMethodReference trackMethodReference) {
+              // The referenced method is inspected where it is defined.
+              return Stream.of();
+            }
+
+            @Override
+            public Stream<TrackReachability> visitTrackReachability(
+                TrackReachability trackReachability) {
+              return Stream.of(trackReachability);
+            }
+
+            @Override
+            public Stream<TrackReachability> visitTrackRoute(TrackRoute trackRoute) {
+              return Stream.of();
+            }
+
+            @Override
+            public Stream<TrackReachability> visitTrackTrue(TrackTrue trackTrue) {
+              return Stream.of();
+            }
+          };
 }

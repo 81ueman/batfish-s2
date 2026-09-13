@@ -60,6 +60,8 @@ public class S2DistributedControlPlaneTest {
   private static final List<String> STATIC_CONFIGS = ImmutableList.of("r1", "r2");
   private static final String EXTERNAL_TESTRIG = "org/batfish/dataplane/testrigs/s2-external";
   private static final List<String> EXTERNAL_CONFIGS = ImmutableList.of("r1", "r2");
+  private static final String TRACK_TESTRIG = "org/batfish/dataplane/testrigs/s2-track";
+  private static final List<String> TRACK_CONFIGS = ImmutableList.of("r1", "r2");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
@@ -169,6 +171,32 @@ public class S2DistributedControlPlaneTest {
     assertDistributedMatchesVanilla(REDIST_TESTRIG, REDIST_CONFIGS, new int[] {1, 3});
   }
 
+  /**
+   * Owned-only dataplane ({@code -Ds2.ownedDataplane}): a worker builds full RIBs/FIBs only for
+   * owned nodes. On a network without tracks, VXLAN, IPsec, or tunnels it must still match vanilla.
+   */
+  @Test
+  public void testOwnedDataplaneMatchesVanilla() throws Exception {
+    assertDistributedOwnedMatchesVanilla(OSPF_BGP_TESTRIG, OSPF_BGP_CONFIGS, new int[] {1, 3});
+  }
+
+  /**
+   * Owned-only dataplane hardening: a {@code TrackReachability} on a host that is a shadow on some
+   * worker cannot be evaluated against that host's stub FIB. Owned mode must fall back to a full
+   * dataplane for the whole run (so the tracked static route is computed correctly) instead of
+   * silently deactivating it. Asserts the result still matches vanilla at 1 and 3 workers.
+   */
+  @Test
+  public void testOwnedDataplaneWithTrackReachabilityMatchesVanilla() throws Exception {
+    assertDistributedOwnedMatchesVanilla(TRACK_TESTRIG, TRACK_CONFIGS, new int[] {1, 3});
+  }
+
+  /** Owned-only dataplane must also match vanilla on a network with a BGP aggregate. */
+  @Test
+  public void testOwnedDataplaneWithAggregateMatchesVanilla() throws Exception {
+    assertDistributedOwnedMatchesVanilla(AGG_TESTRIG, AGG_CONFIGS, new int[] {1, 3});
+  }
+
   /** Sanity-check that the redistribution snapshot actually exercises both directions. */
   @Test
   public void testRedistributionProducesRoutes() throws Exception {
@@ -200,6 +228,21 @@ public class S2DistributedControlPlaneTest {
   private void assertDistributedMatchesVanilla(
       String testrig, List<String> testrigConfigs, int[] workerCounts) throws Exception {
     assertDistributedMatchesVanilla(testrig, testrigConfigs, workerCounts, false);
+  }
+
+  /**
+   * Run the distributed workers with {@code -Ds2.ownedDataplane=true}. The S2 engine reads that
+   * property when it is constructed, so set it only around the distributed runs (the vanilla
+   * computation is unaffected either way).
+   */
+  private void assertDistributedOwnedMatchesVanilla(
+      String testrig, List<String> testrigConfigs, int[] workerCounts) throws Exception {
+    System.setProperty("s2.ownedDataplane", "true");
+    try {
+      assertDistributedMatchesVanilla(testrig, testrigConfigs, workerCounts, false);
+    } finally {
+      System.clearProperty("s2.ownedDataplane");
+    }
   }
 
   private void assertDistributedMatchesVanilla(
