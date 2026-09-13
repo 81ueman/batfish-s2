@@ -16,6 +16,8 @@ Knobs added for scale work:
 | (none) | controller ships parsed configs; workers do not re-parse | on |
 | `-Ds2.noShipConfigs=true` | worker parses the snapshot itself (reproduce the old floor) | off |
 | `-Ds2.ownedDataplane=true` | worker keeps full RIBs/FIBs only for owned nodes (remote get stub FIBs) | off |
+| `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies) | off |
+| `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
 | `S2_PREFIX_SHARDS=N` | control-plane (BGP RIB) prefix sharding, N rounds | 1 (off) |
 | `-Ds2.prefixShardExternalize=true` | serialize each shard's BGP RIB between rounds | off |
 
@@ -30,6 +32,11 @@ At 32768 prefixes the bottleneck has moved off parsing and off the dataplane FIB
 phase peaks are `building nodes` 413 MiB, `EGP iteration 1` 1595 MiB, `nextDataplane 1` 1740 MiB.
 The remaining cost is the held configurations and the BGP control-plane transient. The FIB axis is
 considered done for now.
+
+Descriptor mode (`-Ds2.descriptorShadows`, opt-in) further trims remote policy bodies. On the
+ACL-heavy `networks/s2-acl` (3000-line ACLs), owned+descriptor drops the `after building nodes`
+phase from 125.7 to 81.4 MiB and the max worker peak from 183.9 to 154.7 MiB; on `s2-mega` it is
+modest (~10%/~6%) because its configs are mostly loopback interfaces, which must be retained.
 
 ## Consolidated task index (with dependencies)
 
@@ -48,24 +55,24 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 | id | task | depends |
 | --- | --- | --- |
 | **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS); controller computes and distributes the assignment | P0 (weights) |
-| **P3** | PrefixDependencyGraph (closure + DPDG + weighted WCC-LPT) | C-PFX |
+| **P3** | PrefixDependencyGraph (closure + DPDG + weighted WCC-LPT) | **Done**: `PrefixDependencyGraph.java` + `PrefixSharder` rewrite (weighted WCC-LPT, degenerate fallback); `PrefixSharderTest` extended |
 | **P-X** | shard-count selection | P3 |
 
 ### Memory
 
 | id | task | section | depends / competes |
 | --- | --- | --- | --- |
-| **M1** | remote configuration descriptor | A1 | independent (reduces M3's value) |
+| **M1** | remote configuration descriptor | A1 | **Done (opt-in)**: `-Ds2.descriptorShadows=true`, `RemoteNodeDescriptor`; ACL-heavy testbed `networks/s2-acl` |
 | **M2** | control-plane transient reduction | A2 | ⇄ P3 (same `T_w`) |
-| **M3** | BDD factory owned scoping | A3 | independent (value drops after M1) |
-| **M4** | owned-mode hardening (Track / VXLAN / tunnel / BGP reachability) | A4 | owned dataplane implemented (opt-in) |
+| **M3** | BDD factory owned scoping | A3 | **Done**: nullable `localNodes` on `BDDReachabilityAnalysisFactory`, wired from `S2Main` |
+| **M4** | owned-mode hardening (Track / VXLAN / tunnel / BGP reachability) | A4 | **Done**: owned mode falls back to full configs when tracks/VNIs/tunnel/IPsec are present; BGP reachability disabled in owned mode |
 | **M5** | dataplane prefix sharding / on-disk RIB+FIB | A5 | deferred |
 
 ### Correctness / generality — section B
 
 - **C1** cyclic equal-cost BGP tie-break nondeterminism (known residual)
 - **C2** EIGRP/IS-IS/RIP out of scope
-- **C3** controller-side digest for owned mode
+- **C3** controller-side digest for owned mode — **Done (documented)**: the RIB ⇒ forwarding implication (and its descriptor-mode variant) is documented in `S2Main`.
 
 ### Operations / packaging — section C
 
@@ -86,14 +93,13 @@ M2 ⇄ P3                      (both target T_w)
 
 ### Recommended order
 
-1. P0
-2. C-PFX
-3. P2
-4. M1
-5. M2 or P3 (choose from P0's measurements)
-6. M4
-7. M3 / O2 / O3 / O4
-8. M5 (deferred)
+Done (merged): C-PFX, P3, M1, M3, M4, C3, P0 (except weight calibration O6).
+
+1. **P2** node→worker partitioner (with O6 weight calibration + partition-quality metrics from P0)
+2. **M2 or** the remaining DPDG refinements (P-X shard-count selection)
+3. **O1** defaults / **O2** k8s / **O3** CI matrix / **O4** bench automation / **O5** METIS
+4. **M5** (deferred)
+5. **C1** (FatTree tie-stability) if MATCH-verified DCN partition evaluation is required
 
 ## A. Memory / scale (ranked by expected payoff)
 

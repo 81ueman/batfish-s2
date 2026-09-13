@@ -238,11 +238,11 @@ protocol ごとの対象 prefix を閉じる:
 
 ## 7. マイルストーン
 
-- **P0 計測基盤**: トポロジ/config 生成器、指標ダンプ、現状 baseline 取得。
-- **P1 shadow lazy 化・boundary-only 化**: **概ね実装済み（opt-in）** = `-Ds2.ownedDataplane`（config 由来 stub FIB、`IncrementalBdpEngine.dataPlaneNodes` で最終 dataplane を owned 限定）。残 caveat は REMAINING の owned-mode hardening（Track/VXLAN/tunnel/BGP reachability）。
-- **P2 partitioner プラグイン化**: 新パッケージ（例 `.../ibdp/partition/`）に schemes を実装。controller が assignment を算出・配布。`S2Main` 変更は呼び出し1箇所 + scheme plumbing に限定。
-- **P3 `PrefixDependencyGraph`**: closure + DPDG + weighted WCC-LPT。aggregate/redistribution/external-ads テスト追加。
-- **P4 評価 → 既定 scheme 決定 → `M5-SCALE.md` / `README.md` 更新**。
+- **P0 計測基盤**: **概ね実装済み** = `scripts/gen-topology.py`（FatTree/line）、`scripts/bench.sh`（＋phase 時刻）、`scripts/partition-metrics.py`（imbalance/cut）、`scripts/ci-matrix.sh`、sidecar RPC stats、`OPS.md`。残: 重み校准（O6）。知見: FatTree eBGP k≥4 は tie 不安定（C1）→ MATCH 検証は tie 安定網で。
+- **P1 shadow lazy 化・boundary-only 化**: **概ね実装済み（opt-in）** = `-Ds2.ownedDataplane`（config 由来 stub FIB、`IncrementalBdpEngine.dataPlaneNodes` で最終 dataplane を owned 限定）。caveat は **M4 で堅牢化済み**（tracks/VNI/tunnel/IPsec は full にフォールバック）。加えて **M1 `-Ds2.descriptorShadows`** で remote の policy 本体を削減。
+- **P2 partitioner プラグイン化**: 未着手。新パッケージ（例 `.../ibdp/partition/`）に schemes を実装。controller が assignment を算出・配布。
+- **P3 `PrefixDependencyGraph`**: **完了** = `PrefixDependencyGraph.java` + `PrefixSharder` 刷新（weighted WCC-LPT、degenerate フォールバック、決定性）、`PrefixSharderTest` 拡張。
+- **P4 評価 → 既定 scheme 決定 → `M5-SCALE.md` / `README.md` 更新**: 未着手。
 
 ---
 

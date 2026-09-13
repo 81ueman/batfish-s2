@@ -157,11 +157,15 @@ networks/s2-redist/   # OSPF<->BGP redistribution snapshot
 networks/s2-agg/      # eBGP with a BGP aggregate (prefix-sharding closure test)
 networks/s2-static/   # static route redistributed into BGP (redistribution-closure test)
 networks/s2-external/ # external BGP announcement into BGP (external-closure test)
+networks/s2-acl/      # 6-node eBGP line with 3000-line ACLs (descriptor/ACL-heavy testbed)
 networks/s2-fat2/     # generated 5-switch FatTree k=2 (tie-stable)
 networks/s2-fat4/     # generated 20-switch FatTree k=4 (DCN; throughput/memory, tie-unstable)
 networks/s2-genline/  # generated 4-switch eBGP line (generator smoke test)
-scripts/gen-topology.py  # generate FatTree/line testbeds
-scripts/bench.sh      # run a network x workers matrix and emit a metrics table
+scripts/gen-topology.py    # generate FatTree/line testbeds
+scripts/bench.sh           # network x workers matrix -> metrics table
+scripts/partition-metrics.py  # imbalance / weighted cut for a network
+scripts/ci-matrix.sh       # opt-in demo matrix (default/owned)
+docs/s2-port/OPS.md        # k8s resources, default -Xmx, METIS
 networks/s2-big-bgp/  # 6-node eBGP line with 192 prefixes (prefix-sharding measurement)
 networks/s2-big2/     # 10-node eBGP line with 640 prefixes (larger prefix-sharding measurement)
 networks/s2-huge/     # 8-node eBGP line with 2048 prefixes
