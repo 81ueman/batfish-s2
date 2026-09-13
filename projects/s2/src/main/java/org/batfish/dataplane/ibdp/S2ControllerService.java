@@ -120,7 +120,11 @@ public final class S2ControllerService implements AutoCloseable {
       if (first instanceof S2ControlMessages.Register) {
         register(socket, out, in, (S2ControlMessages.Register) first);
       } else if (first instanceof S2ControlMessages.ComputeRequest) {
-        handleCompute(out, (S2ControlMessages.ComputeRequest) first);
+        try {
+          handleCompute(out, (S2ControlMessages.ComputeRequest) first);
+        } finally {
+          socket.close();
+        }
       } else if (first instanceof S2ControlMessages.Shutdown) {
         close();
       } else {
@@ -140,6 +144,14 @@ public final class S2ControllerService implements AutoCloseable {
       ObjectInputStream in,
       S2ControlMessages.Register register) {
     S2WorkerEndpoint endpoint = register.endpoint;
+    if (register.workerId < 0 || register.workerId >= _numWorkers) {
+      throw new IllegalStateException(
+          "worker id "
+              + register.workerId
+              + " is outside the configured pool [0, "
+              + _numWorkers
+              + ")");
+    }
     if (endpoint == null) {
       if (register.workerId < 0 || register.workerId >= _configuredEndpoints.size()) {
         throw new IllegalStateException(
@@ -152,10 +164,19 @@ public final class S2ControllerService implements AutoCloseable {
     System.out.printf(
         "S2 controller-service: worker %d registered at %s (%d/%d)%n",
         register.workerId, endpoint, _workers.size(), _numWorkers);
-    if (_workers.size() == _numWorkers) {
+    if (_workers.size() == _numWorkers && allWorkerIdsRegistered()) {
       _allWorkersRegistered.countDown();
     }
     readLoop(session);
+  }
+
+  private boolean allWorkerIdsRegistered() {
+    for (int w = 0; w < _numWorkers; w++) {
+      if (!_workers.containsKey(w)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** Continuously serve one worker's round/sum/done messages for whichever run is active. */
