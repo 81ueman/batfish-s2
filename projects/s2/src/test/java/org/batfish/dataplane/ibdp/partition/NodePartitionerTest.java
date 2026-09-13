@@ -356,19 +356,20 @@ public class NodePartitionerTest {
     assertThat(AutoSchemeSelector.classify(g), equalTo(AutoSchemeSelector.Shape.WAN));
   }
 
-  /** Without {@code gpmetis} a DCN falls back to NAME_ORDERED. */
+  /** AUTO resolves a DCN to WEIGHTED_LPT_FM (the default; the shape is only logged). */
   @Test
-  public void testAutoResolvesDcnToNameOrderedWithoutMetis() {
+  public void testAutoResolvesDcnToWeightedLptFm() {
     Map<String, Integer> weights = ImmutableMap.of("core1", 1, "agg1", 1, "spine1", 1, "edge1", 1);
     CommunicationGraph g =
         graph(
             weights,
             new Object[][] {{"core1", "agg1", 1}, {"agg1", "spine1", 1}, {"spine1", "edge1", 1}});
     withMetisUnavailable(
-        () -> assertThat(PartitionScheme.AUTO.resolve(g), equalTo(PartitionScheme.NAME_ORDERED)));
+        () ->
+            assertThat(PartitionScheme.AUTO.resolve(g), equalTo(PartitionScheme.WEIGHTED_LPT_FM)));
   }
 
-  /** Without {@code gpmetis} a WAN falls back to WEIGHTED_LPT_FM. */
+  /** Without {@code gpmetis} a WAN also resolves to WEIGHTED_LPT_FM. */
   @Test
   public void testAutoResolvesWanToWeightedLptFmWithoutMetis() {
     Map<String, Integer> weights = ImmutableMap.of("a", 3, "b", 2, "c", 2, "d", 1);
@@ -407,13 +408,14 @@ public class NodePartitionerTest {
         });
   }
 
-  /** When {@code gpmetis} is installed, AUTO always picks METIS (the plan's quality reference). */
+  /**
+   * Even when {@code gpmetis} is installed, AUTO resolves to WEIGHTED_LPT_FM (METIS is explicit).
+   */
   @Test
-  public void testAutoPicksMetisWhenAvailable() {
-    assumeTrue("gpmetis not installed", MetisPartitioner.isAvailable());
+  public void testAutoResolvesToWeightedLptFmWithMetis() {
     Map<String, Integer> weights = ImmutableMap.of("a", 1, "b", 1, "c", 1, "d", 1);
     CommunicationGraph g = graph(weights, new Object[][] {{"a", "b", 1}, {"b", "c", 1}});
-    assertThat(PartitionScheme.AUTO.resolve(g), equalTo(PartitionScheme.METIS));
+    assertThat(PartitionScheme.AUTO.resolve(g), equalTo(PartitionScheme.WEIGHTED_LPT_FM));
   }
 
   /** Run {@code body} with the METIS path forced to a nonexistent binary. */

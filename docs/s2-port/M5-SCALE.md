@@ -249,6 +249,10 @@ per-worker floor dominates and the same sweep is flat (~160-195 MiB on `s2-big2`
 `s2-mega`), so sharding is a no-op there but still `MATCH`; the no-ship rows are the ones that
 isolate the BGP-RIB lever.
 
+Wall time is likewise flat: with the default pipeline `s2-big2` (3 workers) runs in ~9 s at
+N=1/4/16/32 (the `wall s` column added to `scripts/shard-sweep.sh`), so the peak reduction is not
+bought with extra engine time.
+
 Sharding demos (all `MATCH`, externalize on): `auto` on `s2-agg` (N=1), `s2-big2` (N=7),
 `s2-mega` (N=16); fixed `S2_PREFIX_SHARDS=8` on `s2-big-bgp`/`s2-big2`/`s2-mega`.
 

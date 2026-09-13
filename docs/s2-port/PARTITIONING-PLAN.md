@@ -1,6 +1,6 @@
 # S2 ネットワーク分割（ノード割当・prefix sharding）設計メモ & 評価計画
 
-- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）。P2 は完了し、`gpmetis` 導入後の実測を §6.7 に記録（METIS = 品質参照、既定は RANDOM）。O6 ノード重み校准（§6.8）と v2 トポロジ補正（§6.9, opt-in）を実装・測定。§3.4 の `AUTO`（DCN/WAN 自動選択）を実装し runner 既定を `auto` に変更（コード既定は RANDOM のまま）。O6 residual の role-level peer scaling は opt-in で正の結果（§6.10）だが、k=6 FatTree と WAN star を加えた追試で FatTree k=6 に退行があり **gate 維持**（§6.12）**
+- Status: draft（実装前）→ **2026-09-13 更新: P1 相当は opt-in で実装済み（後述 0.1）。P2 は完了し、`gpmetis` 導入後の実測を §6.7 に記録（METIS = 品質参照、既定は RANDOM）。O6 ノード重み校准（§6.8）と v2 トポロジ補正（§6.9, opt-in）を実装・測定。§3.4 の `AUTO`（DCN/WAN 自動選択、既定 `WEIGHTED_LPT_FM` に解決）を実装し、runner 既定を `WEIGHTED_LPT_FM` に変更（§6.13 の実測に基づく。`RANDOM` は legacy hash-shuffle、`METIS` は品質参照）。O6 residual の role-level peer scaling は opt-in で正の結果（§6.10）だが、k=6 FatTree と WAN star を加えた追試で FatTree k=6 に退行があり **gate 維持**（§6.12）**
 - Date: 2026-09-13（更新）
 - 対象リポジトリ: `batfish-s2`（branch `master`）
 - 関連: `docs/s2-port/M5-SCALE.md`, `docs/s2-port/REMAINING.md`, `nv-papers/papers/s2-2025.pdf`, `XJTU-NetVerify/s2`（参考実装）
@@ -688,11 +688,11 @@ python3 scripts/calibrate-weights.py imbalance \
   割当を変えても peak は動かない。
 - **wall / engine time も scheme 間でほぼ同じ**（7–17 s / 1–6 s）。この規模では cut の throughput への
   寄与は見えない。
-- 結論: 汎用既定は **`WEIGHTED_LPT_FM`**（DCN で最良・一様網で無害）、`METIS` は品質参照。runner 既定
-  `auto`（→METIS）は許容範囲だが、DCN では `WEIGHTED_LPT_FM` の方が低 peak。
+- 結論: 汎用既定は **`WEIGHTED_LPT_FM`** を採用（DCN で最良・一様網で無害）。`METIS` は品質参照
+  （`-Ds2.partition=METIS`）、`AUTO` も現在は `WEIGHTED_LPT_FM` に解決し shape はログのみ。
 
-- **prefix shard**: peak-vs-N は実測済み（`scripts/shard-sweep.sh`, `M5-SCALE.md`）。wall time は
-  未収録で、現行既定では peak は flat（no-op）の見込み。
+- **prefix shard**: peak-vs-N は実測済み（`scripts/shard-sweep.sh`, `M5-SCALE.md`）。wall time も
+  既定パイプラインでは flat（`s2-big2` 3 worker で N=1/4/16/32 すべて ~9 s）。
 
 **Clos の別サイズ / WAN らしい網**（同じ sweep、全 30 セル `MATCH`）:
 
@@ -715,7 +715,7 @@ python3 scripts/calibrate-weights.py imbalance \
   142–149）。fat4 ほど効かない。
 - 総合: **scheme の効きは「ノードのロール差 × worker あたりのノード数」に依存**し、強いケース
   （`s2-fat4` −37%）から無差別（line）まで幅がある。**`WEIGHTED_LPT_FM` は最良か同等で安全**、
-  runner 既定 `AUTO`（→METIS）も概ね同等。
+  runner 既定 `WEIGHTED_LPT_FM` も概ね同等（当時の `AUTO`→`METIS` も同等）。
 
 ---
 

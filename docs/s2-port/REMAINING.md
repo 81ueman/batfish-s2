@@ -95,7 +95,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 
 | id | task | depends |
 | --- | --- | --- |
-| **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS / AUTO); controller computes and distributes the assignment | **Done**: new `.../ibdp/partition/` package + `NodePartitioner`, union graph/`NodeWeights`, `-Ds2.partition` (code default RANDOM unchanged; **runner default now `auto`**), assignment shipped in `Start.assignment`. **AUTO** (§3.4) classifies DCN/WAN with `AutoSchemeSelector` (tier names / BGP overlay / regular degree) and picks METIS when `gpmetis` is present, else NAME_ORDERED (DCN) / WEIGHTED_LPT_FM (WAN); the controller logs the selection. Metrics/eval in `PARTITIONING-PLAN.md` §6.6 (pre-`gpmetis`), §6.7 (real METIS), §6.10/§6.11 (O6 residual + AUTO). P0 (weights) |
+| **P2** | node→worker partitioner plugin (RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS / AUTO); controller computes and distributes the assignment | **Done**: new `.../ibdp/partition/` package + `NodePartitioner`, union graph/`NodeWeights`, `-Ds2.partition` (default `WEIGHTED_LPT_FM`; **runner default also `WEIGHTED_LPT_FM`**), assignment shipped in `Start.assignment`. **AUTO** (§3.4) classifies DCN/WAN with `AutoSchemeSelector` (tier names / BGP overlay / regular degree) for the log and resolves to `WEIGHTED_LPT_FM`; the controller logs the selection. Metrics/eval in `PARTITIONING-PLAN.md` §6.6 (pre-`gpmetis`), §6.7 (real METIS), §6.10/§6.11 (O6 residual + AUTO). P0 (weights) |
 | **P3** | PrefixDependencyGraph (closure + DPDG + weighted WCC-LPT) | **Done**: `PrefixDependencyGraph.java` + `PrefixSharder` rewrite (weighted WCC-LPT, degenerate fallback); `PrefixSharderTest` extended |
 | **P-X** | shard-count selection | **Done**: `S2_PREFIX_SHARDS=auto` (`PrefixShardCountSelector`) picks N deterministically from the DPDG component weights under a per-shard budget (`-Ds2.prefixShardBudgetMiB`, default 192, cap 16); `scripts/shard-sweep.sh` + `M5-SCALE.md` record peak-vs-N |
 
@@ -162,13 +162,13 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
   the rule still improves `s2-fat4` W=3 (1.061→1.047) and the hub W=2/W=3 (1.261→1.051 / 1.109),
   but **regresses `s2-fat6` W=2 (1.023→1.068)** and slightly at W=3 (1.068→1.073); fat2 / line /
   big2 / mega are unchanged. Since it fails on the shape it targets (FatTree k=6), it stays **gated
-  off** (`-Ds2.nodeWeightsRoleScale=true` opts in). The runner default (`auto`→METIS) ignores node
+  off** (`-Ds2.nodeWeightsRoleScale=true` opts in). The default (`WEIGHTED_LPT_FM`) ignores node
   weights, so demos are unaffected. The WAN-star gain confirms the peer term over-spreads roles; a
   cost-aware partitioner (plan §3.2 v2 extension) is the right fix, not a per-shape static
   coefficient.
   **O7** docs sync — **Done (2026-09-13)**: `OPS.md`/`REMAINING.md` reflect the O1 defaults
-  (owned + descriptor on, runner positive-cache on, runner `-Ds2.partition=auto`), the finalized k8s
-  resources, and the staged CI (`--upstream`/`--matrix`).
+  (owned + descriptor on, runner positive-cache on, default `-Ds2.partition=WEIGHTED_LPT_FM`), the
+  finalized k8s resources, and the staged CI (`--upstream`/`--matrix`).
 
 ### Dependency graph
 
@@ -191,7 +191,10 @@ Dropped (2026-09-13): **M5** dataplane prefix sharding / on-disk RIB+FIB — see
    coordinator; the vanilla dataplane + reference BDD analysis moved to the separate `verify`
    role/JVM (`s2-verifier` Job). Controller peak on `s2-mega` W=3 (`-Xmx4g`) dropped
    **1326.2 → 486.1 MiB** (no vanilla/reference work), with the verification peak in the verifier.
-2. **O6 role-scale promotion** once more DCN/WAN shapes are measured; **P4** docs finalization.
+2. **O6 role-scale promotion — decided (2026-09-13): keep gated off.** The §6.12 broader sweep
+   regresses `s2-fat6` (the shape it targets), so it is not promoted. It and v2 stay opt-in
+   evaluation knobs (`-Ds2.nodeWeightsRoleScale` / `-Ds2.nodeWeightsV2`), kept for reproducibility
+   rather than removed. **P4 docs finalization — done** (README / OPS / REMAINING / plan).
 3. Keep the O3 upstream stage (`scripts/ci.sh --upstream`) green as shared code changes.
 
 (O5 METIS install is done — see the sweep in `PARTITIONING-PLAN.md` §6.7.)

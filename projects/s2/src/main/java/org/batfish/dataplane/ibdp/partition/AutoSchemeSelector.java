@@ -34,13 +34,11 @@ import java.util.regex.Pattern;
  *   <li>Everything else is a WAN.
  * </ol>
  *
- * <p><b>Scheme choice.</b> METIS is the plan's quality reference and the best cut-to-balance
- * trade-off measured on the testbeds ({@code PARTITIONING-PLAN} &sect;6.7), so when {@code gpmetis}
- * is installed the selection is always {@link PartitionScheme#METIS} (which itself falls back to
- * {@link PartitionScheme#WEIGHTED_LPT_FM} if the binary later disappears). Without {@code gpmetis}
- * the classification decides the pure-Java fallback: {@link PartitionScheme#NAME_ORDERED} for a DCN
- * (tier names keep tiers spread evenly) and {@link PartitionScheme#WEIGHTED_LPT_FM} for a WAN
- * (balance-first with a cut-aware refinement, and no dependence on name conventions).
+ * <p><b>Scheme choice.</b> The default scheme is {@link PartitionScheme#WEIGHTED_LPT_FM}
+ * (best-or-tied across the measured Clos / WAN / line testbeds; {@code PARTITIONING-PLAN}
+ * &sect;6.13), so {@code AUTO} simply resolves to it. The shape classification is kept for the run
+ * log and for future shape-specific policies; {@link PartitionScheme#METIS} (the plan's quality
+ * reference) is available as an explicit {@code -Ds2.partition=METIS}.
  *
  * <p><b>Limits.</b> The heuristic is intentionally coarse and is not a correctness mechanism: every
  * scheme yields a valid assignment, so a misclassification only changes partition quality. It can
@@ -137,12 +135,9 @@ public final class AutoSchemeSelector {
     }
     Shape shape = classify(graph);
     boolean metisAvailable = MetisPartitioner.isAvailable();
-    PartitionScheme scheme;
-    if (metisAvailable) {
-      scheme = PartitionScheme.METIS;
-    } else {
-      scheme = shape == Shape.DCN ? PartitionScheme.NAME_ORDERED : PartitionScheme.WEIGHTED_LPT_FM;
-    }
+    // The default (and best-or-tied) scheme; AUTO keeps the shape for the log but does not prefer
+    // the external gpmetis binary. METIS stays available explicitly.
+    PartitionScheme scheme = PartitionScheme.WEIGHTED_LPT_FM;
     String reason = classifyReason(graph);
     return new Selection(scheme, shape, metisAvailable, reason);
   }

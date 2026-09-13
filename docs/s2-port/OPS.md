@@ -50,14 +50,15 @@ unaffected**. Each has a documented `=false` override:
 | owned-only dataplane | **on** | `-Ds2.ownedDataplane=false` | `S2BdpEngine`/`S2Main` (S2-only). Remote nodes get stub FIBs; a run automatically falls back to full RIBs/FIBs for tracks / VNI / IPsec / tunnel. |
 | descriptor shadows | **on** | `-Ds2.descriptorShadows=false` | `S2Main` (S2-only), multi-worker only, and gated by `descriptorShadowsSafe` (same tracks / VNI / tunnel / IPsec fallback: the controller then ships full configs). |
 | positive-only `PrefixSpace` memo | off in shared code, **on in the runner** | `-Ds2.prefixSpacePositiveCacheOnly=false` | pure memoization, never changes results; `scripts/local-demo.sh` exports it and the k8s worker manifest carries it in `JAVA_TOOL_OPTIONS`. |
-| node→worker partitioner | **`WEIGHTED_LPT_FM` (code + runner default)** | `-Ds2.partition=<scheme>` | Best-or-tied across the measured Clos/WAN/line testbeds (`PARTITIONING-PLAN.md` 6.13; clearly better than RANDOM on a role-diverse DCN). `RANDOM` = legacy hash-shuffle; `AUTO` classifies DCN/WAN and picks METIS when `gpmetis` is installed, else NAME_ORDERED / WEIGHTED_LPT_FM; the controller logs the selection. A later user `-D` overrides. |
+| node→worker partitioner | **`WEIGHTED_LPT_FM` (code + runner default)** | `-Ds2.partition=<scheme>` | Best-or-tied across the measured Clos/WAN/line testbeds (`PARTITIONING-PLAN.md` 6.13; clearly better than RANDOM on a role-diverse DCN). `RANDOM` = legacy hash-shuffle; `AUTO` classifies DCN/WAN (for the log) and resolves to `WEIGHTED_LPT_FM`; `METIS` is explicit. The controller logs the selection. A later user `-D` overrides. |
 | prefix sharding | off (`S2_PREFIX_SHARDS` unset) | — | unchanged. |
 
-Two node-weight model flags are also available (both gated off / evaluation-only; the partitioner
-is unaffected unless used): `-Ds2.nodeWeightsRoleScale=true` enables the O6-residual adaptive
-role-level peer scaling (improves `s2-fat4` W=3 cost imbalance 1.061→1.047, other testbeds
-unchanged; `PARTITIONING-PLAN.md` §6.10), and `-Ds2.nodeWeightsPeerScale=<int>` pins the BGP peer
-coefficient for calibration sweeps.
+Three node-weight model flags are also available (all gated off / evaluation-only):
+`-Ds2.nodeWeightsRoleScale=true` enables the O6-residual adaptive role-level peer scaling (it
+improves `s2-fat4` W=3 cost imbalance 1.061→1.047 and the WAN hub star, but regresses `s2-fat6` W=2,
+so it stays off; `PARTITIONING-PLAN.md` §6.10/§6.12); `-Ds2.nodeWeightsV2=true` adds the full-table
+topology term (no assignment change on the current testbeds; §6.9); and
+`-Ds2.nodeWeightsPeerScale=<int>` pins the BGP peer coefficient for calibration sweeps.
 
 The runner flag is prepended to any existing `JAVA_TOOL_OPTIONS`, so a later user `-D` wins:
 

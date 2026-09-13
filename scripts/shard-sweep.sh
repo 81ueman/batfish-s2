@@ -22,18 +22,20 @@ if [[ ! -f bazel-bin/projects/s2/s2_main_deploy.jar ]]; then
   bazel build //projects/s2:s2_main_deploy.jar >/dev/null 2>&1
 fi
 
-echo "| network | workers | shards | result | max peak MiB |"
-echo "| --- | --- | --- | --- | --- |"
+echo "| network | workers | shards | result | max peak MiB | wall s |"
+echo "| --- | --- | --- | --- | --- | --- |"
 for n in $NS; do
   log="/tmp/s2-shard-sweep-${NETWORK}-${n}.log"
+  start=$(date +%s)
   JAVA_TOOL_OPTIONS="-Ds2.prefixShardExternalize=true ${EXTRA}" S2_PREFIX_SHARDS="$n" \
     scripts/local-demo.sh "$W" "$NETWORK" >"$log" 2>&1 || true
+  wall=$(( $(date +%s) - start ))
   res="results/local-${NETWORK}-${W}/result-${W}worker.txt"
   if [[ ! -f "$res" ]]; then
-    printf "| %s | %s | %s | NO_RESULT | - |\n" "$NETWORK" "$W" "$n"
+    printf "| %s | %s | %s | NO_RESULT | - | %s |\n" "$NETWORK" "$W" "$n" "$wall"
     continue
   fi
   result=$(grep -m1 -oE 'S2 (MATCH|DIFF)' "$log" | awk '{print $2}')
   maxpeak=$(awk '/^worker [0-9]+: /{if ($3+0 > m) m=$3+0} END{printf "%.1f", m}' "$res")
-  printf "| %s | %s | %s | %s | %s |\n" "$NETWORK" "$W" "$n" "${result:-?}" "${maxpeak:--}"
+  printf "| %s | %s | %s | %s | %s | %s |\n" "$NETWORK" "$W" "$n" "${result:-?}" "${maxpeak:--}" "$wall"
 done
