@@ -49,7 +49,7 @@ spec:
           # covers the pre-O1 fallback. No CPU limit: the BDD/symbolic phases burst
           # across cores, so a CFS quota would only throttle them.
           resources:
-            requests: {memory: "2Gi", cpu: "1"}
+            requests: {memory: "1Gi", cpu: "0.5"}
             limits: {memory: "6Gi"}
 ---
 apiVersion: v1

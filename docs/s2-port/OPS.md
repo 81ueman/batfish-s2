@@ -107,13 +107,14 @@ reference work); the controller's own peak is in its phase prints
 
 ## Kubernetes resource requests/limits
 
-`k8s/base/{controller,worker,verifier}.yaml` set the defaults; `k8s/overlays/{1,3}pod` change the
-worker replica count and `WORKERS` for the controller/verifier Jobs (they do not touch resources or
-`JAVA_TOOL_OPTIONS`, so the base values apply to both overlays).
+`k8s/base/{controller,worker,verifier}.yaml` set the defaults; `k8s/overlays/{1,3,6,8,16}pod` change
+the worker replica count and `WORKERS` for the controller/verifier Jobs (they do not touch resources
+or `JAVA_TOOL_OPTIONS`, so the base values apply to every overlay). `scripts/k8s-demo.sh <N>` accepts
+any N that has an overlay.
 
 | container | request | limit | heap | why |
 | --- | --- | --- | --- | --- |
-| `worker` | `memory: 2Gi`, `cpu: 1` | `memory: 6Gi` | `-Xmx4g` | measured worst-worker peak **1938.1 MiB** on `s2-giga` with the O1 defaults (owned-only dataplane + descriptor shadows) on; 4g covers that and the pre-O1 fallback (owned/descriptor off: 2226.1 MiB shipped, 2513.1 MiB per-worker-parse) with headroom |
+| `worker` | `memory: 1Gi`, `cpu: 0.5` | `memory: 6Gi` | `-Xmx4g` | measured worst-worker peak **1938.1 MiB** on `s2-giga` with the O1 defaults (owned-only dataplane + descriptor shadows) on; 4g covers that and the pre-O1 fallback (owned/descriptor off: 2226.1 MiB shipped, 2513.1 MiB per-worker-parse) with headroom. The **1Gi request** is a scheduling floor chosen so many workers fit one node (16 workers on a 24 GiB node); the 6Gi limit absorbs the transient burst |
 | `controller` | `memory: 512Mi`, `cpu: 0.5` | `memory: 2Gi` | `-Xmx1g` | lightweight coordinator (A7): snapshot + partition + config shipping + result collection, no vanilla/reference dataplane |
 | `verifier` | `memory: 2Gi`, `cpu: 1` | `memory: 6Gi` | `-Xmx4g` | runs the vanilla dataplane and the reference BDD analysis, so it keeps the old controller budget |
 
@@ -121,11 +122,15 @@ Notes:
 
 * **Limit vs. request.** The worker/verifier 6Gi limit is the 4g heap plus ~2Gi of non-heap
   (metaspace, code cache, thread stacks, GC) headroom; it is what prevents an OOM-kill on the large
-  snapshots. The 2Gi request is a scheduling floor: the retained set after a GC is small (tens of
+  snapshots. The request (1Gi) is a scheduling floor: the retained set after a GC is small (tens of
   MiB, see `M5-SCALE.md`), and the measured peak is *transient* control-plane/FIB allocation, so
-  the limit absorbs the peak and a larger request would only reduce scheduling density. The
+  the limit absorbs the peak and a larger request would only reduce scheduling density (it is what
+  lets a 24 GiB node host 16 workers). The
   controller's 1g heap / 2Gi limit / 512Mi request reflect its much smaller coordinator working set
   (A7).
+* **Multi-Pod scale-out.** `s2-fat4` (20 nodes, DCN) at **6 / 8 / 16 worker Pods all `MATCH`**
+  (AUTO→METIS; verifier peak ~180 MiB; worker peaks ~130-180 MiB). Scale-out beyond that is bounded
+  by node memory / the request floor, not by the runner.
 * **Why no CPU limit.** Only a request is set: the dataplane/symbolic phases burst across cores, so
   a CFS quota would throttle them without protecting anything (there is one heavy Pod per run on
   the demo cluster). The fixpoint barriers serialize the distributed control plane, which is what
