@@ -2,14 +2,17 @@
 package org.batfish.dataplane.ibdp;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.SortedMap;
 import javax.annotation.Nullable;
 import org.batfish.common.topology.IpOwners;
 import org.batfish.datamodel.Configuration;
+import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.PrefixSpace;
 import org.batfish.dataplane.ibdp.schedule.IbdpSchedule.Schedule;
 
@@ -30,6 +33,9 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   private final S2Coordinator _coordinator;
   private final @Nullable Runnable _shadowSync;
 
+  /** Networks of external BGP announcements: injected into the RIBs and thus shard-appointed. */
+  private final Set<Prefix> _externalAdvertPrefixes;
+
   /**
    * With {@code -Ds2.ownedDataplane=true}, a worker builds and retains full tables (RIBs, FIBs)
    * only for the nodes it owns. Remote (shadow) nodes get a cheap config-only "stub" FIB so the
@@ -43,10 +49,20 @@ public class S2BdpEngine extends IncrementalBdpEngine {
       Map<String, DistributedNode> nodes,
       S2Coordinator coordinator,
       @Nullable Runnable shadowSync) {
+    this(settings, nodes, coordinator, shadowSync, ImmutableSet.of());
+  }
+
+  public S2BdpEngine(
+      IncrementalDataPlaneSettings settings,
+      Map<String, DistributedNode> nodes,
+      S2Coordinator coordinator,
+      @Nullable Runnable shadowSync,
+      Set<Prefix> externalAdvertPrefixes) {
     super(settings);
     _nodes = nodes;
     _coordinator = coordinator;
     _shadowSync = shadowSync;
+    _externalAdvertPrefixes = externalAdvertPrefixes;
   }
 
   @Override
@@ -165,7 +181,7 @@ public class S2BdpEngine extends IncrementalBdpEngine {
           } else {
             Map<String, Configuration> configs = new HashMap<>();
             _nodes.forEach((host, node) -> configs.put(host, node.getConfiguration()));
-            shards = PrefixSharder.shards(configs, n);
+            shards = PrefixSharder.shards(configs, _externalAdvertPrefixes, n);
           }
           _egpPrefixShards = shards;
         }

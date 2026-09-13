@@ -180,7 +180,9 @@ protocol ごとの対象 prefix を閉じる:
 - 修正前: `S2_PREFIX_SHARDS=2` で aggregate `2.128.0.0/16` が消え `ribs=DIFF symbolic=DIFF`（`=3,5` も DIFF）。
 - 修正後: `S2_PREFIX_SHARDS=2/3/5/8` すべて `MATCH`。単体テスト `testPrefixShardingWithAggregateMatchesVanilla` で固定。
 
-残り（closure の未対応分）: **external BGP announcements** の universe 取り込み（`S2Snapshot.loadExternalBgpAnnouncements` を `PrefixSharder` へ配線）と、**redistribution の明示的 closure**（現状は connected address 収集で概ねカバーされるが、BGP↔BGP 再配布は要確認）。
+**external BGP announcements** も対応済み: runner が `external_bgp_announcements.json` を読み込み（`S2Snapshot.load`）、controller が worker へ配布（`Start.externalAdverts`）、sharding universe に取り込み、**各 shard round で再注入**する（`BgpRoutingProcess.restageExternalAdvertisements` / `VirtualRouter.initForEgpPrefixRound`。external adverts は最初の round でのみ注入されるため）。
+
+**redistribution closure** は static/kernel ルートを universe に追加済み（`networks/s2-static` + `testPrefixShardingWithRedistributedStaticMatchesVanilla`。static 行を外すと同テストだけが落ちることを確認）。検証: `networks/s2-external` + `testPrefixShardingWithExternalAnnouncementMatchesVanilla`（`shards=1..4` すべて `MATCH`）。
 
 ---
 

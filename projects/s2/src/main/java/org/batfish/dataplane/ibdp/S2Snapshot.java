@@ -63,9 +63,13 @@ public final class S2Snapshot {
     }
     TemporaryFolder folder = new TemporaryFolder();
     folder.create();
-    Batfish batfish =
-        BatfishTestUtils.getBatfishFromTestrigText(
-            TestrigText.builder().setConfigurationBytes(bytes).build(), folder);
+    TestrigText.Builder testrig = TestrigText.builder().setConfigurationBytes(bytes);
+    // Optional external BGP announcements: the runner ships them to workers (see S2Main).
+    Path announcements = configsDir.resolveSibling("external_bgp_announcements.json");
+    if (Files.exists(announcements)) {
+      testrig.setExternalBgpAnnouncementsBytes(Files.readAllBytes(announcements));
+    }
+    Batfish batfish = BatfishTestUtils.getBatfishFromTestrigText(testrig.build(), folder);
     NetworkSnapshot snapshot = batfish.getSnapshot();
     SortedMap<String, Configuration> configs = batfish.loadConfigurations(snapshot);
     return fromBatfish(batfish, configs);

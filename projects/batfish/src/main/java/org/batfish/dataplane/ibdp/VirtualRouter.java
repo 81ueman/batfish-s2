@@ -1761,6 +1761,11 @@ public final class VirtualRouter {
         .filter(r -> space == null || space.containsPrefix(r.getRoute().getNetwork()))
         .forEach(builder::add);
     _mainRibDeltaPrevRound = builder.build();
+    // External announcements are consumed in the first round; re-stage them so each shard's round
+    // re-injects the ones it appoints.
+    if (_bgpRoutingProcess != null) {
+      _bgpRoutingProcess.restageExternalAdvertisements();
+    }
   }
 
   /** Remove and return this VR's BGP IPv4 routes (S2 prefix sharding externalization). */

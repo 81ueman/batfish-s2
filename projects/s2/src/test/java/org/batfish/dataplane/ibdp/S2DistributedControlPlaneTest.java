@@ -56,6 +56,10 @@ public class S2DistributedControlPlaneTest {
   private static final List<String> REDIST_CONFIGS = ImmutableList.of("r1", "r2", "r3", "r4");
   private static final String AGG_TESTRIG = "org/batfish/dataplane/testrigs/s2-agg";
   private static final List<String> AGG_CONFIGS = ImmutableList.of("r1", "r2", "r3");
+  private static final String STATIC_TESTRIG = "org/batfish/dataplane/testrigs/s2-static";
+  private static final List<String> STATIC_CONFIGS = ImmutableList.of("r1", "r2");
+  private static final String EXTERNAL_TESTRIG = "org/batfish/dataplane/testrigs/s2-external";
+  private static final List<String> EXTERNAL_CONFIGS = ImmutableList.of("r1", "r2");
 
   @Rule public TemporaryFolder _folder = new TemporaryFolder();
 
@@ -123,6 +127,40 @@ public class S2DistributedControlPlaneTest {
   }
 
   /**
+   * Prefix sharding with a static route redistributed into BGP: the static network is not a
+   * connected address or a network statement, so it must be added to the sharding universe
+   * explicitly or the redistributed route is lost.
+   */
+  @Test
+  public void testPrefixShardingWithRedistributedStaticMatchesVanilla() throws Exception {
+    System.setProperty("s2.prefixShards", "3");
+    System.setProperty("s2.prefixShardExternalize", "true");
+    try {
+      assertDistributedMatchesVanilla(STATIC_TESTRIG, STATIC_CONFIGS, new int[] {1, 3});
+    } finally {
+      System.clearProperty("s2.prefixShards");
+      System.clearProperty("s2.prefixShardExternalize");
+    }
+  }
+
+  /**
+   * Prefix sharding with external BGP announcements: their networks must be in the sharding
+   * universe and they must be re-staged every round, or the announced route is lost. The in-process
+   * engine receives them via {@code adverts}, as S2Main ships them to workers.
+   */
+  @Test
+  public void testPrefixShardingWithExternalAnnouncementMatchesVanilla() throws Exception {
+    System.setProperty("s2.prefixShards", "3");
+    System.setProperty("s2.prefixShardExternalize", "true");
+    try {
+      assertDistributedMatchesVanilla(EXTERNAL_TESTRIG, EXTERNAL_CONFIGS, new int[] {1, 3}, true);
+    } finally {
+      System.clearProperty("s2.prefixShards");
+      System.clearProperty("s2.prefixShardExternalize");
+    }
+  }
+
+  /**
    * OSPF->BGP redistribution (on r2) and BGP->OSPF redistribution (on r3) must propagate correctly
    * across workers: r4 learns r1's loopback as an OSPF external route.
    */
@@ -161,9 +199,18 @@ public class S2DistributedControlPlaneTest {
 
   private void assertDistributedMatchesVanilla(
       String testrig, List<String> testrigConfigs, int[] workerCounts) throws Exception {
-    Batfish batfish =
-        BatfishTestUtils.getBatfishFromTestrigText(
-            TestrigText.builder().setConfigurationFiles(testrig, testrigConfigs).build(), _folder);
+    assertDistributedMatchesVanilla(testrig, testrigConfigs, workerCounts, false);
+  }
+
+  private void assertDistributedMatchesVanilla(
+      String testrig, List<String> testrigConfigs, int[] workerCounts, boolean withAnnouncements)
+      throws Exception {
+    TestrigText.Builder testrigText =
+        TestrigText.builder().setConfigurationFiles(testrig, testrigConfigs);
+    if (withAnnouncements) {
+      testrigText.setExternalBgpAnnouncements(testrig);
+    }
+    Batfish batfish = BatfishTestUtils.getBatfishFromTestrigText(testrigText.build(), _folder);
     NetworkSnapshot snapshot = batfish.getSnapshot();
     batfish.computeDataPlane(snapshot);
     DataPlane vanilla = batfish.loadDataPlane(snapshot);
@@ -210,6 +257,13 @@ public class S2DistributedControlPlaneTest {
     }
     S2Cluster cluster = new S2Cluster(workers);
 
+    // External announcements are subject to prefix appointment, so include their networks in the
+    // sharding universe (mirrors S2Main).
+    Set<Prefix> externalAdvertPrefixes = new java.util.HashSet<>();
+    for (BgpAdvertisement advert : adverts) {
+      externalAdvertPrefixes.add(advert.getNetwork());
+    }
+
     // Each worker gets a node for every switch: real if owned, shadow otherwise.
     List<S2BdpEngine> engines = new ArrayList<>();
     for (int w = 0; w < workers; w++) {
@@ -221,7 +275,7 @@ public class S2DistributedControlPlaneTest {
           nodes.put(host, DistributedNode.shadowOf(realByHost.get(host)));
         }
       }
-      engines.add(new S2BdpEngine(settings, nodes, cluster, null));
+      engines.add(new S2BdpEngine(settings, nodes, cluster, null, externalAdvertPrefixes));
     }
 
     // Run the workers concurrently. Each engine mutates only its own real nodes; shadow lookups

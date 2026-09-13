@@ -227,6 +227,13 @@ public class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?
    */
   @Nullable Set<BgpAdvertisement> _externalAdvertisements;
 
+  /**
+   * Retained copy of the (filtered) external advertisements so a prefix-sharded EGP round can
+   * re-stage them: {@link #_externalAdvertisements} is consumed on the first round, but each round
+   * appoints a different prefix shard.
+   */
+  @Nullable Set<BgpAdvertisement> _allExternalAdvertisements;
+
   // RIBs and RIB delta builders
   /** Helper RIB containing all paths obtained with external BGP, for IPv4 unicast */
   final @Nonnull Bgpv4Rib _ebgpv4Rib;
@@ -2338,6 +2345,18 @@ public class BgpRoutingProcess implements RoutingProcess<BgpTopology, BgpRoute<?
             .collect(ImmutableSet.toImmutableSet());
     if (_externalAdvertisements.isEmpty()) {
       _externalAdvertisements = null;
+    }
+    _allExternalAdvertisements = _externalAdvertisements;
+  }
+
+  /**
+   * Re-stage the external advertisements for another prefix-sharded EGP round. Without this, an
+   * advertisement whose network is not in the first round's shard is filtered out (not appointed)
+   * and never re-injected in a later round.
+   */
+  void restageExternalAdvertisements() {
+    if (_allExternalAdvertisements != null) {
+      _externalAdvertisements = _allExternalAdvertisements;
     }
   }
 

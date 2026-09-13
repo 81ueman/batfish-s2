@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.batfish.dataplane.ibdp;
 
+import com.google.common.collect.ImmutableList;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -12,9 +14,11 @@ import java.util.TreeMap;
 import org.batfish.datamodel.BgpProcess;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.Interface;
+import org.batfish.datamodel.KernelRoute;
 import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.PrefixRange;
 import org.batfish.datamodel.PrefixSpace;
+import org.batfish.datamodel.StaticRoute;
 import org.batfish.datamodel.Vrf;
 
 /**
@@ -33,6 +37,17 @@ final class PrefixSharder {
 
   /** All prefixes of interest for sharding (see the class doc). */
   static List<Prefix> queryPrefixes(Map<String, Configuration> configs) {
+    return queryPrefixes(configs, ImmutableList.of());
+  }
+
+  /**
+   * All prefixes of interest for sharding: connected addresses, BGP origination networks,
+   * unconditional network statements, aggregates, static and kernel route networks (redistribution
+   * sources) and any {@code extraPrefixes} (e.g. external BGP announcements). All of them are
+   * subject to appointment, so all must be in the universe.
+   */
+  static List<Prefix> queryPrefixes(
+      Map<String, Configuration> configs, Collection<Prefix> extraPrefixes) {
     Set<Prefix> prefixes = new LinkedHashSet<>();
     for (Configuration c : configs.values()) {
       for (Interface i : c.getAllInterfaces().values()) {
@@ -51,8 +66,12 @@ final class PrefixSharder {
           // shard; otherwise they are filtered out of every round.
           prefixes.addAll(proc.getAggregates().keySet());
         }
+        // Prefixes redistributed into BGP from this VRF's main RIB.
+        vrf.getStaticRoutes().stream().map(StaticRoute::getNetwork).forEach(prefixes::add);
+        vrf.getKernelRoutes().stream().map(KernelRoute::getNetwork).forEach(prefixes::add);
       }
     }
+    prefixes.addAll(extraPrefixes);
     return new ArrayList<>(prefixes);
   }
 
@@ -62,7 +81,13 @@ final class PrefixSharder {
    * shard.
    */
   static List<PrefixSpace> shards(Map<String, Configuration> configs, int n) {
-    List<Prefix> prefixes = queryPrefixes(configs);
+    return shards(configs, ImmutableList.of(), n);
+  }
+
+  /** As {@link #shards(Map, int)}, additionally including {@code extraPrefixes} in the universe. */
+  static List<PrefixSpace> shards(
+      Map<String, Configuration> configs, Collection<Prefix> extraPrefixes, int n) {
+    List<Prefix> prefixes = queryPrefixes(configs, extraPrefixes);
     List<List<Prefix>> groups = dependencyGroups(prefixes, aggregatePrefixes(configs));
     return assignGroups(groups, n);
   }

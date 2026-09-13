@@ -41,7 +41,7 @@ Unified view across this file and `PARTITIONING-PLAN.md`. `←` depends on, `⇄
 | id | task | notes |
 | --- | --- | --- |
 | **P0** | measurement + testbed infrastructure | topology/config generators (FatTree/Clos; aggregate / redistribution / external-ads snapshots), metric dumps, current baseline, weight calibration. Prerequisite for evaluating all partitioning work. |
-| **C-PFX** | prefix closure fix | **Aggregates done** (2026-09-13): the universe now includes aggregate networks and unconditional network statements, and an aggregate is co-sharded with the prefixes it covers (union-find + group LPT). Reproduced on `networks/s2-agg` (2.128.0.0/16 lost at 2/3/5 shards before; MATCH at 2/3/5/8 after) and fixed by `testPrefixShardingWithAggregateMatchesVanilla`. Remaining: external announcements and explicit redistribution closure. Prerequisite for (B)/DPDG. |
+| **C-PFX** | prefix closure fix | **Done.** Aggregates: universe inclusion + co-sharding with the prefixes they cover (`networks/s2-agg`, `testPrefixShardingWithAggregateMatchesVanilla`). Redistribution: static and kernel route networks added (`networks/s2-static`, `testPrefixShardingWithRedistributedStaticMatchesVanilla`). External announcements: runner loads `external_bgp_announcements.json`, the controller ships them (`Start.externalAdverts`), the universe includes their networks, and they are re-staged each shard round (`BgpRoutingProcess.restageExternalAdvertisements`) (`networks/s2-external`, `testPrefixShardingWithExternalAnnouncementMatchesVanilla`, `shards=1..4`). Prerequisite for (B)/DPDG. |
 
 ### Partitioning (see `PARTITIONING-PLAN.md`)
 

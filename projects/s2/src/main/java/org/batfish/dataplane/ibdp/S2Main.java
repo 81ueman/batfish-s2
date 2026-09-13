@@ -141,6 +141,24 @@ public final class S2Main {
     }
   }
 
+  /** Serialize the snapshot's external BGP announcements so workers can inject them. */
+  private static byte[] serializeExternalAdverts(
+      java.util.Set<org.batfish.datamodel.BgpAdvertisement> adverts) throws IOException {
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+      oos.writeObject(new java.util.HashSet<>(adverts));
+    }
+    return baos.toByteArray();
+  }
+
+  @SuppressWarnings("unchecked")
+  private static java.util.Set<org.batfish.datamodel.BgpAdvertisement> deserializeExternalAdverts(
+      byte[] payload) throws IOException, ClassNotFoundException {
+    try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(payload))) {
+      return (java.util.Set<org.batfish.datamodel.BgpAdvertisement>) ois.readObject();
+    }
+  }
+
   /** Sum of the peak used bytes across all heap memory pools (for scale reporting). */
   private static long peakHeapBytes() {
     long total = 0;
@@ -172,8 +190,13 @@ public final class S2Main {
     // Serialize the parsed configs once so each worker can skip parsing the snapshot.
     byte[] serializedConfigs =
         Boolean.getBoolean("s2.noShipConfigs") ? null : serializeConfigs(snap.configs);
+    // Workers build from shipped configs, so they cannot load external announcements themselves.
+    byte[] serializedExternalAdverts =
+        serializeExternalAdverts(
+            snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
     try (S2ControllerServer server =
-        new S2ControllerServer(port, numWorkers, endpoints, serializedConfigs)) {
+        new S2ControllerServer(
+            port, numWorkers, endpoints, serializedConfigs, serializedExternalAdverts)) {
       server.start();
       System.out.printf(
           "S2 controller listening on %d, waiting for %d workers%n", port, numWorkers);
@@ -340,7 +363,16 @@ public final class S2Main {
 
       Map<String, Node> nodeMap = new HashMap<>(nodes);
       List<org.batfish.datamodel.BgpAdvertisement> adverts =
-          new ArrayList<>(snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
+          start.externalAdverts != null
+              ? new ArrayList<>(deserializeExternalAdverts(start.externalAdverts))
+              : new ArrayList<>(
+                  snap.batfish.loadExternalBgpAnnouncements(snap.snapshot, snap.configs));
+      // External announcements are injected into the BGP RIBs and are subject to prefix
+      // appointment, so their networks must be part of the sharding universe.
+      Set<org.batfish.datamodel.Prefix> externalAdvertPrefixes = new HashSet<>();
+      for (org.batfish.datamodel.BgpAdvertisement advert : adverts) {
+        externalAdvertPrefixes.add(advert.getNetwork());
+      }
 
       AtomicReference<BDDReachabilityAnalysis> localAnalysisRef = new AtomicReference<>();
       try (S2SidecarServer sidecar =
@@ -368,7 +400,9 @@ public final class S2Main {
         S2RemoteCoordinator coordinator = new S2RemoteCoordinator(out, in);
         ShadowMainRibSync shadowSync =
             new ShadowMainRibSync(nodes, assignment, workerId, start.endpoints, client);
-        S2BdpEngine engine = new S2BdpEngine(snap.settings(), nodes, coordinator, shadowSync);
+        S2BdpEngine engine =
+            new S2BdpEngine(
+                snap.settings(), nodes, coordinator, shadowSync, externalAdvertPrefixes);
         DataPlane dp =
             engine.computeDataPlane(
                     snap.configs,

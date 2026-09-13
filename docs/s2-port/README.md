@@ -155,6 +155,8 @@ networks/s2-ospf/     # 4-node OSPF snapshot
 networks/s2-ospf-bgp/ # eBGP + OSPF snapshot
 networks/s2-redist/   # OSPF<->BGP redistribution snapshot
 networks/s2-agg/      # eBGP with a BGP aggregate (prefix-sharding closure test)
+networks/s2-static/   # static route redistributed into BGP (redistribution-closure test)
+networks/s2-external/ # external BGP announcement into BGP (external-closure test)
 networks/s2-big-bgp/  # 6-node eBGP line with 192 prefixes (prefix-sharding measurement)
 networks/s2-big2/     # 10-node eBGP line with 640 prefixes (larger prefix-sharding measurement)
 networks/s2-huge/     # 8-node eBGP line with 2048 prefixes

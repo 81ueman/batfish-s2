@@ -30,9 +30,17 @@ final class S2ControlMessages {
      */
     final byte[] configs;
 
-    Start(List<S2WorkerEndpoint> endpoints, byte[] configs) {
+    /**
+     * Java-serialized {@code Set<BgpAdvertisement>} of the snapshot's external BGP announcements,
+     * or null. Workers cannot load these themselves (they build from shipped configs), so the
+     * controller ships them; they are injected into the BGP RIBs and are shard-appointed.
+     */
+    final byte[] externalAdverts;
+
+    Start(List<S2WorkerEndpoint> endpoints, byte[] configs, byte[] externalAdverts) {
       this.endpoints = endpoints;
       this.configs = configs;
+      this.externalAdverts = externalAdverts;
     }
   }
 
