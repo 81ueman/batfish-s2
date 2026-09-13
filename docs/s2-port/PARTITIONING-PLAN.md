@@ -242,6 +242,7 @@ protocol ごとの対象 prefix を閉じる:
 - **P1 shadow lazy 化・boundary-only 化**: **概ね実装済み（opt-in）** = `-Ds2.ownedDataplane`（config 由来 stub FIB、`IncrementalBdpEngine.dataPlaneNodes` で最終 dataplane を owned 限定）。caveat は **M4 で堅牢化済み**（tracks/VNI/tunnel/IPsec は full にフォールバック）。加えて **M1 `-Ds2.descriptorShadows`** で remote の policy 本体を削減。
 - **P2 partitioner プラグイン化**: 未着手。新パッケージ（例 `.../ibdp/partition/`）に schemes を実装。controller が assignment を算出・配布。
 - **P3 `PrefixDependencyGraph`**: **完了** = `PrefixDependencyGraph.java` + `PrefixSharder` 刷新（weighted WCC-LPT、degenerate フォールバック、決定性）、`PrefixSharderTest` 拡張。
+- **P-X shard 数自動選択**: **完了** = `S2_PREFIX_SHARDS=auto`（別名 `-Ds2.prefixShardCount=auto`）。DPDG の成分数・重みから `PrefixShardCountSelector` が決定的に N を選ぶ（予算 `-Ds2.prefixShardBudgetMiB`、既定 192 MiB、上限 16）。sweep は `scripts/shard-sweep.sh`、測定は `M5-SCALE.md`。未設定時の挙動（sharding なし）は不変。
 - **P4 評価 → 既定 scheme 決定 → `M5-SCALE.md` / `README.md` 更新**: 未着手。
 
 ---
@@ -263,5 +264,5 @@ protocol ごとの対象 prefix を閉じる:
 1. P1 相当は実装済み。残るのは owned-mode hardening の caveat（Track/VXLAN/tunnel/BGP reachability）を誰がいつ埋めるか。
 2. ノード重み推定の係数をどの testbed で校准するか。
 3. METIS を評価環境に常設するか（Docker image に入れるか）。
-4. prefix shard 数を実行時にどう決めるか（メモリ予算から自動決定 or 固定 sweep）。
+4. prefix shard 数を実行時にどう決めるか: **解決（P-X）** = `S2_PREFIX_SHARDS=auto` が DPDG の成分重みから決定的に N を選ぶ（`PrefixShardCountSelector`、予算 `-Ds2.prefixShardBudgetMiB`、上限 16）。`scripts/shard-sweep.sh` で peak-vs-N を測定し既定を正当化（`M5-SCALE.md`）。
 5. DCN 判定ヒューリスティクスの設計（名前規則に依存しすぎないか）。

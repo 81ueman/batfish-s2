@@ -206,9 +206,14 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   private volatile List<PrefixSpace> _egpPrefixShards;
 
   /**
-   * Control-plane prefix sharding (S2): with {@code S2_PREFIX_SHARDS=N > 1}, run the EGP fixpoint
-   * once per prefix shard so only one shard's BGP RIB is live at a time. The shards are derived
-   * from the same snapshot on every worker, so the rounds line up.
+   * Control-plane prefix sharding (S2): with {@code S2_PREFIX_SHARDS=N > 1} (or {@code
+   * -Ds2.prefixShards=N} / {@code -Ds2.prefixShardCount=N}), run the EGP fixpoint once per prefix
+   * shard so only one shard's BGP RIB is live at a time. The shards are derived from the same
+   * snapshot on every worker, so the rounds line up.
+   *
+   * <p>{@code S2_PREFIX_SHARDS=auto} instead selects N deterministically from the snapshot's prefix
+   * dependency graph ({@link PrefixShardCountSelector}); see that class for the policy and its
+   * budget knob.
    */
   @Override
   protected List<PrefixSpace> egpPrefixShards() {
@@ -217,25 +222,54 @@ public class S2BdpEngine extends IncrementalBdpEngine {
       synchronized (this) {
         shards = _egpPrefixShards;
         if (shards == null) {
-          int n =
-              Math.max(
-                  1,
-                  Integer.parseInt(
-                      System.getProperty(
-                          "s2.prefixShards",
-                          System.getenv().getOrDefault("S2_PREFIX_SHARDS", "1"))));
-          if (n <= 1) {
-            shards = ImmutableList.of();
+          Map<String, Configuration> configs = new HashMap<>();
+          _nodes.forEach((host, node) -> configs.put(host, node.getConfiguration()));
+          String spec = prefixShardCountSpec();
+          if (PrefixShardCountSelector.isAuto(spec)) {
+            PrefixDependencyGraph graph =
+                PrefixDependencyGraph.build(configs, _externalAdvertPrefixes);
+            int n = PrefixShardCountSelector.select(graph);
+            shards = n <= 1 ? ImmutableList.of() : PrefixSharder.shards(graph, n);
           } else {
-            Map<String, Configuration> configs = new HashMap<>();
-            _nodes.forEach((host, node) -> configs.put(host, node.getConfiguration()));
-            shards = PrefixSharder.shards(configs, _externalAdvertPrefixes, n);
+            int n = parseShardCount(spec);
+            shards =
+                n <= 1
+                    ? ImmutableList.of()
+                    : PrefixSharder.shards(configs, _externalAdvertPrefixes, n);
           }
           _egpPrefixShards = shards;
         }
       }
     }
     return shards;
+  }
+
+  /**
+   * The raw shard-count setting: {@code -Ds2.prefixShards} (original name), then the alias {@code
+   * -Ds2.prefixShardCount}, then the {@code S2_PREFIX_SHARDS} environment variable, then {@code
+   * "1"} (sharding off). A numeric value is a fixed shard count; {@code "auto"} selects it
+   * deterministically from the prefix dependency graph.
+   */
+  private static String prefixShardCountSpec() {
+    String spec = System.getProperty("s2.prefixShards");
+    if (spec == null) {
+      spec = System.getProperty("s2.prefixShardCount");
+    }
+    if (spec == null) {
+      spec = System.getenv("S2_PREFIX_SHARDS");
+    }
+    return spec == null ? "1" : spec;
+  }
+
+  /** Parses a fixed shard count; values {@code <= 1} disable sharding. */
+  private static int parseShardCount(String spec) {
+    try {
+      return Math.max(1, Integer.parseInt(spec.trim()));
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException(
+          "Invalid S2 prefix shard count '" + spec + "': expected a positive integer or \"auto\"",
+          e);
+    }
   }
 
   @Override

@@ -225,4 +225,53 @@ public class PrefixSharderTest {
           is(true));
     }
   }
+
+  /**
+   * The auto selector summarizes the DPDG (component count and weights) and agrees with the pure
+   * policy. On this small snapshot the default budget selects a single shard (sharding off).
+   */
+  @Test
+  public void testAutoSelectorUsesDependencyGraph() throws Exception {
+    System.clearProperty(PrefixShardCountSelector.BUDGET_MIB_PROPERTY);
+    Map<String, Configuration> configs = load(AGG, AGG_CONFIGS);
+    PrefixDependencyGraph graph = PrefixDependencyGraph.build(configs, ImmutableList.of());
+    List<Set<Prefix>> components = graph.weaklyConnectedComponents();
+    long totalWeight = 0;
+    for (Set<Prefix> component : components) {
+      totalWeight += graph.componentWeight(component);
+    }
+    int expected =
+        PrefixShardCountSelector.select(
+            totalWeight, components.size(), PrefixShardCountSelector.budgetMiB());
+    assertThat(PrefixShardCountSelector.select(graph), is(expected));
+    // A three-router aggregate snapshot is far under the default per-shard budget.
+    assertThat(expected, is(1));
+  }
+
+  /**
+   * A tight budget forces auto sharding; the aggregate and the prefixes it covers must still be
+   * co-sharded (the DPDG is what keeps them together).
+   */
+  @Test
+  public void testAutoWithTightBudgetCoShardsAggregate() throws Exception {
+    System.setProperty(PrefixShardCountSelector.BUDGET_MIB_PROPERTY, "3");
+    try {
+      Map<String, Configuration> configs = load(AGG, AGG_CONFIGS);
+      PrefixDependencyGraph graph = PrefixDependencyGraph.build(configs, ImmutableList.of());
+      int n = PrefixShardCountSelector.select(graph);
+      assertThat("a tight budget asks for more than one shard", n > 1, is(true));
+      List<PrefixSpace> shards = PrefixSharder.shards(graph, n);
+      assertThat(
+          "aggregate and both covered more-specifics are co-sharded under auto",
+          shards.stream()
+              .anyMatch(
+                  s ->
+                      s.containsPrefix(AGGREGATE)
+                          && s.containsPrefix(SPECIFIC_1)
+                          && s.containsPrefix(SPECIFIC_2)),
+          is(true));
+    } finally {
+      System.clearProperty(PrefixShardCountSelector.BUDGET_MIB_PROPERTY);
+    }
+  }
 }

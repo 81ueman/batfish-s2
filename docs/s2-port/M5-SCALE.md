@@ -202,6 +202,41 @@ prefix count: ~23% at 640-2048 prefixes but **~58% at 4096 prefixes** (2.09 → 
 because the BGP fixpoint/RIB becomes a larger fraction of the peak. So B is the right lever
 for large BGP tables.
 
+### Auto shard-count selection (P-X)
+
+`S2_PREFIX_SHARDS=auto` (alias `-Ds2.prefixShardCount=auto`) picks N deterministically from the
+snapshot's prefix dependency graph, identically on every worker (`PrefixShardCountSelector`):
+
+1. total weight `W` = sum of DPDG component weights (a prefix contributes a base unit plus one per
+   router that sources it);
+2. target weight per shard = `-Ds2.prefixShardBudgetMiB` (env `S2_PREFIX_SHARD_BUDGET_MIB`, default
+   192) divided by the calibration constant 1 MiB per weight unit;
+3. `N = max(1, min(ceil(W / target), #components, 16))`. `#components` is the number of weakly
+   connected components (a component cannot be split); 16 is the measured knee. `N <= 1` disables
+   sharding, so an unset shard count still behaves exactly as before.
+
+On the demos, `auto` selects N=1 on `s2-agg` (W=18, too small to be worth a round), N=7 on
+`s2-big2` (W=1307) and N=16 (the cap) on `s2-mega` (W=8237). A smaller budget shards more:
+`-Ds2.prefixShardBudgetMiB=6` selects N=3 on `s2-agg`, and the aggregate still co-shards with its
+more-specifics (`testPrefixShardingAutoWithAggregateMatchesVanilla`).
+
+Peak vs N (3 workers, `-Ds2.prefixShardExternalize=true`, `-Ds2.noShipConfigs=true` so the BGP RIB
+is a visible fraction of the peak; measured with `scripts/shard-sweep.sh`):
+
+| network | N=1 | N=4 | N=8 | N=16 | N=32 |
+| --- | --- | --- | --- | --- | --- |
+| `s2-big2` (~640 prefixes) | 615.3 | 455.2 | 449.1 | 475.3 | 664.7 |
+| `s2-mega` (~4096 prefixes) | 964.5 | 882.8 | 881.9 | 743.6 | 827.8 |
+
+This is what justifies the target and the 16-shard cap: `s2-big2` bottoms out at 7-8 shards,
+`s2-mega` at 16, and N=32 regresses on both. With the default controller-shipped configs the
+per-worker floor dominates and the same sweep is flat (~160-195 MiB on `s2-big2`, ~360-466 MiB on
+`s2-mega`), so sharding is a no-op there but still `MATCH`; the no-ship rows are the ones that
+isolate the BGP-RIB lever.
+
+Sharding demos (all `MATCH`, externalize on): `auto` on `s2-agg` (N=1), `s2-big2` (N=7),
+`s2-mega` (N=16); fixed `S2_PREFIX_SHARDS=8` on `s2-big-bgp`/`s2-big2`/`s2-mega`.
+
 ### Where the remaining peak goes (bottleneck)
 
 Phase-level peak heap (`S2BdpEngine.reportPhase`) on `s2-mega`, worker 0:
@@ -452,6 +487,12 @@ scripts/local-demo.sh 3 s2-redist     # OSPF<->BGP redistribution
 JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/local-demo.sh 3 s2-big-bgp
 JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/local-demo.sh 3 s2-big2
 JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/local-demo.sh 3 s2-mega
+# auto shard-count selection (P-X): N from the DPDG + a per-shard budget
+JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=auto scripts/local-demo.sh 3 s2-big2
+JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=auto scripts/local-demo.sh 3 s2-mega
+# peak-vs-N sweep (3 workers, N = 1 2 4 8 16 32)
+S2_BASE_PORT=18300 scripts/shard-sweep.sh 3 s2-mega "1 2 4 8 16 32"
+S2_BASE_PORT=18300 scripts/shard-sweep.sh 3 s2-mega "1 4 8 16 32" "-Ds2.noShipConfigs=true"
 
 # largest snapshot (32768 prefixes); bound the heap
 JAVA_TOOL_OPTIONS=-Xmx4g scripts/local-demo.sh 3 s2-giga
