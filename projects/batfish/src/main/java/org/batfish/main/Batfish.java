@@ -732,7 +732,7 @@ public class Batfish extends PluginConsumer implements IBatfish {
     TopologyContainer topologyContainer = result._topologies;
     result = null; // let it be garbage collected.
 
-    saveDataPlane(snapshot, dataplane, topologyContainer);
+    saveDataPlane(snapshot, dataplane, topologyContainer, _settings.getS2StoreDataPlane());
     LOGGER.info("Finished data plane computation successfully");
     return answerElement;
   }
@@ -740,8 +740,17 @@ public class Batfish extends PluginConsumer implements IBatfish {
   /* Write the dataplane to disk and cache, and write the answer element to disk.
    */
   private void saveDataPlane(
-      NetworkSnapshot snapshot, DataPlane dataplane, TopologyContainer topologies) {
+      NetworkSnapshot snapshot,
+      DataPlane dataplane,
+      TopologyContainer topologies,
+      boolean storeToDisk) {
     _cachedDataPlanes.put(snapshot, dataplane);
+    if (!storeToDisk) {
+      // The S2 engine can keep the data plane in memory only (e.g. a lazy/remote data plane that
+      // must not be materialized to disk).
+      LOGGER.info("Skipping data plane storage to disk (s2storedataplane=false)");
+      return;
+    }
 
     _logger.resetTimer();
     newBatch("Writing data plane to disk", 0);

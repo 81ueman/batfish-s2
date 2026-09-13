@@ -196,11 +196,12 @@ Dropped (2026-09-13): **M5** dataplane prefix sharding / on-disk RIB+FIB — see
    evaluation knobs (`-Ds2.nodeWeightsRoleScale` / `-Ds2.nodeWeightsV2`), kept for reproducibility
    rather than removed. **P4 docs finalization — done** (README / OPS / REMAINING / plan).
 3. Keep the O3 upstream stage (`scripts/ci.sh --upstream`) green as shared code changes.
-4. **Drop-in engine (`-dataplaneengine=s2`) — in progress.** Making S2 selectable exactly like the
-   stock `ibdp` engine (same snapshot, question engine, REST/pybatfish, no verify step): engine
-   registration, `-s2workers`, distributed compute + lazy global data plane, and stock-question
-   equivalence are done; the remote worker pool (Kubernetes), auto worker count, and protocol
-   fallback remain. See `PLUGIN.md`.
+4. **Drop-in engine (`-dataplaneengine=s2`)** — see `PLUGIN.md`. Done: engine registration, worker
+   count (explicit + auto), distributed compute + lazy global data plane, stock-question
+   equivalence, EIGRP/IS-IS/RIP fallback to a single worker, `s2storedataplane`, and the
+   `scripts/s2-batfish.sh` launcher. Remaining (large): the **remote worker pool on Kubernetes**
+   (network `S2Coordinator`, worker service, remote host-slice source for `S2LazyDataPlane`, pool
+   discovery, slice storage/GC), then the scale/memory measurement and a k8s plugin run.
 
 (O5 METIS install is done — see the sweep in `PARTITIONING-PLAN.md` §6.7.)
 

@@ -15,6 +15,9 @@ S2 is registered as a Batfish **`DataPlanePlugin`** (`S2DataPlanePlugin`,
 # coordinator / allinone / worker, exactly as for the stock ibdp engine
 batfish -dataplaneengine=s2 -s2workers=8 ...
 # or via batfish.properties:  dataplaneengine=s2 / s2workers=8
+# thin launcher:
+scripts/s2-batfish.sh ...           # allinone with -dataplaneengine=s2
+S2_WORKERS=4 scripts/s2-batfish.sh -snapshotdir /path/to/snapshots
 ```
 
 * **Default is unchanged.** `dataplaneengine` defaults to `ibdp`, so stock Batfish never runs S2.
@@ -26,47 +29,86 @@ batfish -dataplaneengine=s2 -s2workers=8 ...
   `ibdp` with `-dataplaneengine=s2 -s2workers=3`.
 * **Lazy global data plane.** `S2LazyDataPlane` unions the per-worker owned data planes lazily: a
   point/row lookup (a node-scoped question) is served from the owning worker; only whole-network
-  iteration materializes the union. See "Scaling out" below.
+  iteration materializes the union.
 * **No verify step.** The `S2Main verify` role (and `scripts/*`) is a runner/CI concern; the engine
   path does not need it.
+* **Protocol fallback.** Snapshots that use EIGRP/IS-IS/RIP (not distributed) automatically run on a
+  single worker, so the engine is a drop-in for any snapshot.
 
 ## Settings
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `dataplaneengine` | `ibdp` | Selects the engine; set to `s2` to use S2. |
-| `s2workers` | `1` | Number of S2 workers (partition shards) per data plane computation. |
+| `s2workers` | `0` (auto) | S2 workers (partition shards). Auto = pool size (once a remote pool exists), else `availableProcessors` capped by the node count. An explicit value is honored. |
+| `s2storedataplane` | `true` | Persist the data plane to disk. Set `false` for a lazy/remote data plane (kept in memory only). |
 
-`Settings.getS2Workers()` / `setS2Workers(int)`; CLI `-s2workers`, or `s2workers=` in
-`batfish.properties`.
+`Settings.getS2Workers()` / `setS2Workers`, `getS2StoreDataPlane()` / `setS2StoreDataPlane`; CLI
+`-s2workers` / `-s2storedataplane`, or the same keys in `batfish.properties`.
 
-## Scaling out (memory)
+## Kubernetes integration (persistent worker pool)
 
-The engine currently runs the `N` workers **in-process** (threads). That parallelizes CPU and bounds
-the *container* memory (the lazy views avoid materializing a second copy), but the node data still
-lives in one JVM, so it does not by itself make a topology that does not fit one JVM runnable.
+Chosen model: a **persistent pool** (StatefulSet + headless Service) the engine connects to, rather
+than per-snapshot Jobs — no scheduling wait and it matches normal Batfish worker services.
 
-The plan (see `REMAINING.md`) is to make the lazy views fetch a host's slice from its **owner over
-the network**, with the workers running as a remote pool (Kubernetes) and the engine picking `N` from
-the pool. Then a node-scoped question only pulls the nodes it touches, and a whole-network question
-is executed across the owners (the paper's distributed DPV, which the runner already does for BDD
-reachability). The `S2LazyDataPlane` seam is where that remote source plugs in.
+```
+pybatfish ── init_snapshot / question ──▶ Batfish (coordinator/worker JVM)
+                                             │ computeDataPlane(snapshot)
+                                             ▼
+                                  S2DataPlanePlugin (engine JVM)
+                                    1. read snapshot (configs/topology)
+                                    2. discover the pool (Service DNS) → N
+                                    3. partition nodes across workers
+                                    4. ship configs/descriptors to each worker
+                                    5. distributed control-plane fixpoint over RPC
+                                    6. each worker persists its owned per-host
+                                       data-plane slices to shared storage
+                                    7. return a lazy global DataPlane
+                                             │
+                                             ▼
+                              question engine (stock answerers)
+                                - node-scoped  → fetch that host's slice
+                                - whole-network→ materialize, or distributed execution (BDD)
+```
 
-## Remaining work
+* **Deployment:** Batfish (Deployment/Job) + `s2-workers` StatefulSet + headless Service + a shared
+  PVC (snapshot input + per-host data-plane blocks). `N = kubectl scale` (pool size). Resources per
+  `OPS.md` (worker request 1Gi / limit 6Gi / `-Xmx4g`).
+* **Control plane = live RPC.** The fixpoint reuses the runner's controller/sidecar protocol
+  (`S2ControlMessages`, `S2ControllerServer`, `S2SidecarServer`); the in-process `S2Cluster`
+  (barriers) gains a network implementation.
+* **Data plane = per-host blocks.** Each worker writes its owned nodes' slices to shared storage
+  (the same per-host granularity as `PerHostDataPlane`); the engine's lazy `DataPlane` reads a host's
+  block on demand (with an LRU). This is what makes a data plane larger than one JVM answerable.
+* **Failure/consistency:** a worker dying mid-fixpoint fails that snapshot's run (retry); slices are
+  keyed by snapshot id so a version is pinned.
 
-1. **Remote worker pool (Kubernetes).** Back `S2LazyDataPlane`'s per-host access with a fetch from
-   the owning worker; manage the pool (scale, health) as deployment state, not a user flag. `N`
-   defaults to the pool size.
-2. **Auto worker count.** Default `s2workers` to a sensible value (e.g. pool size, else
-   `availableProcessors` capped by node count) so no flag is needed.
-3. **Protocol coverage.** EIGRP / IS-IS / RIP are not distributed by the runner; fall back to the
-   single-JVM engine for those snapshots (or implement them) so the engine is a true drop-in.
-4. **Storage.** `Batfish.saveDataPlane` materializes per host and writes each host separately (already
-   per-host granularity); confirm it stays bounded with the lazy views and, if needed, bypass it for
-   the remote case.
-5. **Launcher.** A thin `s2-batfish` wrapper that only sets `dataplaneengine=s2` (+ pool settings).
+### What must be added for this
+
+1. **Network `S2Coordinator`** — replace `S2Cluster` (in-process) with an RPC-barrier implementation.
+2. **Worker service** — a long-lived Pod that joins the pool, accepts a snapshot assignment, runs its
+   shard, persists its per-host slices, and waits for the next snapshot.
+3. **Remote host-slice source** — the `S2LazyDataPlane` seam: fetch a host's slice from shared
+   storage / its owner instead of the in-process `parts` list.
+4. **Pool discovery + settings** — headless Service (DNS) + a settings key (e.g. `s2workerpool`); auto
+   `N` from the pool size.
+5. **Snapshot shipping/cleanup** — shared PVC or object store; GC the slices after the run.
+
+## Scale verification
+
+* **Memory.** With in-process workers the lazy views only bound the *container* memory (the node data
+  is in the same JVM). The real win needs remote workers (above). Measurement plan: for a large
+  snapshot, compare peak heap for a node-scoped question (`routes` on one node) vs a whole-network
+  question, with `-dataplaneengine=s2` and `-s2storedataplane=false`; the node-scoped run should pull
+  only the touched hosts. Runner-scale baselines are in `M5-SCALE.md`.
+* **Kubernetes.** `scripts/k8s-demo.sh` covers the runner path today; the plugin path needs the
+  worker pool. Once the pool exists, run a Batfish Job with `-dataplaneengine=s2` and
+  `-s2workerpool s2-workers:PORT` and compare a question against `ibdp` on the same snapshot.
 
 ## Status
 
-Done: engine registration/selection, `-s2workers` setting, distributed compute + lazy global data
-plane, stock-question equivalence. Next: remote pool (Kubernetes), auto count, protocol fallback.
+Done: engine registration/selection, `-s2workers` (explicit + auto), distributed compute + lazy
+global data plane, stock-question equivalence, protocol fallback, storage flag, launcher.
+
+Next (large): the remote worker pool on Kubernetes (A.1) — network coordinator, worker service,
+remote host-slice source, pool discovery, slice storage/GC — then the scale verification above.
