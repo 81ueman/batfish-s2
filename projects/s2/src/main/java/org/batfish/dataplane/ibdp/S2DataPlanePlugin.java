@@ -44,11 +44,6 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
 
   public static final String PLUGIN_NAME = "s2";
 
-  /** Configuration key (or {@code -Ds2.workers}) for the number of S2 workers. Temporary. */
-  public static final String WORKERS_KEY = "s2workers";
-
-  public static final String WORKERS_PROPERTY = "s2.workers";
-
   private IncrementalDataPlaneSettings _settings;
 
   public S2DataPlanePlugin() {}
@@ -150,15 +145,15 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
     }
   }
 
-  /** The requested number of workers (temporary: config {@link #WORKERS_KEY}, else a property). */
+  /** The requested number of workers (the {@link Settings#ARG_S2_WORKERS} setting, default 1). */
   private int numWorkers() {
-    String raw = System.getProperty(WORKERS_PROPERTY);
-    if (raw == null) {
-      raw = _batfish.getSettingsConfiguration().getString(WORKERS_KEY, "1");
-    }
     try {
-      return Math.max(1, Integer.parseInt(raw.trim()));
-    } catch (NumberFormatException e) {
+      return Math.max(
+          1,
+          _batfish
+              .getSettingsConfiguration()
+              .getInt(org.batfish.config.Settings.ARG_S2_WORKERS, 1));
+    } catch (RuntimeException e) {
       return 1;
     }
   }

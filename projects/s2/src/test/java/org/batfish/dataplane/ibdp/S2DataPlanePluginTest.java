@@ -51,13 +51,9 @@ public final class S2DataPlanePluginTest {
     Batfish s2 = BatfishTestUtils.getBatfishFromTestrigText(testrigText, _folder);
     new S2DataPlanePlugin().initialize(s2);
     s2.getSettings().setDataplaneEngineName(S2DataPlanePlugin.PLUGIN_NAME);
+    s2.getSettings().setS2Workers(workers);
     NetworkSnapshot s2Snapshot = s2.getSnapshot();
-    System.setProperty(S2DataPlanePlugin.WORKERS_PROPERTY, Integer.toString(workers));
-    try {
-      s2.computeDataPlane(s2Snapshot);
-    } finally {
-      System.clearProperty(S2DataPlanePlugin.WORKERS_PROPERTY);
-    }
+    s2.computeDataPlane(s2Snapshot);
     DataPlane s2DataPlane = s2.loadDataPlane(s2Snapshot);
 
     // The data plane the standard question engine sees must be identical to vanilla.
