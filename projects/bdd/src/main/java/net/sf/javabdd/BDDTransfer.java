@@ -18,8 +18,8 @@ import java.util.zip.GZIPOutputStream;
  * JFactory}. Used by S2 to forward symbolic packets across workers.
  *
  * <p>Representation: the set of reachable nodes, post-order, as (index, level, low, high). Levels
- * (not variable indices) are stored because {@link JFactory#bdd_makenode} takes a level; workers use
- * the same variable order, so this round-trips faithfully.
+ * (not variable indices) are stored because {@link JFactory#bdd_makenode} takes a level; workers
+ * use the same variable order, so this round-trips faithfully.
  */
 public class BDDTransfer {
 
