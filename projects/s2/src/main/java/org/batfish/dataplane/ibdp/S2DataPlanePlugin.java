@@ -34,10 +34,11 @@ import org.batfish.datamodel.isis.IsisTopology;
  * unaffected unless this engine is explicitly selected.
  *
  * <p>The snapshot is partitioned across {@code N} in-process workers (each owns a subset of nodes
- * and shadows the rest), the workers run concurrently, and their owned data planes are merged into
- * the global one. This is the naive, fully-materialized assembly; a lazy per-node data plane
- * replaces it when the global result does not fit in one JVM, and the worker pool will be able to
- * be remote instead of in-process.
+ * and shadows the rest), the workers run concurrently, and their owned data planes are assembled
+ * into the global one lazily ({@link S2LazyDataPlane}): node-local access is served from the owning
+ * worker and whole-network iteration falls back to a materialized union. This is what lets a data
+ * plane that does not fit in one JVM be answered once the workers are remote (Kubernetes);
+ * in-process it bounds the container memory.
  */
 @AutoService(Plugin.class)
 public final class S2DataPlanePlugin extends DataPlanePlugin {
@@ -105,7 +106,7 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
     return result;
   }
 
-  /** Run the workers concurrently and merge their owned, global-assembled data planes. */
+  /** Run the workers concurrently and assemble their owned data planes lazily. */
   private ComputeDataPlaneResult runDistributed(
       List<S2BdpEngine> engines,
       Map<String, Configuration> configurations,
@@ -136,7 +137,7 @@ public final class S2DataPlanePlugin extends DataPlanePlugin {
       List<DataPlane> dataPlanes =
           results.stream().map(r -> r._dataPlane).collect(Collectors.toList());
       return new ComputeDataPlaneResult(
-          first._answerElement, S2MergedDataPlane.of(dataPlanes), first._topologies);
+          first._answerElement, S2LazyDataPlane.of(dataPlanes), first._topologies);
     } catch (InterruptedException | ExecutionException e) {
       Thread.currentThread().interrupt();
       throw new IllegalStateException("S2 distributed data plane computation failed", e);
