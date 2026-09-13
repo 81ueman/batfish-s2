@@ -24,8 +24,15 @@ import com.google.common.collect.ImmutableTable;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Table;
 import com.google.common.collect.Table.Cell;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -64,6 +71,7 @@ import org.batfish.datamodel.InterfaceType;
 import org.batfish.datamodel.Ip;
 import org.batfish.datamodel.IsisRoute;
 import org.batfish.datamodel.NetworkConfigurations;
+import org.batfish.datamodel.PrefixSpace;
 import org.batfish.datamodel.SwitchportMode;
 import org.batfish.datamodel.Topology;
 import org.batfish.datamodel.Vrf;
@@ -97,6 +105,11 @@ import org.batfish.version.BatfishVersion;
 public class IncrementalBdpEngine {
 
   private static final Logger LOGGER = LogManager.getLogger(IncrementalBdpEngine.class);
+
+  /** Whether prefix-sharded rounds externalize (and free) each shard's BGP routes. */
+  private static boolean externalize() {
+    return Boolean.getBoolean("s2.prefixShardExternalize");
+  }
 
   /**
    * Maximum amount of topology iterations to do before deciding that the dataplane computation
@@ -984,6 +997,16 @@ public class IncrementalBdpEngine {
   }
 
   /**
+   * Prefix shards for the EGP computation (S2 prefix sharding). Empty means a single unsharded
+   * pass. When non-empty, the EGP fixpoint runs once per shard with BGP restricted to that shard
+   * and each shard's BGP routes are externalized before the next shard, so only one shard is live
+   * at a time.
+   */
+  protected List<PrefixSpace> egpPrefixShards() {
+    return ImmutableList.of();
+  }
+
+  /**
    * Decide the IGP (OSPF/IS-IS/RIP) convergence condition cluster-wide. The stock engine keeps
    * iterating while the local dirty flag is set; a distributed engine must OR the flags of every
    * worker, or workers finish the IGP fixpoint after different numbers of iterations.
@@ -1124,6 +1147,73 @@ public class IncrementalBdpEngine {
      * has been previously encountered, we switch our schedule to a more restrictive one.
      */
 
+    // S2 prefix sharding: run the EGP fixpoint once per prefix shard (or a single unsharded pass
+    // when
+    // disabled), externalizing each shard's BGP routes in between so only one shard is live at a
+    // time. The union over shards equals the unsharded result.
+    List<PrefixSpace> prefixShards = egpPrefixShards();
+    boolean sharded = prefixShards.size() > 1;
+    List<List<byte[]>> cachedByVr = new ArrayList<>();
+    if (sharded) {
+      for (int i = 0; i < vrs.size(); i++) {
+        cachedByVr.add(new ArrayList<>());
+      }
+    }
+    int numRounds = sharded ? prefixShards.size() : 1;
+    for (int round = 0; round < numRounds; round++) {
+      PrefixSpace shard = sharded ? prefixShards.get(round) : null;
+      if (sharded) {
+        LOGGER.info("Prefix round {} of {}: {}", round + 1, numRounds, shard);
+        appointPrefixSpace(vrs, shard);
+        PrefixSpace roundShard = shard;
+        vrs.parallelStream().forEach(vr -> vr.initForEgpPrefixRound(roundShard));
+      }
+      if (runEgpFixpoint(nodes, vrs, ae, topologyContext, networkConfigurations, provider)) {
+        return true; // Found an oscillation
+      }
+      if (sharded) {
+        System.err.printf(
+            "S2 prefix sharding: round %d/%d live BGP routes %d%n",
+            round + 1, numRounds, vrs.stream().mapToInt(vr -> vr.getBgpRoutes().size()).sum());
+      }
+      if (sharded && externalize()) {
+        // Externalize this shard's BGP routes and drop them from the RIBs.
+        for (int i = 0; i < vrs.size(); i++) {
+          cachedByVr.get(i).add(serializeBgpRoutes(vrs.get(i).drainBgpRoutes()));
+        }
+        appointPrefixSpace(vrs, null);
+        System.gc();
+      }
+    }
+    if (sharded && externalize()) {
+      appointPrefixSpace(vrs, null);
+      for (int i = 0; i < vrs.size(); i++) {
+        for (byte[] payload : cachedByVr.get(i)) {
+          vrs.get(i).restoreBgpRoutes(deserializeBgpRoutes(payload));
+        }
+      }
+    }
+    if (sharded) {
+      System.err.printf(
+          "S2 prefix sharding: %d rounds, total BGP routes %d%n",
+          numRounds, vrs.stream().mapToInt(vr -> vr.getBgpRoutes().size()).sum());
+    }
+
+    ae.setDependentRoutesIterations(_numIterations);
+    return false; // No oscillations
+  }
+
+  /**
+   * Run the EGP fixpoint to convergence for the currently appointed prefix space. Returns true if
+   * the network oscillates.
+   */
+  private boolean runEgpFixpoint(
+      SortedMap<String, Node> nodes,
+      List<VirtualRouter> vrs,
+      IncrementalBdpAnswerElement ae,
+      TopologyContext topologyContext,
+      NetworkConfigurations networkConfigurations,
+      DataPlaneTrackMethodEvaluatorProvider provider) {
     Map<Integer, SortedSet<Integer>> iterationsByHashCode = new HashMap<>();
 
     Schedule currentSchedule = initialSchedule();
@@ -1217,8 +1307,32 @@ public class IncrementalBdpEngine {
       }
     } while (hasNotReachedRoutingFixedPoint(vrs));
 
-    ae.setDependentRoutesIterations(_numIterations);
     return false; // No oscillations
+  }
+
+  /** Appoint (or clear, with null) the prefix space for every VR's BGP computation. */
+  private static void appointPrefixSpace(List<VirtualRouter> vrs, PrefixSpace space) {
+    vrs.parallelStream().forEach(vr -> vr.setAppointedPrefixSpace(space));
+  }
+
+  private static byte[] serializeBgpRoutes(Set<Bgpv4Route> routes) {
+    try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+      oos.writeObject(new HashSet<>(routes));
+      oos.flush();
+      return baos.toByteArray();
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to externalize BGP routes", e);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Set<Bgpv4Route> deserializeBgpRoutes(byte[] payload) {
+    try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(payload))) {
+      return (Set<Bgpv4Route>) ois.readObject();
+    } catch (IOException | ClassNotFoundException e) {
+      throw new RuntimeException("Failed to restore BGP routes", e);
+    }
   }
 
   /** Check if we have reached a routing fixed point */

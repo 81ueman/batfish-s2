@@ -2,12 +2,14 @@ package org.batfish.dataplane.ibdp;
 
 import com.google.common.collect.ImmutableList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
 import javax.annotation.Nullable;
 import org.batfish.common.topology.IpOwners;
 import org.batfish.datamodel.Configuration;
+import org.batfish.datamodel.PrefixSpace;
 import org.batfish.dataplane.ibdp.schedule.IbdpSchedule.Schedule;
 
 /**
@@ -111,6 +113,41 @@ public class S2BdpEngine extends IncrementalBdpEngine {
   @Override
   protected Schedule initialSchedule() {
     return Schedule.ALL;
+  }
+
+  private volatile List<PrefixSpace> _egpPrefixShards;
+
+  /**
+   * Control-plane prefix sharding (S2): with {@code S2_PREFIX_SHARDS=N > 1}, run the EGP fixpoint
+   * once per prefix shard so only one shard's BGP RIB is live at a time. The shards are derived
+   * from the same snapshot on every worker, so the rounds line up.
+   */
+  @Override
+  protected List<PrefixSpace> egpPrefixShards() {
+    List<PrefixSpace> shards = _egpPrefixShards;
+    if (shards == null) {
+      synchronized (this) {
+        shards = _egpPrefixShards;
+        if (shards == null) {
+          int n =
+              Math.max(
+                  1,
+                  Integer.parseInt(
+                      System.getProperty(
+                          "s2.prefixShards",
+                          System.getenv().getOrDefault("S2_PREFIX_SHARDS", "1"))));
+          if (n <= 1) {
+            shards = ImmutableList.of();
+          } else {
+            Map<String, Configuration> configs = new HashMap<>();
+            _nodes.forEach((host, node) -> configs.put(host, node.getConfiguration()));
+            shards = PrefixSharder.prefixSpaces(PrefixSharder.queryPrefixes(configs), n);
+          }
+          _egpPrefixShards = shards;
+        }
+      }
+    }
+    return shards;
   }
 
   @Override

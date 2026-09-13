@@ -86,6 +86,22 @@ public class S2DistributedControlPlaneTest {
   }
 
   /**
+   * Control-plane prefix sharding (S2): running the EGP fixpoint once per prefix shard, with each
+   * shard's BGP routes externalized in between, must match vanilla at 1 and 3 workers.
+   */
+  @Test
+  public void testPrefixShardingMatchesVanilla() throws Exception {
+    System.setProperty("s2.prefixShards", "2");
+    System.setProperty("s2.prefixShardExternalize", "true");
+    try {
+      assertDistributedMatchesVanilla(OSPF_BGP_TESTRIG, OSPF_BGP_CONFIGS, new int[] {1, 3});
+    } finally {
+      System.clearProperty("s2.prefixShards");
+      System.clearProperty("s2.prefixShardExternalize");
+    }
+  }
+
+  /**
    * OSPF->BGP redistribution (on r2) and BGP->OSPF redistribution (on r3) must propagate correctly
    * across workers: r4 learns r1's loopback as an OSPF external route.
    */

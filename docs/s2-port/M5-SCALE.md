@@ -172,6 +172,41 @@ prefix sharding is the **control-plane (RIB)** one — that is the follow-up tha
 actually reduce memory at scale. `S2_SHARDS` is kept as an experimental knob, default 1
 (no behavior change).
 
+## Control-plane prefix sharding (B)
+
+`S2_PREFIX_SHARDS=N` (or `-Ds2.prefixShards=N`, default 1) shards the **control-plane BGP
+computation** by destination prefix (this is the S2 paper's prefix sharding):
+
+- The engine runs the EGP fixpoint once per prefix round. Each round appoints a shard
+  (`BgpRoutingProcess.appointed`) so only that shard's prefixes are originated, advertised,
+  and merged; the round also seeds `_mainRibDeltaPrevRound` from the shard's routes so a
+  prefix that only appeared in the first round's delta is still originated
+  (`VirtualRouter.initForEgpPrefixRound`).
+- With `-Ds2.prefixShardExternalize=true`, each round's BGP routes are serialized off the
+  RIB (`BgpRoutingProcess.drainV4Routes`) and dropped, then restored after all rounds, so
+  only one shard's BGP RIB is live at a time.
+- The union over shards equals the unsharded result; verified by
+  `S2DistributedControlPlaneTest#testPrefixShardingMatchesVanilla` and by the demos.
+
+Measured on `networks/s2-big-bgp` (6-router eBGP line, 192 origination prefixes, 3
+workers):
+
+| shards | live BGP routes / worker / round | max peak heap / worker |
+| --- | --- | --- |
+| 1 | 384 | 426.8 MiB |
+| 4 | 96 | 323.1 MiB |
+| 8 | 48 | 291.6 MiB |
+| 16 | 24 | 334.2 MiB |
+
+All runs report `ribs=MATCH reachability=MATCH symbolic=MATCH answer=MATCH`. The live BGP
+RIB size is exactly `total/N`, and the worst-worker peak heap drops ~25-30% (noisy, since
+the heap is also dominated by the full distributed dataplane/FIBs and OSPF). So B does
+bound the controlling RIB memory as intended; the end-to-end heap win is modest on these
+topologies and would grow with the number of prefixes.
+
+By contrast, the query/header-space variant (previous section, `S2_SHARDS`) showed no
+benefit, so it is a candidate for removal.
+
 ## Known residual
 
 On a **cyclic equal-cost** topology (e.g. a 6-node ring), the distributed BGP fixpoint
@@ -195,7 +230,9 @@ scripts/local-demo.sh 3 s2-line
 scripts/local-demo.sh 3 s2-ospf
 scripts/local-demo.sh 3 s2-ospf-bgp   # eBGP + OSPF
 scripts/local-demo.sh 3 s2-redist     # OSPF<->BGP redistribution
-S2_SHARDS=8 scripts/local-demo.sh 3 s2-big   # experimental query prefix sharding
+S2_SHARDS=8 scripts/local-demo.sh 3 s2-big   # query/header-space sharding (experimental)
+# control-plane prefix sharding (B): N rounds + each round's BGP RIB externalized
+JAVA_TOOL_OPTIONS=-Ds2.prefixShardExternalize=true S2_PREFIX_SHARDS=8 scripts/local-demo.sh 3 s2-big-bgp
 
 # Kubernetes (OrbStack) — <workers> [network]
 scripts/build-s2.sh --image

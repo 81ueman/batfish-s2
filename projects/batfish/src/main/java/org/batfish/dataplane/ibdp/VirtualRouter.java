@@ -76,6 +76,7 @@ import org.batfish.datamodel.LocalRoute;
 import org.batfish.datamodel.MainRibVrfLeakConfig;
 import org.batfish.datamodel.NetworkConfigurations;
 import org.batfish.datamodel.Prefix;
+import org.batfish.datamodel.PrefixSpace;
 import org.batfish.datamodel.ResolutionRestriction;
 import org.batfish.datamodel.RipInternalRoute;
 import org.batfish.datamodel.RipProcess;
@@ -1718,6 +1719,38 @@ public final class VirtualRouter {
   @Nullable
   BgpRoutingProcess getBgpRoutingProcess() {
     return _bgpRoutingProcess;
+  }
+
+  /** Restrict this VR's BGP IPv4 computation to {@code space} (S2 prefix sharding). */
+  void setAppointedPrefixSpace(@Nullable PrefixSpace space) {
+    if (_bgpRoutingProcess != null) {
+      _bgpRoutingProcess.setAppointedPrefixSpace(space);
+    }
+  }
+
+  /**
+   * Seed the round's main-RIB delta with the routes in {@code space}, so a prefix-sharded round
+   * re-offers its shard's originated routes to the routing processes (S2 prefix sharding). Without
+   * this, a route that only appeared in the first round's delta is never originated again.
+   */
+  void initForEgpPrefixRound(@Nullable PrefixSpace space) {
+    RibDelta.Builder<AnnotatedRoute<AbstractRoute>> builder = RibDelta.builder();
+    _mainRib.getRoutes().stream()
+        .filter(r -> space == null || space.containsPrefix(r.getRoute().getNetwork()))
+        .forEach(builder::add);
+    _mainRibDeltaPrevRound = builder.build();
+  }
+
+  /** Remove and return this VR's BGP IPv4 routes (S2 prefix sharding externalization). */
+  Set<Bgpv4Route> drainBgpRoutes() {
+    return _bgpRoutingProcess == null ? ImmutableSet.of() : _bgpRoutingProcess.drainV4Routes();
+  }
+
+  /** Merge previously {@link #drainBgpRoutes() drained} BGP routes back into this VR. */
+  void restoreBgpRoutes(Collection<Bgpv4Route> routes) {
+    if (_bgpRoutingProcess != null) {
+      _bgpRoutingProcess.restoreV4Routes(routes);
+    }
   }
 
   /** Return all OSPF processes for this VRF */

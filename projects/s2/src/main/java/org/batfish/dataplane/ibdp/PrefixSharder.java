@@ -14,6 +14,7 @@ import org.batfish.datamodel.Interface;
 import org.batfish.datamodel.IpSpace;
 import org.batfish.datamodel.Prefix;
 import org.batfish.datamodel.PrefixRange;
+import org.batfish.datamodel.PrefixSpace;
 import org.batfish.datamodel.UniverseIpSpace;
 import org.batfish.datamodel.Vrf;
 
@@ -93,5 +94,23 @@ final class PrefixSharder {
   /** The union of the shard spaces; equal to {@link #querySpace(List)}. */
   static @Nullable IpSpace union(List<IpSpace> shards) {
     return AclIpSpace.union(shards);
+  }
+
+  /**
+   * Like {@link #shard}, but returns {@link PrefixSpace}s (for the control-plane BGP prefix
+   * sharding hook, which appoints a prefix space per round).
+   */
+  static List<PrefixSpace> prefixSpaces(List<Prefix> prefixes, int n) {
+    List<Prefix> sorted = new ArrayList<>(prefixes);
+    sorted.sort(Comparator.comparing(Prefix::toString));
+    int groups = (n <= 1 || sorted.isEmpty()) ? 1 : n;
+    List<PrefixSpace> shards = new ArrayList<>();
+    for (int i = 0; i < groups; i++) {
+      shards.add(new PrefixSpace());
+    }
+    for (int i = 0; i < sorted.size(); i++) {
+      shards.get(i % groups).addPrefix(sorted.get(i));
+    }
+    return shards;
   }
 }
