@@ -13,7 +13,7 @@ cd "$(git rev-parse --show-toplevel)"
 # NAME_ORDERED for a DCN / WEIGHTED_LPT_FM for a WAN. The shared-code default stays RANDOM and the
 # memo default stays off so stock Batfish is unaffected. Put your own -D later in JAVA_TOOL_OPTIONS
 # to override (e.g. JAVA_TOOL_OPTIONS=-Ds2.partition=WEIGHTED_LPT_FM); the JVM honors the last one.
-export JAVA_TOOL_OPTIONS="-Ds2.prefixSpacePositiveCacheOnly=true -Ds2.partition=auto ${JAVA_TOOL_OPTIONS:-}"
+export JAVA_TOOL_OPTIONS="-Ds2.prefixSpacePositiveCacheOnly=true -Ds2.partition=WEIGHTED_LPT_FM ${JAVA_TOOL_OPTIONS:-}"
 
 # Free only the ports this run will use, so concurrent runs (other worktrees/agents) are not
 # disturbed. Override the base port with S2_BASE_PORT to run several demos at once.

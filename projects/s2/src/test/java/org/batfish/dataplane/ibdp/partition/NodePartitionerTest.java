@@ -261,7 +261,7 @@ public class NodePartitionerTest {
     String previous = System.getProperty(PartitionScheme.PROPERTY);
     try {
       System.clearProperty(PartitionScheme.PROPERTY);
-      assertThat(PartitionScheme.fromSystemProperties(), equalTo(PartitionScheme.RANDOM));
+      assertThat(PartitionScheme.fromSystemProperties(), equalTo(PartitionScheme.WEIGHTED_LPT_FM));
       System.setProperty(PartitionScheme.PROPERTY, "greedy_region");
       assertThat(PartitionScheme.fromSystemProperties(), equalTo(PartitionScheme.GREEDY_REGION));
       System.setProperty(PartitionScheme.PROPERTY, "auto");

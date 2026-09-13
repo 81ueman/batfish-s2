@@ -21,7 +21,7 @@ Knobs added for scale work:
 | `-Ds2.egpSchedule=<schedule>` | override the EGP schedule; S2 now defaults to `NODE_COLORED` (vanilla's deterministic schedule; C1). `ALL` restores the historical single-round schedule | `NODE_COLORED` (`-Ds2.egpSchedule=ALL` opts out) |
 | `-Ds2.descriptorShadows=true` | remote (shadow) nodes built from a lightweight descriptor (drops ACL/policy/route-map/community bodies); still gated by `descriptorShadowsSafe` (tracks / VNI / tunnel / IPsec fall back to full configs) | **on** (`-Ds2.descriptorShadows=false` disables) |
 | `-Ds2.rpcStats=false` | disable the per-worker sidecar RPC/byte summary | on (prints) |
-| `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) / AUTO (DCN/WAN classification) | code default RANDOM; **runner default `auto`** |
+| `-Ds2.partition=<scheme>` | node→worker partitioner: RANDOM / NAME_ORDERED / WEIGHTED_LPT_FM / GREEDY_REGION / METIS (real `gpmetis -ptype=rb -ufactor=1`; fallback if `gpmetis` absent) / AUTO (DCN/WAN classification) | **default `WEIGHTED_LPT_FM`** (best-or-tied in the `PARTITIONING-PLAN.md` 6.13 sweep; RANDOM = legacy hash-shuffle) |
 | `-Ds2.nodeWeightsV2=true` | add the full-table propagation-closure term to the node weights (compresses the FatTree core/edge ratio; no assignment change on the current testbeds — see plan §6.9) | off |
 | `-Ds2.nodeWeightsRoleScale=true` | adaptive role-level peer coefficient: drop the peer term when the busiest BGP tier already has ≥ the interfaces of the least-connected tier (improves `s2-fat4` W=3 cost imbalance 1.061→1.047 and the WAN hub star, but **regresses `s2-fat6` W=2 1.023→1.068**; plan §6.10, §6.12) | off |
 | `-Ds2.nodeWeightsPeerScale=<int>` | evaluation-only override pinning the BGP peer coefficient (O6 sweeps) | unset |
@@ -37,9 +37,9 @@ shadows, each disabled with `=false`. The positive-only `PrefixSpace` memo is th
 feature whose shared-code default stays **off** (it lives in `projects/common`), so the
 *runner* turns it on: `scripts/local-demo.sh` exports it and the k8s worker manifest sets
 it in `JAVA_TOOL_OPTIONS` (append `-Ds2.prefixSpacePositiveCacheOnly=false` to disable).
-The partitioner code default stays `RANDOM`, but the *runner* now sets `-Ds2.partition=auto`
-(local demo + both k8s manifests; append `-Ds2.partition=<scheme>` to pin). `S2_PREFIX_SHARDS`
-stays off — unchanged.
+The partitioner default is now **`WEIGHTED_LPT_FM`** (code + runner, per the `PARTITIONING-PLAN.md`
+6.13 scheme sweep: best-or-tied across Clos/WAN/line; `-Ds2.partition=<scheme>` overrides).
+`S2_PREFIX_SHARDS` stays off.
 
 With owned/descriptor mode on, workers no longer hold complete remote FIBs, so they cannot
 run the per-worker traceroute digest. The verification checks are therefore the **exact

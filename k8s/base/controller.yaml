@@ -28,11 +28,11 @@ spec:
             # controller needs only a small heap (docs/s2-port/OPS.md).
             - name: S2_OUTPUT_DIR
               value: /s2/shared
-            # The controller resolves the partition scheme; -Ds2.partition=auto selects it
-            # from the network shape (append -Ds2.partition=<scheme> to pin one).
+            # The controller resolves the partition scheme (default WEIGHTED_LPT_FM; append
+            # -Ds2.partition=<scheme> to override).
             # Override per run via JAVA_TOOL_OPTIONS.
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xmx1g -Ds2.partition=auto"
+              value: "-Xmx1g -Ds2.partition=WEIGHTED_LPT_FM"
           ports:
             - containerPort: 4090
           volumeMounts:

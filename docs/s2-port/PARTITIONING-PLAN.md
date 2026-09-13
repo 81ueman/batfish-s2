@@ -161,11 +161,11 @@ controller が union 通信グラフを構築した後、`AutoSchemeSelector.sel
 `WEIGHTED_LPT_FM` にフォールバック）。`gpmetis` がない場合のみ分類が効き、DCN →
 `NAME_ORDERED`、WAN → `WEIGHTED_LPT_FM`。
 
-**既定**: コード既定は `RANDOM` のまま（stock 不変）。S2 **runner** が `auto` を既定にする:
-`scripts/local-demo.sh` が `JAVA_TOOL_OPTIONS` の先頭に `-Ds2.partition=auto` を付け、k8s の
-worker/controller manifest も `JAVA_TOOL_OPTIONS` に同 `-D` を持つ。ユーザの
+**既定（2026-09-13 更新）**: **`WEIGHTED_LPT_FM`**（コード・runner とも。§6.13 の実測で Clos/WAN
+で最良か同等、line では無害）。`scripts/local-demo.sh` が `JAVA_TOOL_OPTIONS` の先頭に
+`-Ds2.partition=WEIGHTED_LPT_FM` を付け、k8s worker/controller manifest も同 `-D` を持つ。ユーザの
 `-Ds2.partition=<scheme>` を後ろに置けば上書きできる（§2 の
-`s2.prefixSpacePositiveCacheOnly` と同じパターン）。
+`s2.prefixSpacePositiveCacheOnly` と同じパターン）。`RANDOM` は従来の hash-shuffle。
 
 **限界**（クラス Javadoc にも記載）: 分類は粗く、正しさには無関係（どの scheme でも assignment は
 valid）。tier 名のない不規則 DCN、規則的な密 WAN、tier token の偶発一致には誤分類しうる。
@@ -727,18 +727,17 @@ python3 scripts/calibrate-weights.py imbalance \
   に `NodePartitioner` + `RANDOM` / `NAME_ORDERED` / `WEIGHTED_LPT_FM` / `GREEDY_REGION` /
   `METIS` を実装。controller が union 通信グラフと `NodeWeights` を構築して assignment を1回だけ
   算出し、`S2ControlMessages.Start.assignment` で配布、worker は再計算しない。`-Ds2.partition=<scheme>`
-  で選択（コード既定 `RANDOM` = 従来の hash-shuffle round-robin、デモ不変）。`METIS` は `gpmetis -seed=0`
-  を起動し、バイナリ不在時は `WEIGHTED_LPT_FM` にフォールバックする。§3.4 の **`AUTO`**（DCN/WAN
-  自動選択、`AutoSchemeSelector`）を追加し、**S2 runner の既定を `auto`** に変更（`scripts/local-demo.sh`
-  と k8s worker/controller manifest が `JAVA_TOOL_OPTIONS` に `-Ds2.partition=auto` を付与。ユーザの
-  `-D` が後勝ちで上書き可能）。評価 CLI `S2Main partition
+  で選択。§3.4 の **`AUTO`**（DCN/WAN 自動選択、`AutoSchemeSelector`）と `METIS`（`gpmetis -seed=0`、
+  不在時 `WEIGHTED_LPT_FM` にフォールバック）も実装。**既定 scheme は §6.13 の実測に基づき
+  `WEIGHTED_LPT_FM`**（コード・runner。`scripts/local-demo.sh` と k8s manifest が `-D` を付与、ユーザの
+  `-D` が後勝ちで上書き可能）。`RANDOM` は従来の hash-shuffle round-robin。評価 CLI `S2Main partition
   <net> <W>` が assignment と node weight を出力し、`scripts/partition-metrics.py
   --assignment ... --weights ...` で imbalance / weighted cut を測る（`--weights` は今回追加）。
 - **P3 `PrefixDependencyGraph`**: **完了** = `PrefixDependencyGraph.java` + `PrefixSharder` 刷新（weighted WCC-LPT、degenerate フォールバック、決定性）、`PrefixSharderTest` 拡張。
 - **P-X shard 数自動選択**: **完了** = `S2_PREFIX_SHARDS=auto`（別名 `-Ds2.prefixShardCount=auto`）。DPDG の成分数・重みから `PrefixShardCountSelector` が決定的に N を選ぶ（予算 `-Ds2.prefixShardBudgetMiB`、既定 192 MiB、上限 16）。sweep は `scripts/shard-sweep.sh`、測定は `M5-SCALE.md`。未設定時の挙動（sharding なし）は不変。
 - **P4 評価 → 既定 scheme 決定 → `M5-SCALE.md` / `README.md` 更新**: **評価実施（§6.7, METIS 実測）**。
-  既定は `RANDOM` のまま（デモ不変）、実運用の推奨は `WEIGHTED_LPT_FM`、`METIS` は品質参照。
-  `README.md` への反映は未。
+  **既定は §6.13 の実測に基づき `WEIGHTED_LPT_FM` を採用**（DCN で最良・一様網で無害）、`METIS` は
+  品質参照。`README.md` への反映は未。
 
 ---
 

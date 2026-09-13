@@ -35,11 +35,11 @@ spec:
             # ~2.5 GiB) with headroom. Override per run via JAVA_TOOL_OPTIONS.
             # The S2 positive-only PrefixSpace memoization is a runner default (pure
             # memoization; the shared-code default stays off so stock Batfish is
-            # unaffected), and -Ds2.partition=auto (the controller resolves the scheme;
-            # workers receive the assignment). Append -Ds2.prefixSpacePositiveCacheOnly=false
+            # unaffected), and -Ds2.partition=WEIGHTED_LPT_FM (the controller resolves the
+            # scheme; workers receive the assignment). Append -Ds2.prefixSpacePositiveCacheOnly=false
             # or -Ds2.partition=<scheme> to override.
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xmx4g -Ds2.prefixSpacePositiveCacheOnly=true -Ds2.partition=auto"
+              value: "-Xmx4g -Ds2.prefixSpacePositiveCacheOnly=true -Ds2.partition=WEIGHTED_LPT_FM"
           ports:
             - containerPort: 4091
             - containerPort: 5091

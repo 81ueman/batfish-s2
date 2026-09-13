@@ -50,7 +50,7 @@ unaffected**. Each has a documented `=false` override:
 | owned-only dataplane | **on** | `-Ds2.ownedDataplane=false` | `S2BdpEngine`/`S2Main` (S2-only). Remote nodes get stub FIBs; a run automatically falls back to full RIBs/FIBs for tracks / VNI / IPsec / tunnel. |
 | descriptor shadows | **on** | `-Ds2.descriptorShadows=false` | `S2Main` (S2-only), multi-worker only, and gated by `descriptorShadowsSafe` (same tracks / VNI / tunnel / IPsec fallback: the controller then ships full configs). |
 | positive-only `PrefixSpace` memo | off in shared code, **on in the runner** | `-Ds2.prefixSpacePositiveCacheOnly=false` | pure memoization, never changes results; `scripts/local-demo.sh` exports it and the k8s worker manifest carries it in `JAVA_TOOL_OPTIONS`. |
-| node→worker partitioner | **`auto` in the runner**, `RANDOM` in shared code | `-Ds2.partition=RANDOM` (or any scheme) | `AUTO` classifies DCN/WAN and picks METIS when `gpmetis` is installed, else NAME_ORDERED / WEIGHTED_LPT_FM; the controller logs the selection (`scheme=METIS (requested=AUTO, shape=...)`). A later user `-D` overrides the runner default. |
+| node→worker partitioner | **`WEIGHTED_LPT_FM` (code + runner default)** | `-Ds2.partition=<scheme>` | Best-or-tied across the measured Clos/WAN/line testbeds (`PARTITIONING-PLAN.md` 6.13; clearly better than RANDOM on a role-diverse DCN). `RANDOM` = legacy hash-shuffle; `AUTO` classifies DCN/WAN and picks METIS when `gpmetis` is installed, else NAME_ORDERED / WEIGHTED_LPT_FM; the controller logs the selection. A later user `-D` overrides. |
 | prefix sharding | off (`S2_PREFIX_SHARDS` unset) | — | unchanged. |
 
 Two node-weight model flags are also available (both gated off / evaluation-only; the partitioner

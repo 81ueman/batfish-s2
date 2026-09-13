@@ -72,13 +72,16 @@ public enum PartitionScheme {
   }
 
   /**
-   * The scheme selected by {@code -Ds2.partition=<scheme>}, defaulting to {@link #RANDOM}. An
-   * unknown value fails fast rather than silently changing the partition.
+   * The scheme selected by {@code -Ds2.partition=<scheme>}, defaulting to {@link #WEIGHTED_LPT_FM}.
+   * That scheme is best-or-tied across the measured Clos / WAN-star / line testbeds (see
+   * `PARTITIONING-PLAN.md` 6.13: it is clearly better than RANDOM on a role-diverse DCN and no
+   * worse on a uniform line). {@link #RANDOM} reproduces the historical deterministic hash-shuffle
+   * round-robin. An unknown value fails fast rather than silently changing the partition.
    */
   public static PartitionScheme fromSystemProperties() {
     String value = System.getProperty(PROPERTY);
     if (value == null || value.trim().isEmpty()) {
-      return RANDOM;
+      return WEIGHTED_LPT_FM;
     }
     PartitionScheme scheme = tryParse(value);
     if (scheme == null) {
