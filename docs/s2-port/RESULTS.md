@@ -55,6 +55,16 @@ including the scale/memory measurements (B.6) and the Kubernetes end-to-end (B.7
 A worker's peak is **~60–73% below vanilla** and decreases with W (with a floor from the per-worker
 fixed/global data). `s2-giga2` used `-Xmx6g` for the S2 runs; the rest used the default heap.
 
+### Node scaling (FatTree, ~5 prefixes/node, `MATCH`)
+
+Growing the **node count** keeps each worker's peak far below vanilla (runner per-worker, includes
+the distributed BDD reachability phase):
+
+| network | nodes | vanilla `ibdp` (1 JVM) | S2 W=3 max/worker | S2 W=6 max/worker |
+| --- | --- | --- | --- | --- |
+| `s2-clos6` | 45 | 1457.9 MiB | 215.8 | 180.6 |
+| `s2-clos8` | 80 | 2312.0 MiB | 328.6 | 273.7 |
+
 ### Per-node heap-budget demo (`s2-giga2`, this PC)
 
 | process | budget | result |
@@ -97,6 +107,12 @@ that matters is per-worker vs vanilla above.
   to the shared PVC, Job `Complete` with the dataplane answer.
 - Single-node clusters with only the RWO `local-path` provisioner need the PVC as `ReadWriteOnce`;
   multi-node needs `ReadWriteMany`.
+- **In-cluster large snapshot (`s2-giga2`, 65552 prefixes, 16 nodes)**: the engine Job's
+  `generate-dataplane` returned `SUCCESS`; the controller reported
+  `done (3 workers, 10415.7 MiB total peak heap)`; the three worker pods' compute-phase peaks were
+  2832 / 3091 / **3258 MiB** (each worker owns ~5 nodes), and worker-0 wrote slices for 5 hosts to the
+  shared PVC. So an in-cluster worker pod needs **~3.3 GiB** for a snapshot whose stock single-JVM
+  peak is ~12 GiB (measured in a 24 GiB single-node OrbStack cluster).
 
 ## Scale reference
 
@@ -108,6 +124,8 @@ that matters is per-worker vs vanilla above.
 | `s2-giga` | 16 | 32768 | ~32768 | — |
 | `s2-giga2` | 16 | 65552 | ~65552 | 6.9 MB |
 | `s2-giga4` | 16 | 131088 | ~131088 | 14 MB |
+| `s2-clos6` | 45 | ~225 | ~5 | — |
+| `s2-clos8` | 80 | ~400 | ~5 | — |
 
 `s2-giga2`/`s2-giga4` are generated with `scripts/gen-topology.py line --nodes 16 --originate
 {4096,8192}` (not committed; the generator was fixed to allow `--originate > 254`). Route counts are
